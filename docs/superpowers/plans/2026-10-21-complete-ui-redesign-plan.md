@@ -2337,3 +2337,79 @@ reveal 阶段四件事，当前实现**全部缺失**：
 ```
 
 **禁止 `git merge` 整分支**。这是批次 16 / 17 把前一批修复整体回滚的根因（§32.1.2）。
+
+---
+
+## 35. 并发上限与环境约束（2026-10-22 03:05 追加，硬约束）
+
+### 35.1 并发上限 = 3
+
+用户实测 20+ 个智能体直接把机器卡退，明确要求：**同时运行的智能体最多 3 个**。
+
+- 排队中的批次**不允许**提前 spawn。
+- 关闭智能体前必须先把未提交改动 commit 成 `wip(ui): preserve batch work before concurrency limit`，否则 worktree 会在下次恢复时产生歧义。
+- 关闭不是丢弃：worktree 与分支保留，`resume_agent` 后可继续。
+
+### 35.2 当前在跑的 3 个批次
+
+| 批次 | agent | worktree | 分支 |
+|---|---|---|---|
+| 18 视觉根基 | `01a15f8c` | `wt/b18-visual` | `ui/b18-visual` |
+| 24 出口页 | `01a15f56` | `wt/b24-egress` | `ui/b24-egress` |
+| 26 账号池 | `01a15fd3` | `wt/b26-accounts` | `ui/b26-accounts` |
+
+### 35.3 已暂停（改动已 WIP commit，等待恢复）
+
+| 批次 | agent | 分支 | WIP commit | 内容 |
+|---|---|---|---|---|
+| 19 概览 | `01a15fac-616f` | `ui/b19-overview` | `90edeef` | 圆环左置 + 图例进度条 + 昼夜扩散 |
+| 20 模型 | `01a15fac-da03` | `ui/b20-models` | `7e6ea64` | 卡片精简 + 禁用交互 + 拉取 |
+| 21 错误记录 | `01a15fad-836e` | `ui/b21-logs` | `7a1888b` | 只留错误 + 点开弹窗 |
+| 25 启动动画 | `01a1553b` | `ui/b25-startup` | 无（未落笔） | 三段式 + 四种退场 + counter-scale |
+
+恢复方式：`resume_agent` 后发一条「继续，从 XXX 开始写」的指令，不要重发任务书。
+### 35.4 恢复优先级
+
+```text
+第一   25 启动动画（用户最愤怒项，且无改动，必须优先）
+第二   24 出口页（用户投诉最集中）
+第三   18 视觉根基（其它批次依赖它的 token）
+第四   19 概览
+第五   20 模型
+第六   21 错误记录
+第七   22 清扫 + 响应式（依赖前面全部合入）
+第八   23 部署
+```
+
+### 35.5 文件边界修正（重要）
+
+§34.2 写的「批次 26 改 `accounts.js` + `#nodeVeil`」是错的。实际代码结构：
+
+| 职责 | 真实文件 |
+|---|---|
+| 账号卡渲染 | `account-rows.js` |
+| 账号表格与分页外层 | `account-table.js` |
+| 出口与禁用按钮事件 | `account-actions.js` |
+| 账号页入口与 overview 反射 | `accounts.js` |
+| 节点弹窗渲染 | `egress.js`（`renderNodes` / `openNodeModal` / `bindAccountNode`） |
+| 节点弹窗 CSS | `styles.css` 06 段（`.node-modal` / `.node-grid` / `.node-card`） |
+
+结论：`#nodeVeil` 归**批次 24**（同文件、同段 CSS），批次 26 只做账号卡。
+
+### 35.6 子智能体已踩失败模式
+
+1. **把状态检查当成任务终点**：回一句"我没卡住、下一步是…"就停。派任务必须写「现在就开始写第一行代码，不要再回报状态」。
+2. **here-string + Set-Content 中转 patch**：退出码 1 且无输出，`apply_patch` 从未被调用。必须直接调 `apply_patch`。
+3. **PowerShell 整文件写会 CRLF 化**：`WriteAllText` / `Set-Content` 会把 LF 转 CRLF，导致整文件全改。
+4. **`Start-Process` 被策略拦截**：起 headless Chrome 必须用 `& chrome.exe ...` 前台方式。
+5. **内嵌浏览器 DOM 被 mock**：`el.click` / `document.createElement` 不可用。一律 headless Chrome + CDP。
+
+### 35.7 环境事实（避免重复排查）
+
+| 端口 | 用途 |
+|---|---|
+| `17863` | 主 demo 实例，密码 `123456`，16 个演示账号、3 个 demo 节点 |
+| `17865` | 批次 26 自建验证实例 |
+| `7863` | `netsh portproxy` 到 VM `192.168.189.128:7863`，**VM 端未监听** |
+
+`17863` 的二进制必须用当前 main 重新 build 后重启（`go:embed` 把前端打进二进制，不重建就等于看旧代码）。2026-10-22 02:36 已重建过一次（`wbserver-next.exe` → `wbserver.exe`）。
