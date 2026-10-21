@@ -61,9 +61,18 @@ test('four animation styles share one lifecycle and expose distinct visuals', ()
   for (const decoration of ['wb-startup-shutter', 'wb-startup-gate-seam', 'wb-startup-beam', 'wb-startup-curtain-path']) {
     assert.equal(visuals.minimal.includes(decoration), false, 'minimal stays a static brand mark: ' + decoration);
   }
+  assert.ok(visuals.names.includes('wb-startup-progress-fill'), 'names keeps the 1px bottom progress bar');
+  assert.ok(visuals.orbital.includes('wb-startup-progress-fill'), 'orbital weakens the bar into the ring arc');
+  assert.equal(visuals.scan.includes('wb-startup-progress-fill'), false, 'scan trades the bar for the tagline pulse');
   for (const style of ['names', 'orbital', 'scan']) {
-    assert.ok(visuals[style].includes('wb-startup-progress-fill'), style + ' keeps the 1px progress bar');
     assert.ok(visuals[style].includes('wb-startup-count'), style + ' keeps the counter readout');
+    assert.ok(visuals[style].some(name => name.startsWith('wb-startup-word')), style + ' keeps the serif word cycler');
+    assert.ok(visuals[style].includes('wb-startup-header'), style + ' keeps the metadata header');
+  }
+  for (const style of ['minimal']) {
+    assert.equal(visuals[style].includes('wb-startup-count'), false, 'minimal drops the counter');
+    assert.equal(visuals[style].includes('wb-startup-word-mask'), false, 'minimal drops the word cycler');
+    assert.equal(visuals[style].includes('wb-startup-header'), false, 'minimal drops the metadata header');
   }
   assert.equal(animation.normalizeAnimationStyle('ORBITAL'), 'orbital');
   assert.equal(animation.normalizeAnimationStyle('unknown'), 'names');

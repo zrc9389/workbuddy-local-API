@@ -33,7 +33,7 @@ function withReducedMotion(run) {
 }
 
 test('startup animation cycles English AI names and finishes at the hard limit', async () => {
-  assert.deepEqual(animation.AI_NAMES, ['GPT', 'Claude', 'Gemini', 'DeepSeek', 'Qwen', 'Kimi', 'GLM']);
+  assert.deepEqual(animation.AI_NAMES, ['GPT', 'Claude', 'Gemini', 'Grok', 'DeepSeek', 'Qwen', 'Kimi', 'Llama']);
   assert.equal(animation.TARGET_MS, 8000);
   assert.equal(animation.HARD_LIMIT_MS, 12000);
   let finished = 0;
@@ -42,7 +42,7 @@ test('startup animation cycles English AI names and finishes at the hard limit',
   assert.equal(host.children.length, 1);
   assert.equal(host.children[0], player.root);
   assert.equal(player.root.dataset.phase, 'names');
-  assert.equal(classesOf(player).some(name => name.includes('wb-startup-name')), true);
+  assert.equal(classesOf(player).some(name => name.includes('wb-startup-word')), true);
   assert.ok(descendants(player.root).some(el => el.textContent === 'GPT'));
   player.setPhase('syncing');
   assert.equal(player.root.dataset.phase, 'syncing');
@@ -123,7 +123,7 @@ test('each style builds its own decorative DOM and the animation never calls fet
 
     const orbital = animation.startStartupAnimation({ host, style: 'orbital', targetMs: 8000, hardLimitMs: 12000 });
     const orbitalClasses = classesOf(orbital);
-    assert.equal(orbitalClasses.filter(name => name === 'wb-startup-shutter').length, 5);
+    assert.equal(orbitalClasses.filter(name => name === 'wb-startup-shutter').length, 0);
     assert.ok(orbitalClasses.includes('wb-startup-orbit'));
     assert.equal(orbitalClasses.includes('wb-startup-gate-seam'), false);
     orbital.destroy();
@@ -147,6 +147,76 @@ test('each style builds its own decorative DOM and the animation never calls fet
   assert.equal(fetches, 0);
 });
 
+test('progress follows the reference non-linear curve and the counter tracks it', () => {
+  assert.equal(animation.nonLinearProgress(0), 0);
+  assert.ok(Math.abs(animation.nonLinearProgress(0.35) - 0.42) < 1e-9);
+  assert.ok(Math.abs(animation.nonLinearProgress(0.65) - 0.6) < 1e-9);
+  assert.equal(animation.nonLinearProgress(1), 1);
+  assert.ok(animation.nonLinearProgress(0.2) > 0.2, 'first third sprints ahead of linear');
+  const slopeFirst = (animation.nonLinearProgress(0.2) - animation.nonLinearProgress(0.1)) / 0.1;
+  const slopeMiddle = (animation.nonLinearProgress(0.6) - animation.nonLinearProgress(0.5)) / 0.1;
+  assert.ok(slopeMiddle < slopeFirst / 1.5, 'middle third decelerates to half speed while the first third sprints');
+  let previous = -1;
+  for (let step = 0; step <= 100; step++) {
+    const value = animation.nonLinearProgress(step / 100);
+    assert.ok(value >= previous, 'curve stays monotonic');
+    previous = value;
+  }
+
+  const frames = [];
+  let now = 1000;
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    const host = new dom.Element('startupHost');
+    const player = animation.startStartupAnimation({
+      host, style: 'names', targetMs: 8000, hardLimitMs: 12000,
+      requestFrame: fn => { frames.push(fn); return frames.length; },
+      cancelFrame: () => {},
+    });
+    const bar = descendants(player.root).find(el => el.className === 'wb-startup-progress-fill');
+    const counter = descendants(player.root).find(el => el.className === 'wb-startup-count-value');
+    assert.equal(counter.textContent, '00');
+    assert.equal(String(bar.style.transform), 'scaleX(0.0000)');
+
+    now += 8000 * 0.35;
+    frames.pop()();
+    assert.equal(counter.textContent, '42', 'counter is driven by the curve, not raw time');
+    assert.match(String(bar.style.transform), /scaleX\(0\.42/);
+
+    now += 8000 * 0.30;
+    frames.pop()();
+    assert.equal(counter.textContent, '60');
+
+    now += 8000 * 0.35;
+    frames.pop()();
+    assert.equal(counter.textContent, '100');
+    player.destroy();
+  } finally { Date.now = realNow; }
+});
+
+test('the word cycler swaps AI names every second and leaves no stray node', () => {
+  const frames = [];
+  let now = 5000;
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    const host = new dom.Element('startupHost');
+    const player = animation.startStartupAnimation({
+      host, style: 'names', targetMs: 8000, hardLimitMs: 12000,
+      requestFrame: fn => { frames.push(fn); return frames.length; },
+      cancelFrame: () => {},
+    });
+    const mask = descendants(player.root).find(el => el.className === 'wb-startup-word-mask');
+    assert.equal(mask.children.length, 1);
+    now += 1000;
+    frames.pop()();
+    assert.equal(mask.children.length, 2, 'incoming word enters while the old one leaves');
+    player.destroy();
+    assert.equal(mask.children.length, 0, 'destroy clears the word nodes synchronously');
+    assert.equal(host.children.length, 0);
+  } finally { Date.now = realNow; }
+});
 test('reduced motion shows static branding without mounting the overlay', () => {
   let finished = 0;
   const host = new dom.Element('startupHost');
