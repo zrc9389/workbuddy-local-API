@@ -296,7 +296,7 @@ main { min-width: 0; }
 /* ===== 05 accounts ===== */
 .account-grid,.model-grid,.package-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,325px),1fr)); gap: 18px; }
 /* 共享卡片表面（跨页，后续按需在各自区段覆盖） */
-.account-card,.job-card,.surface,.metric-card,.model-card,.package-card,.route-card { min-width: 0; padding: 25px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); box-shadow: var(--shadow); }
+.account-card,.job-card,.surface,.model-card,.package-card,.route-card { min-width: 0; padding: 25px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); box-shadow: var(--shadow); }
 .account-card { display: flex; flex-direction: column; position: relative; border-color: color-mix(in srgb,var(--ok) 55%,transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb,var(--ok) 8%,transparent),0 0 16px color-mix(in srgb,var(--ok) 3%,transparent); }
 .account-card.state-bad { border-color: var(--fluoro-red); box-shadow: inset 0 0 0 1px color-mix(in srgb,var(--fluoro-red) 18%,transparent),0 0 17px color-mix(in srgb,var(--fluoro-red) 17%,transparent); }
 .account-card.state-warn { border-color: var(--warn); box-shadow: inset 0 0 0 1px color-mix(in srgb,var(--warn) 10%,transparent),0 0 16px color-mix(in srgb,var(--warn) 7%,transparent); }
@@ -355,14 +355,6 @@ dt { color: var(--ink-3); font-size: 11px; }dd { margin: 2px 0 0; font-size: 12p
 .subscription-detail-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: start; gap: 6px; }.subscription-detail-actions button { min-height: 32px; padding: 4px 10px; font-size: 11px; }
 .egress-reveal { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--input); }.egress-reveal[hidden] { display: none; }.egress-reveal .mono { display: block; margin-top: 6px; overflow-wrap: anywhere; font-size: 11px; }
 .route-grid { display: grid; gap: 10px; }.route-card { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 13px; padding: 17px 22px; border-radius: 15px; box-shadow: none; }.route-card > div { min-width: 0; }.route-card strong { font-size: 12px; }
-.subscription-manager .section-heading { margin: 0 0 4px; }
-.subscription-list { display: grid; gap: 10px; margin-top: 18px; }
-.subscription-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: start; gap: 8px 16px; min-width: 0; padding: 14px 0 4px; border-top: 1px solid var(--line); }
-.subscription-copy { min-width: 0; }.subscription-copy strong { display: block; font-size: 14px; font-weight: 600; }
-.subscription-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; min-width: 0; }
-.subscription-actions button { min-height: 34px; padding: 5px 10px; font-size: 12px; }
-.subscription-url { grid-column: 1 / -1; min-width: 0; padding: 9px 11px; border-radius: 9px; background: var(--input); font-family: var(--mono); font-size: 11px; }
-.node-filter { display: block; margin: 14px 0 6px; color: var(--ink-3); font-size: 12px; }
 #nodeSubscriptionFilter { width: 100%; max-width: 360px; }
 .egress-toolbar #nodeSubscriptionFilter { width: auto; min-width: 180px; }
 .node-modal { width: min(100%,900px); }.node-modal .node-card { aspect-ratio: 2 / 1; }.node-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(176px,1fr)); gap: 12px; margin: 22px 0; }.node-card { position: relative; min-width: 0; border: 1px solid var(--line); border-radius: 15px; padding: 17px; text-align: left; background: var(--surface-soft); }.node-card[aria-pressed="true"] { border-color: var(--accent); }.node-title { display: flex; align-items: start; flex-wrap: wrap; gap: 7px 12px; }.node-title strong { font-size: 12px; }.node-card > button { font-size: 11px; margin-top: 14px; }.node-card p { margin-top: 7px; }.node-check { position: absolute; top: 11px; right: 12px; color: var(--accent); }.latency-trend { width: 100px; height: 24px; margin-top: 12px; display: block; fill: none; stroke: var(--ok); stroke-width: 1.5; }.auth-url { font-size: 11px; background: var(--input); border-radius: 10px; padding: 12px; margin: 12px 0; }
@@ -403,7 +395,7 @@ dt { color: var(--ink-3); font-size: 11px; }dd { margin: 2px 0 0; font-size: 12p
 /* ===== 09 logs ===== */
 .req-detail-modal { width: min(100%,760px); }
 .req-detail-body { min-width: 0; margin-top: 6px; }.req-detail-body .card-heading { margin-bottom: 12px; }.req-detail-body .mini-metrics { margin: 16px 0 0; }
-.request-grid { display: grid; grid-template-columns: repeat(2,minmax(0, 1fr)); gap: 14px; margin-top: 20px; }.request-card { min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 15px; }.request-card > .mono { font-size: 10px; color: var(--ink-3); margin-top: 10px; }.request-card .mini-metrics { margin-bottom: 0; }.log-lines { display: grid; gap: 0; margin-top: 17px; }.ln { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 12px; border-top: 1px solid var(--line); padding: 11px 0; font: 11px/1.75 var(--mono); }.ln .log-time { color: var(--ink-3); }.ln.e { color: var(--bad); }.ln.w { color: var(--warn); }
+.request-grid { display: grid; grid-template-columns: repeat(2,minmax(0, 1fr)); gap: 14px; margin-top: 20px; }.request-card { min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 15px; }.request-card > .mono { font-size: 10px; color: var(--ink-3); margin-top: 10px; }.request-card .mini-metrics { margin-bottom: 0; }
 
 /* ===== 10 config ===== */
 .surface { margin-bottom: 20px; }.settings-grid .surface,.usage-details .surface { margin: 0; }.settings-grid { align-items: start; }.endpoints dl { display: grid; gap: 4px; margin: 19px 0; }.endpoints dd { margin-bottom: 11px; }
@@ -428,7 +420,6 @@ dt { color: var(--ink-3); font-size: 11px; }dd { margin: 2px 0 0; font-size: 12p
   .nav-foot { display: none; }
   .topbar { padding: 0 0 6px; }
   .overview-grid { grid-template-columns: minmax(0,1fr); }.overview-side { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); align-items: stretch; }.daynight { height: 100%; }
-  .metric-card { padding: 20px; }.metric-values strong { font-size: 21px; }
   .job-card,.surface,.account-card,.model-card,.package-card { padding: 23px; }
 }
 @media (max-width:700px) {
@@ -450,10 +441,9 @@ dt { color: var(--ink-3); font-size: 11px; }dd { margin: 2px 0 0; font-size: 12p
   .node-grid { grid-template-columns: minmax(0, 1fr); }.model-grid,.account-grid,.package-grid { grid-template-columns: minmax(0, 1fr); }
   .modal { padding: 21px; border-radius: 20px; }
   .veil { padding: 14px 10px 24px; }
-  .fluid { width: 100vw; }.ln { grid-template-columns: 65px minmax(0, 1fr); gap: 8px; }
+  .fluid { width: 100vw; }
   .expiry-row { grid-template-columns: minmax(0,1fr) minmax(0,2fr); }.expiry-row strong { grid-column: 2; }
   .stat { padding: 16px; }.account-card,.surface,.job-card,.model-card,.package-card { padding: 18px; }
-  .subscription-row { grid-template-columns: minmax(0,1fr); }.subscription-actions { justify-content: flex-start; }.subscription-manager .section-heading { display: block; }
   .motion-settings .form-actions { align-items: stretch; }.motion-settings .form-actions button { width: 100%; }.motion-settings #animationNote { flex-basis: 100%; }
 }
 @media (max-width:380px) {
@@ -461,7 +451,7 @@ dt { color: var(--ink-3); font-size: 11px; }dd { margin: 2px 0 0; font-size: 12p
   .nav li > a { padding-inline: 8px; font-size: 13px; }
   .top-actions { gap: 6px; }.top-actions button { padding-inline: 11px; }
   .view-heading h2 { font-size: 22px; }.stats-row { grid-template-columns: minmax(0,1fr); }
-  .metric-card { padding: 16px; }.expiry-row { gap: 8px; }
+  .expiry-row { gap: 8px; }
 }
 
 /* ===== 12 motion & a11y ===== */
@@ -476,7 +466,7 @@ dt { color: var(--ink-3); font-size: 11px; }dd { margin: 2px 0 0; font-size: 12p
 }
 @supports not (backdrop-filter:blur(1px)) {
   .glass,.glass-float,.glass-nav,.modal { background: var(--glass-fill-strong); backdrop-filter: none; -webkit-backdrop-filter: none; }
-  .glass,.surface,.account-card,.job-card,.metric-card,.model-card,.package-card { background: var(--bg); }
+  .glass,.surface,.account-card,.job-card,.model-card,.package-card { background: var(--bg); }
 }
 
 /* ===== 13 fonts ===== */
