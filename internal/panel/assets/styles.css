@@ -422,13 +422,9 @@ dt { color: var(--ink-3); font-size: 11px; }dd { margin: 2px 0 0; font-size: 12p
   .nav { position: relative; top: auto; height: auto; max-height: none; overflow: visible; border-right: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 14px 0 10px; margin: 0 0 18px; }
   .brand { padding: 0 4px 12px; font-size: 19px; }.brand small { font-size: 11px; }
   .nav-list { display: flex; flex-wrap: wrap; align-items: stretch; gap: 2px 4px; padding-bottom: 4px; }
-  .nav-item { flex: 0 1 auto; }.nav-group { flex: 0 1 auto; display: grid; gap: 2px; }
-  .nav-label { padding: 9px 12px 2px; font-size: 13px; font-weight: 600; }
+  .nav-item { flex: 0 1 auto; }
   .nav li > a { min-height: 38px; padding: 7px 12px; font-size: 13px; }
-  .nav-sub { display: flex; gap: 2px; margin: 0; padding: 0 4px; border-left: 0; }
-  .nav-sub a { min-height: 32px; padding: 4px 9px; font-size: 12px; }
-  .nav li > a.on::before,.nav-sub a.on::before { left: 9px; right: 9px; top: auto; bottom: 0; width: auto; height: 2px; }
-  .nav-sub a.on::before { left: 9px; right: 9px; bottom: 0; }
+  .nav li > a.on::before { left: 9px; right: 9px; top: auto; bottom: 0; width: auto; height: 2px; }
   .nav-foot { display: none; }
   .topbar { padding: 0 0 6px; }
   .overview-grid { grid-template-columns: minmax(0,1fr); }.overview-side { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); align-items: stretch; }.daynight { height: 100%; }
@@ -440,14 +436,8 @@ dt { color: var(--ink-3); font-size: 11px; }dd { margin: 2px 0 0; font-size: 12p
   .top-actions { width: 100%; justify-content: flex-start; }
   .top-actions button { font-size: 13px; }
   .nav-list { display: grid; grid-template-columns: minmax(0,1fr); gap: 1px; }
-  .nav-group { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; padding: 0 0 2px 4px; }
-  .nav-label { padding: 8px 0; font-size: 14px; font-weight: 600; }
-  .nav-sub { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; margin-left: auto; padding: 0; border-left: 0; }
   .nav li > a { min-height: 40px; padding: 8px 11px; font-size: 14px; }
-  .nav-sub a { min-height: 34px; padding: 5px 9px; font-size: 13px; }
-  .nav-sub a.on { background: color-mix(in srgb,var(--accent) 9%,transparent); }
   .nav li > a.on::before { left: 5px; right: auto; top: 10px; bottom: 10px; width: 2px; height: auto; }
-  .nav-sub a.on::before { left: 8px; right: 8px; top: auto; bottom: 1px; width: auto; height: 2px; }
   .view-heading { padding: 4px 0 18px; }.view-heading h2 { font-size: 24px; }.view-heading > .hint { flex-basis: 100%; }
   .section-heading { margin-top: 22px; }
   .overview-heading { display: block; }.overview-heading .hint { margin-top: 5px; }
@@ -468,7 +458,7 @@ dt { color: var(--ink-3); font-size: 11px; }dd { margin: 2px 0 0; font-size: 12p
 }
 @media (max-width:380px) {
   .brand { font-size: 18px; }.brand-mark { font-size: 26px; }
-  .nav li > a,.nav-sub a { padding-inline: 8px; font-size: 13px; }.nav-label { padding-inline: 0; font-size: 14px; }
+  .nav li > a { padding-inline: 8px; font-size: 13px; }
   .top-actions { gap: 6px; }.top-actions button { padding-inline: 11px; }
   .view-heading h2 { font-size: 22px; }.stats-row { grid-template-columns: minmax(0,1fr); }
   .metric-card { padding: 16px; }.expiry-row { gap: 8px; }

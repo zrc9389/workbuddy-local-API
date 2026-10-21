@@ -32,5 +32,10 @@ test('actual app entry evaluates with strict real HTML IDs, and every view route
 test('no_logs capability prevents navigation and background log reads without suppressing usage',async()=>{
  const cap=await import('./assets/capabilities.js'),router=await import('./assets/router.js');const requests=mockAPI(url=>url.endsWith('/capabilities')?{logs:false}:{accounts:[],totals:{}});
  await cap.loadCapabilities();cap.applyOverviewCapabilities({logging_enabled:true});assert.equal(cap.logsAvailable(),false);assert.equal($('logsNavItem').hidden,true);await router.go('logs');assert.equal($('ttl').textContent,'概览');await router.refreshVisible();assert.ok(!requests.some(c=>/\/(logs|request_logs|request_metrics)(\?|$)/.test(c.url)));
- await router.go('usage');assert.ok(requests.some(c=>c.url==='/panel/api/usage?hours=0'));
+ const usageBefore=requests.filter(c=>c.url==='/panel/api/usage?hours=0').length;
+ $('usStats').innerHTML='';
+ await router.go('usage');
+ const usageAfter=requests.filter(c=>c.url==='/panel/api/usage?hours=0').length;
+ assert.ok($('usStats').innerHTML.length>0,'usage renders from cache or a fresh request');
+ assert.ok(usageAfter-usageBefore<=1,'a repeat visit never issues more than one usage request');
 });
