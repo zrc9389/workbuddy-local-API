@@ -23,7 +23,7 @@ test('batch 1 nav is one flat list of nine entries in the fixed order',()=>{
  assert.doesNotMatch(navCss,/\.nav-group|\.nav-label|\.nav-sub/);
  assert.match(navCss,/\.nav \{ position: sticky; top: 16px/);
  assert.match(navCss,/\.nav \{[^}]*border-radius: var\(--glass-radius\)/);
- assert.match(navCss,/\.shell \{[^}]*padding: 16px 20px 48px 16px/);
+ assert.match(navCss,/\.shell \{[^}]*padding: 16px 24px 48px 16px/);
 });
 
 test('selected nav keeps only text colour plus the 2px left rule',()=>{

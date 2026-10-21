@@ -41,11 +41,11 @@ test('batch D navigation keeps nine flat entries, no nav groups and a floating g
  assert.match(html, /id="ovTheme"[^>]*aria-pressed/);
  assert.match(css, /\.shell\s*\{[^}]*width:\s*100%/);
  assert.match(css, /\.shell\s*\{[^}]*max-width:\s*none/);
- assert.match(css, /\.shell\s*\{[^}]*padding:\s*16px\s+20px\s+48px\s+16px/);
+ assert.match(css, /\.shell\s*\{[^}]*padding:\s*16px\s+24px\s+48px\s+16px/);
  assert.match(css, /\.nav\s*\{[^}]*position:\s*sticky[^}]*top:\s*16px[^}]*border-radius:\s*var\(--glass-radius\)/);
  const navRadius = css.match(/\.nav\s*\{[^}]*border-radius:\s*([^;}]+)/);
  assert.ok(navRadius && navRadius[1].trim() !== '0', 'floating nav must not use a zero radius');
- assert.match(css, /\.nav\s*\{[^}]*padding:\s*26px\s+16px\s+18px/);
+ assert.match(css, /\.nav\s*\{[^}]*padding:\s*22px\s+14px\s+18px/);
 const responsiveCss = css.slice(css.indexOf('/* ===== 11 responsive ===== */'));
  assert.equal((responsiveCss.match(/@media \(max-width:700px\)/g) || []).length, 1, 'responsive section keeps exactly one 700px block');
  assert.match(css, /@media \(max-width:980px\)[\s\S]*?\.nav\s*\{[^}]*height:\s*auto/);
