@@ -15,7 +15,7 @@ import { setTheme } from './theme.js';
 import { loadOverviewView } from './overview.js';
 import { startStartupAnimation, TARGET_MS, HARD_LIMIT_MS } from './startup-animation.js';
 import { bindAnimationSettings, applyAnimationPreference, styleFromPreferences } from './animation-settings.js';
-const titles = {overview:'概览', accounts:'账号池', usage:'用量', packages:'积分构成', taskscenter:'任务', models:'模型', egress:'出口', config:'设置', logs:'运行日志'};
+const titles = {overview:'概览', accounts:'账号池', taskscenter:'账号任务', egress:'账号出口', usage:'积分用量', packages:'积分构成', models:'模型查看', logs:'错误记录', config:'系统设置'};
 let view = 'overview', timer, loading = false, startup = null, startupSession = null, startupGeneration = 0;
 let animationSettingsDestroy = null, animationSettingsAttempted = false;
 
@@ -99,6 +99,7 @@ $('btnRefresh').onclick = async () => {
   if (!session.authenticated) return;
   button.classList.add('refreshing');
   button.disabled = true;
+  button.setAttribute('aria-busy', 'true');
   loading = true;
   try {
     await api('balance_all', {method:'POST', body:'{}'});
@@ -108,7 +109,8 @@ $('btnRefresh').onclick = async () => {
   finally {
     loading = false;
     button.disabled = false;
-    setTimeout(() => button.classList.remove('refreshing'), 650);
+    button.setAttribute('aria-busy', 'false');
+    setTimeout(() => button.classList.remove('refreshing'), 500);
   }
 };
 document.addEventListener('panel:authenticated', async () => {

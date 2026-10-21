@@ -14,28 +14,18 @@
 <div class="atmosphere" aria-hidden="true"><div class="fluid fluid-one"></div><div class="fluid fluid-two"></div><div class="grain"></div></div>
 <a class="skip-link" href="#content">跳到内容</a>
 <div class="shell" inert>
-  <nav class="nav glass" aria-label="主导航">
+  <nav class="nav glass-nav" aria-label="主导航">
     <a class="brand" href="#overview" data-view="overview" aria-label="WorkBuddy 概览">
       <span class="brand-mark" aria-hidden="true">W<span>·</span></span>
       <span class="brand-copy">WorkBuddy<small>本机工作台</small></span>
     </a>
     <ul class="nav-list">
       <li class="nav-item"><a href="#overview" data-view="overview" class="on" aria-current="page">概览</a></li>
-      <li class="nav-group">
-        <span class="nav-label">账号任务</span>
-        <div class="nav-sub" aria-label="账号任务子页">
-          <a href="#accounts" data-view="accounts">账号池</a>
-          <a href="#taskscenter" data-view="taskscenter">维护任务</a>
-        </div>
-      </li>
+      <li class="nav-item"><a href="#accounts" data-view="accounts">账号池</a></li>
+      <li class="nav-item"><a href="#taskscenter" data-view="taskscenter">账号任务</a></li>
       <li class="nav-item"><a href="#egress" data-view="egress">账号出口</a></li>
-      <li class="nav-group">
-        <span class="nav-label">积分用量</span>
-        <div class="nav-sub" aria-label="积分用量子页">
-          <a href="#usage" data-view="usage">用量</a>
-          <a href="#packages" data-view="packages">积分构成</a>
-        </div>
-      </li>
+      <li class="nav-item"><a href="#usage" data-view="usage">积分用量</a></li>
+      <li class="nav-item"><a href="#packages" data-view="packages">积分构成</a></li>
       <li class="nav-item"><a href="#models" data-view="models">模型查看</a></li>
       <li id="logsNavItem" class="nav-item"><a href="#logs" data-view="logs">错误记录</a></li>
       <li class="nav-item"><a href="#config" data-view="config">系统设置</a></li>
@@ -48,26 +38,26 @@
     <div id="defaultPasswordNotice" class="security-notice" hidden>仍在使用初始管理密码 <code>123456</code>。请前往 <a href="#config">设置中的管理密码</a> 修改。</div>
     <!-- ===== view:overview ===== -->
     <section class="view overview" id="view-overview" aria-label="概览">
-      <header class="view-heading"><h2>概览</h2><p class="hint">账号池状态与本机接口</p></header>
+      <header class="view-heading"><h2>概览</h2></header>
       <div class="overview-grid">
         <article class="overview-panel overview-stats">
-          <div class="overview-heading"><h2>账号池</h2><p class="hint" id="ovStatus">等待概览数据</p></div>
+          <div class="overview-heading"><h2>账号池</h2><p class="overview-status" id="ovStatus">等待概览数据</p></div>
           <div class="overview-stats-body">
             <div class="ring-figure" role="img" aria-labelledby="ovRingLabel">
               <svg class="account-ring" id="ovRing" viewBox="0 0 160 160" aria-hidden="true" focusable="false">
+                <defs><mask id="ovRingReveal" maskUnits="userSpaceOnUse"><circle class="ring-reveal" cx="80" cy="80" r="62" pathLength="100" stroke="#fff" stroke-width="18" fill="none" stroke-dasharray="100 100" stroke-dashoffset="0"></circle></mask></defs>
                 <circle class="ring-track" cx="80" cy="80" r="62"></circle>
-                <g id="ovRingSegments"></g>
+                <g id="ovRingSegments" mask="url(#ovRingReveal)"></g>
               </svg>
-              <div class="ring-center"><strong id="ovTotal">—</strong><span>账号总数</span><span id="ovRingLabel" class="sr-only">账号总数为 —</span></div>
+              <div class="ring-center"><strong id="ovTotal">—</strong><span>账号</span><span id="ovRingLabel" class="sr-only">账号总数为 —</span></div>
             </div>
             <div class="overview-legend" aria-label="账号统计">
-              <div class="legend-row total"><span class="legend-dot" aria-hidden="true"></span><span class="legend-name">总数</span><strong id="ovLegendTotal">—</strong></div>
-              <div class="legend-row good"><span class="legend-dot" aria-hidden="true"></span><span class="legend-name">可用</span><strong id="ovLegendHealthy">—</strong></div>
-              <div class="legend-row warn"><span class="legend-dot" aria-hidden="true"></span><span class="legend-name">冷却</span><strong id="ovLegendCooling">—</strong></div>
-              <div class="legend-row bad"><span class="legend-dot" aria-hidden="true"></span><span class="legend-name">禁用</span><strong id="ovLegendDisabled">—</strong></div>
+              <div class="legend-row total" style="--i:0"><span class="legend-name">总数</span><span class="legend-bar" aria-hidden="true"><i id="ovBarTotal" style="--pct:100%"></i></span><strong id="ovLegendTotal">—</strong></div>
+              <div class="legend-row good" style="--i:1"><span class="legend-name">可用</span><span class="legend-bar" aria-hidden="true"><i id="ovBarHealthy" style="--pct:0%"></i></span><strong id="ovLegendHealthy">—</strong></div>
+              <div class="legend-row warn" style="--i:2"><span class="legend-name">冷却</span><span class="legend-bar" aria-hidden="true"><i id="ovBarCooling" style="--pct:0%"></i></span><strong id="ovLegendCooling">—</strong></div>
+              <div class="legend-row bad" style="--i:3"><span class="legend-name">禁用</span><span class="legend-bar" aria-hidden="true"><i id="ovBarDisabled" style="--pct:0%"></i></span><strong id="ovLegendDisabled">—</strong></div>
             </div>
           </div>
-          <p class="hint overview-foot" id="ovFoot">登录后读取本机账号池统计。</p>
         </article>
         <aside class="overview-panel overview-side">
           <button class="daynight" id="ovTheme" type="button" aria-label="切换到浅色主题" aria-pressed="false">
@@ -77,7 +67,7 @@
               <span class="daynight-cloud daynight-cloud-a"></span>
               <span class="daynight-cloud daynight-cloud-b"></span>
             </span>
-            <span class="daynight-copy"><strong id="ovThemeLabel">夜间</strong><span>点击切换昼夜</span></span>
+            <span class="daynight-copy"><strong id="ovThemeLabel">夜间</strong></span>
           </button>
           <article class="overview-endpoint" aria-labelledby="ovEndpointTitle">
             <h3 id="ovEndpointTitle">本机 API</h3>
@@ -85,7 +75,6 @@
               <dt>Base URL</dt><dd><code id="ovBaseURL">—</code></dd>
               <dt>接口</dt><dd><code>Chat · Responses</code></dd>
             </dl>
-            <p class="hint">仅限本机 · 无需 API key</p>
           </article>
         </aside>
       </div>

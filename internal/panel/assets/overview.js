@@ -3,11 +3,23 @@ import { $, toast } from './common.js';
 
 const RING_RADIUS = 62;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+const RING_ANIMATION_MS = 320;
+const LEGEND_STAGGER_MS = 40;
+const THEME_WASH_MS = 470;
 const SEGMENTS = [
   { key: 'healthy', tone: 'good', label: '可用' },
   { key: 'cooling', tone: 'warn', label: '冷却' },
   { key: 'disabled', tone: 'bad', label: '禁用' },
 ];
+const LEGEND_KEYS = [
+  ['total', 'total', 'ovLegendTotal', 'ovBarTotal'],
+  ['healthy', 'healthy', 'ovLegendHealthy', 'ovBarHealthy'],
+  ['cooling', 'cooling', 'ovLegendCooling', 'ovBarCooling'],
+  ['disabled', 'disabled', 'ovLegendDisabled', 'ovBarDisabled'],
+];
+let ringTimer = 0;
+let themeWash = null;
+let themeWashTimer = 0;
 
 function safeCount(value) {
   const number = Number(value);
@@ -38,7 +50,9 @@ export function ringMarkup(data = {}) {
     const length = segment.share * RING_CIRCUMFERENCE;
     const circle = '<circle class="ring-segment ' + segment.tone + '" cx="80" cy="80" r="' + RING_RADIUS +
       '" stroke-dasharray="' + length.toFixed(3) + ' ' + (RING_CIRCUMFERENCE - length).toFixed(3) +
-      '" stroke-dashoffset="' + (-offset).toFixed(3) + '"></circle>';
+      '" stroke-dashoffset="' + (-offset).toFixed(3) +
+      '" style="--ring-len:' + length.toFixed(3) + ';--ring-gap:' + (RING_CIRCUMFERENCE - length).toFixed(3) +
+      ';--ring-circ:' + RING_CIRCUMFERENCE.toFixed(3) + '"></circle>';
     offset += length;
     return circle;
   }).join('');
@@ -56,20 +70,52 @@ function setText(id, value) {
   if (node) node.textContent = String(value);
 }
 
+function setPercent(id, value) {
+  const node = $(id);
+  if (node) node.style.setProperty('--pct', value.toFixed(2) + '%');
+}
+
+function motionAllowed() {
+  if (typeof document === 'undefined' || document.hidden) return false;
+  const target = $('view-overview') || document.documentElement;
+  if (target?.dataset?.motionMode === 'off') return false;
+  const query = typeof matchMedia === 'function' ? matchMedia('(prefers-reduced-motion: reduce)') : null;
+  return query?.matches !== true;
+}
+
+// 圆环进入动画：进入概览后首次 0 -> 目标值播放一次，320ms 后回到静态，避免常驻动画层。
+function playRingAnimation(segments) {
+  if (ringTimer) { clearTimeout(ringTimer); ringTimer = 0; }
+  const view = $('view-overview');
+  if (!segments || !segments.innerHTML) return;
+  if (!motionAllowed()) {
+    if (view) view.dataset.motion = 'off';
+    return;
+  }
+  if (view) view.dataset.motion = 'on';
+  ringTimer = setTimeout(() => {
+    ringTimer = 0;
+    if (view) view.dataset.motion = 'off';
+  }, RING_ANIMATION_MS + LEGEND_STAGGER_MS * 3);
+  ringTimer.unref?.();
+}
+
 function render(data = {}) {
   const counts = overviewCounts(data);
   setText('ovTotal', counts.total);
-  setText('ovLegendTotal', counts.total);
-  setText('ovLegendHealthy', counts.healthy);
-  setText('ovLegendCooling', counts.cooling);
-  setText('ovLegendDisabled', counts.disabled);
+  for (const [, valueKey, numberId, barId] of LEGEND_KEYS) {
+    const value = counts[valueKey];
+    setText(numberId, value);
+    setPercent(barId, counts.total ? value / counts.total * 100 : 0);
+  }
   setText('ovRingLabel', ringLabel(data));
   const segments = $('ovRingSegments');
-  if (segments) segments.innerHTML = ringMarkup(data);
+  if (segments) {
+    segments.innerHTML = ringMarkup(data);
+    playRingAnimation(segments);
+  }
   const status = $('ovStatus');
   if (status) status.textContent = counts.total ? '统计来自本机账号池' : '账号池为空';
-  const foot = $('ovFoot');
-  if (foot) foot.textContent = counts.total ? '计数为本机聚合值，不按分页计算。' : '添加账号后，这里会显示实时状态分布。';
   $('view-overview')?.toggleAttribute?.('data-empty', counts.total === 0);
 }
 
@@ -81,7 +127,6 @@ export function reflectOverviewStats(data = {}) {
 export function resetOverview() {
   render({});
   setText('ovStatus', '登录后读取概览');
-  setText('ovFoot', '登录后读取本机账号池统计。');
 }
 
 let themeBound = false;
@@ -107,6 +152,49 @@ async function saveTheme(next) {
   });
 }
 
+function washOrigin(button) {
+  const orb = button?.querySelector?.('.daynight-orb');
+  const rect = orb?.getBoundingClientRect?.() || button?.getBoundingClientRect?.();
+  const x = rect ? rect.left + rect.width / 2 : (globalThis.innerWidth || 0) / 2;
+  const y = rect ? rect.top + rect.height / 2 : (globalThis.innerHeight || 0) / 2;
+  return { x: Math.max(0, Math.round(x)), y: Math.max(0, Math.round(y)) };
+}
+
+// 昼夜切换：先铺一层目标主题色的遮罩（clip 半径 0），下一帧切换主题并向外扩散 470ms。
+function playThemeWash(button, next, commit) {
+  if (themeWashTimer) { clearTimeout(themeWashTimer); themeWashTimer = 0; }
+  if (themeWash) { themeWash.remove?.(); themeWash = null; }
+  const raf = globalThis.requestAnimationFrame;
+  if (!motionAllowed() || typeof raf !== 'function') { commit(); return false; }
+  const host = document.body;
+  if (!host?.appendChild) { commit(); return false; }
+  const layer = document.createElement('div');
+  layer.className = 'theme-wash to-' + next;
+  layer.setAttribute('aria-hidden', 'true');
+  const { x, y } = washOrigin(button);
+  layer.style.setProperty('--theme-x', x + 'px');
+  layer.style.setProperty('--theme-y', y + 'px');
+  host.appendChild(layer);
+  themeWash = layer;
+  raf(() => {
+    commit();
+    layer.classList.add('on');
+  });
+  themeWashTimer = setTimeout(() => {
+    themeWashTimer = 0;
+    layer.remove?.();
+    if (themeWash === layer) themeWash = null;
+  }, THEME_WASH_MS);
+  themeWashTimer.unref?.();
+  return true;
+}
+
+function applyThemeInstant(next) {
+  document.documentElement.dataset.theme = next;
+  reflectTheme(next);
+  document.dispatchEvent(new CustomEvent('panel:theme', { detail: { theme: next } }));
+}
+
 function bindTheme() {
   if (themeBound) return;
   themeBound = true;
@@ -115,9 +203,7 @@ function bindTheme() {
   button.onclick = async () => {
     if (savingTheme) return;
     const previous = effectiveTheme(), next = previous === 'dark' ? 'light' : 'dark';
-    document.documentElement.dataset.theme = next;
-    reflectTheme(next);
-    document.dispatchEvent(new CustomEvent('panel:theme', { detail: { theme: next } }));
+    playThemeWash(button, next, () => applyThemeInstant(next));
     if (!session.authenticated) return;
     savingTheme = true;
     button.disabled = true;
