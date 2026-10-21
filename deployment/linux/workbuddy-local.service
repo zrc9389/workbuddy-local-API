@@ -1,0 +1,49 @@
+# Manual template; installing this file does NOT grant permission to start it.
+[Unit]
+Description=WorkBuddy Local loopback-only gateway
+After=network.target
+StartLimitIntervalSec=60s
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=workbuddy-local
+Group=workbuddy-local
+WorkingDirectory=/opt/workbuddy-local
+ExecStart=/opt/workbuddy-local/deployment/linux/start.sh /etc/workbuddy-local/config.json
+UMask=0077
+Environment=GOMEMLIMIT=384MiB
+Environment=WB2A_AUTH_DIR=/var/lib/workbuddy-local/auths
+Environment=WB2A_STATE_FILE=/var/lib/workbuddy-local/state.json
+
+# SIGTERM main gateway first, leaving Mihomo alive while SSE drains.
+# HTTP (30s) + maintenance (30s) + Mihomo (10s) + flush margin.
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=yes
+TimeoutStopSec=120s
+Restart=on-failure
+RestartSec=5s
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/etc/workbuddy-local /var/lib/workbuddy-local
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Process/fd budgets, NOT a memory or data-durability guarantee.
+TasksMax=512
+LimitNOFILE=8192
+MemoryAccounting=true
+CPUWeight=100
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

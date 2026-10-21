@@ -1,0 +1,23 @@
+{
+  "os": "linux",
+  "arch": "x64",
+  "exit_code": 0,
+  "sampled_rss_peak_bytes": 322539520,
+  "sample_count": 427,
+  "elapsed_ms": 6503,
+  "GOMEMLIMIT": "384MiB",
+  "note": "Synthetic bytes1/4/8MiB,concurrency1/2/4/8; test harness included,NOT1M-token real upstream",
+  "matrix": {
+    "body_MiB": [
+      1,
+      4,
+      8
+    ],
+    "concurrency": [
+      1,
+      2,
+      4,
+      8
+    ]
+  }
+}

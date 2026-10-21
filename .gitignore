@@ -1,0 +1,63 @@
+# Auth & secrets
+auths/
+data/
+backups/
+config.json
+.env
+.env.*
+*.env
+*.key
+*.pem
+
+# Binaries (anchored to repo root only — bare "login"/"credit" would also ignore cmd/login/, cmd/credit/)
+/login
+/credit
+/wb2api
+/signin_bin
+/wb2api.exe
+/login.exe
+/credit.exe
+/server.exe
+/.d2b-check.exe
+/wb2api-stage
+/wb2api-linux-amd64-current
+/wb2api-linux-amd64-stage
+
+# Build artifacts
+*.tmp
+*.zip
+*.log
+__pycache__/
+/dist/
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+LOOP.md
+PLAN.md
+SPEC.md
+
+# Docs: only README/PROJECT_STATE and docs/**/*.md are tracked; docs images stay local
+*.md
+!README.md
+!PROJECT_STATE.md
+!docs/**/*.md
+!internal/prompt/defaultprompt.md
+docs/**/*.png
+docs/**/*.jpg
+
+# Local verification tools (judgement reverse-engineering, results live in data/desktop-task-protocol.md)
+/cmd/desktopverify*/
+/.qa/
+/.qa-*/
+/.qa-linux/
+/release/
+/demo-data/
+/.deploy-verify/
+.d2b-data/
+.d2b-shots/
+.d2b-shots/profile*/
+
+# Vendored meta package binaries
+/third_party/meta/bin/

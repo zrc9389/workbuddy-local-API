@@ -1,0 +1,28 @@
+auths/
+data/
+*.tmp
+.git/
+.gitignore
+docs/
+scripts/__pycache__/
+# 根目录已提交/未提交的二进制产物不进构建上下文（与 .gitignore 对齐）
+/login
+/credit
+/wb2api
+/signin_bin
+# 真实配置不进镜像（镜像默认用 config.example.json，生产以挂载卷覆盖）
+config.json
+PLAN.md
+SPEC.md
+LOOP.md
+README.md
+# Keep local QA/build/runtime trees and credentials out of image build context.
+/.qa*/
+/dist/
+/release/
+/demo-data/
+*.log
+*.test
+/third_party/meta/bin/windows-*/
+/third_party/meta/bin/**/*.gz
+/third_party/meta/bin/**/*.zip

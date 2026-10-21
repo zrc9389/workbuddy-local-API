@@ -1,0 +1,10 @@
+{
+  "platform": "linux",
+  "arch": "arm64",
+  "nonroot": 10001,
+  "tar_mode_checks": "passed",
+  "empty_pool": 0,
+  "bundled_core_available": true,
+  "theme_atomic_save": "passed",
+  "launcher_forced_loopback": true
+}

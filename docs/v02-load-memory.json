@@ -1,0 +1,21 @@
+{
+  "note": "Synthetic request bytes; NOT verified1M tokens. Includes test harness allocations.",
+  "sample_count": 218,
+  "matrix": {
+    "body_MiB": [
+      1,
+      4,
+      8
+    ],
+    "concurrency": [
+      1,
+      2,
+      4,
+      8
+    ]
+  },
+  "gOMEMLIMIT": "384MiB",
+  "elapsed_ms": 6747,
+  "exit_code": 0,
+  "sampled_working_set_peak_bytes": 410914816
+}

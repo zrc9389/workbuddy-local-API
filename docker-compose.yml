@@ -1,0 +1,49 @@
+# OPTIONAL: native Linux host-network deployment, manually reviewed/run only.
+# No public port publishing or bridge fallback. Never apply sysctl changes.
+services:
+  workbuddy-local:
+    image: workbuddy-local:linux-local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    network_mode: host
+    user: "10001:10001"
+    restart: "on-failure:3"
+    stop_signal: SIGTERM
+    stop_grace_period: 120s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: "${TZ:-UTC}"
+      GOMEMLIMIT: 384MiB
+      WB2A_LISTEN: 127.0.0.1:7863
+      WB2A_AUTH_DIR: /var/lib/workbuddy-local/auths
+      WB2A_STATE_FILE: /var/lib/workbuddy-local/state.json
+    volumes:
+      - type: bind
+        source: ./runtime/config
+        target: /etc/workbuddy-local
+        read_only: false
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./runtime/data
+        target: /var/lib/workbuddy-local
+        read_only: false
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=0700,uid=10001,gid=10001
+    pids_limit: 512
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,19 @@
+{
+  "listen": "127.0.0.1:7863",
+  "auth_dir": "/var/lib/workbuddy-local/auths",
+  "state_file": "/var/lib/workbuddy-local/state.json",
+  "server": { "read_timeout": "300s" },
+  "features": { "strict_context": true, "sanitize_blacklist_fingerprints": false },
+  "logging": { "enabled": false, "request_archive_enabled": false },
+  "memory": { "persistent": true, "max_entries": 128, "max_mb": 32, "ttl_hours": 24 },
+  "resources": { "max_concurrent": 2, "max_body_mb": 16, "max_heap_mb": 384 },
+  "schedule": {
+    "checkin_enabled": false,
+    "growth_enabled": false,
+    "travel_enabled": false,
+    "activity_enabled": false,
+    "keepalive_enabled": false,
+    "blackcat_enabled": false,
+    "balance_refresh_enabled": false
+  }
+}

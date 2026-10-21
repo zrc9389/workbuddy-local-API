@@ -1,0 +1,7 @@
+{
+  "arch": "amd64",
+  "logs": false,
+  "usage": "available",
+  "core_available": true,
+  "config_logging_flag": true
+}
