@@ -9,16 +9,15 @@ import { showModal, hideModal } from './modals.js';
 let requests = [], requestPage = 1;
 const outcomes = {success:'成功',http_error:'HTTP 错误',stream_error:'流错误',interrupted:'中断'};
 const errorCatalog = {
-  quota: {label:'额度或限流', detail:'状态码或上游错误提示显示额度不足/限流；现有事件没有独立额度字段，无法可靠区分这两种原因。'},
-  timeout: {label:'超时或冲突', detail:'状态码或上游错误提示显示超时或请求冲突。'},
-  auth: {label:'鉴权或权限', detail:'状态码或上游错误提示显示鉴权失败、无权限或账号不可用。'},
-  conflict: {label:'超时或冲突', detail:'状态码或上游错误提示显示请求冲突、并发占用或上游超时。'},
-  rate: {label:'限流或冷却', detail:'状态码或上游错误提示显示调用过于频繁或账号冷却。'},
-  server: {label:'上游或服务错误', detail:'状态码或上游错误提示显示服务端或上游异常。'},
+  quota: {label:'额度或限流'},
+  timeout: {label:'超时或冲突'},
+  auth: {label:'鉴权或权限'},
+  conflict: {label:'超时或冲突'},
+  rate: {label:'限流或冷却'},
+  server: {label:'上游或服务错误'},
 };
 
-// errorKind 只根据现有事件字段给出保守分类。Event 没有原始错误正文，
-// 因此这里的“额度”只是状态码层面的推断，详情弹窗会明确说明这一限制。
+// errorKind 只根据现有事件字段给出保守分类。
 export function errorKind(entry) {
   if (entry && entry.error_kind) return entry.error_kind;
   const status = Number(entry && entry.status) || 0;
@@ -72,10 +71,7 @@ function detailRow(label, value) {
 export function requestDetailHtml(entry) {
   if (!entry) return '<p class="empty">记录不存在</p>';
   const tokens = Number(entry.total_tokens) || Number(entry.prompt_tokens || 0) + Number(entry.completion_tokens || 0);
-  const kind = errorKind(entry);
-  const hint = (errorCatalog[kind] || {}).detail || '';
   return '<div class="card-heading"><div><p class="eyebrow">ERROR / DETAIL</p><h3>' + esc(entry.model || '未知模型') + '</h3></div><span class="tag ' + errorTone(entry) + '">' + esc(errorLabel(entry)) + '</span></div>' +
-    (hint ? '<p class="hint">' + esc(hint) + '</p>' : '') +
     '<dl class="mini-metrics">' +
       detailRow('时间', timeText(entry)) + detailRow('HTTP 状态', entry.status == null ? '—' : String(entry.status)) +
       detailRow('结果', outcomes[entry.outcome] || entry.outcome || '—') + detailRow('请求路径', entry.path) +
@@ -129,7 +125,7 @@ function render() {
   bindRequestDetail();
   $('reqBody').innerHTML=req.rows.map((entry,index)=>requestCard(entry,offset+index)).join('')||'<div class="empty">暂无错误记录</div>';
   $('reqPages').innerHTML=pagerHTML(req,'requests');
-  $('reqCount').textContent=requests.length ? requests.length+' 条错误 · 最长保留 24 小时' : '';
+  $('reqCount').textContent=requests.length ? requests.length+' 条错误' : '';
 }
 
 export async function loadLogs() {

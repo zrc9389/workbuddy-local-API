@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {setupDOM, mockAPI} from './frontend_helpers_test.mjs';
 
 const dom = setupDOM(), $ = dom.$;
@@ -39,7 +40,7 @@ test('error list stays compact and opens details on demand', async () => {
   assert.match(detail, /private-account/);
   assert.match(detail, /req-private/);
   assert.match(detail, /203\.0\.113\.7/);
-  assert.match(detail, /现有事件没有独立额度字段/);
+  assert.doesNotMatch(detail, /class="hint"/);
   assert.equal($('reqDetailVeil').classes.has('on'), true);
 });
 
@@ -64,7 +65,8 @@ test('details escape untrusted fields and success rows are filtered from the arc
   assert.doesNotMatch($('reqBody').innerHTML, /disk-ok|mem-success/);
   assert.match($('reqBody').innerHTML, /502/);
   assert.doesNotMatch($('reqBody').innerHTML, /disk-fail/);
-  assert.match($('reqCount').textContent, /最长保留 24 小时/);
+  assert.match($('reqCount').textContent, /^1 条错误$/);
+  assert.doesNotMatch($('reqCount').textContent, /最长保留 24 小时/);
 });
 
 test('summary fetch is used for the list and detail is fetched by stable id on click', async () => {
@@ -92,8 +94,8 @@ test('summary fetch is used for the list and detail is fetched by stable id on c
   assert.doesNotMatch(list, /a{32}/);
   assert.doesNotMatch(list, /req-private|private-account|203\.0\.113\.7/);
   assert.ok(!calls.some(c => /\/panel\/api\/logs(\?|$)/.test(c.url)), 'error page must not read system logs');
-  assert.equal($('logBox').innerHTML, '');
-  assert.equal($('logNote').textContent, '');
+  const page = readFileSync(new URL('index.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(page, /id="logBox"|id="logNote"|id="reqSummary"|id="reqNote"|id="usNote"/);
   dom.nodes.get('reqBody').listeners.get('click')[0]({target:{closest:()=>({dataset:{errorIndex:'0'}})}});
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(calls.some(c => c.url.includes('/request_logs?id=' + 'a'.repeat(32))), 'detail must be fetched by id');

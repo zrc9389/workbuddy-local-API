@@ -15,7 +15,7 @@ export function modelProbeLabel(model,probe) {
 }
 export function modelRateHTML(model) {
   const value = model.promo_credits != null && String(model.promo_credits) !== '' ? model.promo_credits : model.credits;
-  return '<span>' + esc(value ?? '—') + (model.promo_label?' · '+esc(model.promo_label):'') + (model.promo_note?'<small class="hint"> '+esc(model.promo_note)+'</small>':'') + '</span>';
+  return '<span>' + esc(value ?? '—') + (model.promo_label?' · '+esc(model.promo_label):'') + '</span>';
 }
 // 固定档位顺序：off → low → medium → high → xhigh → max → ultra；未声明的未知档位按原顺序追加末尾。
 export function orderedEfforts(model) {
