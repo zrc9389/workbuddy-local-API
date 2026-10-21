@@ -24,9 +24,13 @@ type Step struct {
 	Accounts  []AccountResult `json:"accounts"`
 }
 type Status struct {
-	RunID   string `json:"run_id"`
-	Running bool   `json:"running"`
-	Steps   []Step `json:"steps"`
+	RunID          string `json:"run_id"`
+	Running        bool   `json:"running"`
+	LastRunAt      string `json:"last_run_at"`
+	LastFinishedAt string `json:"last_finished_at"`
+	LastResult     string `json:"last_result"`
+	LastFailed     int    `json:"last_failed"`
+	Steps          []Step `json:"steps"`
 }
 type Service struct {
 	mu     sync.Mutex
@@ -58,7 +62,14 @@ func (s *Service) Start() bool {
 	if s.state.Running || s.ctx.Err() != nil {
 		return false
 	}
-	s.state = Status{RunID: fmt.Sprintf("maintenance-%d", time.Now().UnixNano()), Running: true}
+	s.state = Status{
+		RunID:          fmt.Sprintf("maintenance-%d", time.Now().UnixNano()),
+		Running:        true,
+		LastRunAt:      time.Now().Format(time.RFC3339),
+		LastFinishedAt: s.state.LastFinishedAt,
+		LastResult:     s.state.LastResult,
+		LastFailed:     s.state.LastFailed,
+	}
 	for _, n := range []string{"token", "checkin", "activity", "travel"} {
 		s.state.Steps = append(s.state.Steps, Step{Name: n, State: "pending", Accounts: []AccountResult{}})
 	}
@@ -68,7 +79,30 @@ func (s *Service) Start() bool {
 }
 func (s *Service) run(done chan struct{}) {
 	defer close(done)
-	defer func() { s.mu.Lock(); s.state.Running = false; s.mu.Unlock() }()
+	defer func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.state.Running = false
+		s.state.LastFinishedAt = time.Now().Format(time.RFC3339)
+		s.state.LastFailed = 0
+		completed := 0
+		cancelled := false
+		for _, st := range s.state.Steps {
+			s.state.LastFailed += st.Failed
+			completed += st.Completed
+			if st.State == "cancelled" {
+				cancelled = true
+			}
+		}
+		switch {
+		case s.state.LastFailed == 0 && !cancelled:
+			s.state.LastResult = "ok"
+		case completed > 0:
+			s.state.LastResult = "partial"
+		default:
+			s.state.LastResult = "failed"
+		}
+	}()
 	accts := s.p.List()
 	for i, name := range []string{"token", "checkin", "activity", "travel"} {
 		s.mu.Lock()
