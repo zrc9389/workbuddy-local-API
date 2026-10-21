@@ -1,4 +1,5 @@
 import { session, cancelReads } from './api.js';
+import { startAmbient, stopAmbient } from './ambient.js';
 const timers = new Set();
 const pageCleanups = new Set();
 let viewCleanups = new Set();
@@ -65,6 +66,24 @@ function runViewCleanups(permanent) {
 }
 export function clearViewCleanups() { runViewCleanups(true); }
 export function pauseViewResources() { runViewCleanups(false); }
+// Shell-level animation switch. Batch 0 freezes this contract: paused writes
+// `data-paused="true"` on <html> (CSS reads it) and stops the ambient rAF.
+let animationsPaused = false;
+export function setAnimationsPaused(paused) {
+  animationsPaused = !!paused;
+  const root = document.documentElement;
+  if (animationsPaused) root.dataset.paused = 'true';
+  else delete root.dataset.paused;
+  if (animationsPaused) stopAmbient(); else startAmbient();
+}
+export function isAnimationsPaused() { return animationsPaused; }
+// theme.js also writes data-paused on visibilitychange; re-apply the shell
+// contract afterwards so a user pause is not cleared when the page returns.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !animationsPaused) return;
+  document.documentElement.dataset.paused = 'true';
+  stopAmbient();
+});
 let pageStopped = false;
 function stopPage() {
   if (pageStopped) return;
