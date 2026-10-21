@@ -53,6 +53,7 @@ func TestCSPDisallowsInlineScriptAndFraming(t *testing.T) {
 
 	for _, must := range []string{
 		"script-src 'self'",
+		"font-src 'self'",
 		"frame-ancestors 'none'",
 		"base-uri 'none'",
 		"default-src 'none'",
@@ -63,6 +64,16 @@ func TestCSPDisallowsInlineScriptAndFraming(t *testing.T) {
 	}
 	if strings.Contains(csp, "script-src 'self' 'unsafe-inline'") || strings.Contains(csp, "script-src 'unsafe-inline'") {
 		t.Errorf("CSP must not allow unsafe-inline scripts; got: %s", csp)
+	}
+	// 反例保护：字体只能同源，不得引入外域或泛化来源，也不得放开 eval。
+	for _, forbidden := range []string{
+		"font-src *",
+		"https://fonts.gstatic.com",
+		"unsafe-eval",
+	} {
+		if strings.Contains(csp, forbidden) {
+			t.Errorf("CSP must not contain %q; got: %s", forbidden, csp)
+		}
 	}
 }
 
