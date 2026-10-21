@@ -1,54 +1,23 @@
+import { session } from './api.js';
+
 const AI_NAMES = ['GPT', 'Claude', 'Gemini', 'DeepSeek', 'Qwen', 'Kimi', 'GLM'];
 const ANIMATION_STYLES = ['names', 'orbital', 'scan', 'minimal'];
 const TARGET_MS = 8000;
-const HARD_LIMIT_MS = 10000;
+const HARD_LIMIT_MS = 12000;
 const PREVIEW_MS = 3200;
 const PREVIEW_HARD_LIMIT_MS = 4200;
-const NAME_INTERVAL_MS = 1100;
-const FADE_MS = 280;
-const STYLE_ID = 'wbStartupStyle';
-const STYLE = `
-.wb-startup{position:fixed;inset:0;z-index:60;display:grid;place-items:center;overflow:hidden;color:#f4ede7;background:radial-gradient(ellipse at 50% 40%,rgba(212,119,86,.18),transparent 55%),#17120f;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
-.wb-startup[hidden]{display:none}
-.wb-startup-glow{position:absolute;width:min(62vw,560px);aspect-ratio:1;border-radius:50%;background:radial-gradient(circle,rgba(212,119,86,.24),transparent 68%);filter:blur(18px);opacity:.85}
-.wb-startup-stage{position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;padding:28px}
-.wb-startup-ring{position:relative;width:82px;height:82px;margin-bottom:34px}
-.wb-startup-ring::before,.wb-startup-ring::after{content:"";position:absolute;inset:0;border-radius:50%;border:1px solid rgba(244,237,231,.16)}
-.wb-startup-ring::after{inset:10px;border-color:rgba(212,119,86,.68);border-top-color:transparent;animation:wb-startup-turn 2s linear infinite}
-.wb-startup-name{min-height:1.16em;font-size:clamp(36px,7vw,66px);line-height:1.1;font-weight:560;letter-spacing:-.045em;transition:opacity .28s ease,transform .28s ease}
-.wb-startup-name.is-fading{opacity:0;transform:translateY(-5px)}
-.wb-startup-phase{margin-top:18px;color:rgba(244,237,231,.6);font-size:11px;letter-spacing:.15em;text-transform:uppercase;transition:opacity .28s ease}
-.wb-startup[data-style="minimal"] .wb-startup-glow{opacity:.32;filter:blur(34px)}
-.wb-startup[data-style="minimal"] .wb-startup-ring{width:34px;height:34px;margin-bottom:26px}
-.wb-startup[data-style="minimal"] .wb-startup-ring::before{border-color:rgba(244,237,231,.12)}
-.wb-startup[data-style="minimal"] .wb-startup-name{font-size:clamp(22px,3.3vw,34px);font-weight:480;letter-spacing:-.02em}
-.wb-startup[data-style="orbital"] .wb-startup-ring{width:184px;height:184px}
-.wb-startup[data-style="orbital"] .wb-startup-ring::before{inset:0;border-color:rgba(244,237,231,.1);animation:wb-startup-pulse 2.8s ease-in-out infinite}
-.wb-startup[data-style="orbital"] .wb-startup-ring::after{inset:0;border:1px dashed rgba(212,119,86,.5);border-top-color:transparent;animation:wb-startup-turn 8s linear infinite}
-.wb-startup[data-style="orbital"] .wb-startup-name{font-size:clamp(30px,5vw,48px)}
-.wb-startup-orbit{position:absolute;inset:0;border-radius:50%;pointer-events:none}
-.wb-startup:not([data-style="orbital"]) .wb-startup-orbit{display:none}
-.wb-startup-orbit span{position:absolute;top:50%;left:50%;width:9px;height:9px;margin:-4.5px;border-radius:50%;background:#e8a279;box-shadow:0 0 16px rgba(212,119,86,.9);transform:rotate(var(--a)) translateX(calc(var(--r) * 1px))}
-.wb-startup-orbit span:nth-child(2n){background:#f4ede7;width:5px;height:5px;margin:-2.5px;opacity:.7}
-.wb-startup[data-style="scan"] .wb-startup-glow{opacity:.4;width:min(82vw,760px);border-radius:12%;background:linear-gradient(90deg,transparent,rgba(212,119,86,.24),transparent);aspect-ratio:auto;height:44px;top:50%;margin-top:-22px;filter:blur(20px)}
-.wb-startup[data-style="scan"] .wb-startup-ring{width:52px;height:52px;margin-bottom:30px}
-.wb-startup-scanline{position:absolute;left:0;right:0;top:0;height:1px;background:linear-gradient(90deg,transparent,rgba(244,237,231,.9),transparent);box-shadow:0 0 24px 3px rgba(212,119,86,.55);animation:wb-startup-scan 2.2s cubic-bezier(.45,0,.25,1) infinite}
-.wb-startup:not([data-style="scan"]) .wb-startup-scanline{display:none}
-.wb-startup[data-style="scan"] .wb-startup-name{font-size:clamp(28px,5vw,50px);text-shadow:0 0 34px rgba(212,119,86,.35)}
-.wb-startup-preview{bottom:auto;top:auto;height:min(64vh,520px);border-radius:24px;box-shadow:0 34px 90px rgba(0,0,0,.45);border:1px solid rgba(244,237,231,.14)}
-.wb-startup-preview .wb-startup-stage{transform:scale(.92)}
-@keyframes wb-startup-turn{to{transform:rotate(360deg)}}
-@keyframes wb-startup-pulse{0%,100%{transform:scale(.92);opacity:.35}50%{transform:scale(1.06);opacity:.7}}
-@keyframes wb-startup-scan{0%{transform:translateY(0);opacity:0}12%{opacity:1}88%{opacity:1}100%{transform:translateY(min(64vh,520px));opacity:0}}
-@media (prefers-reduced-motion:reduce){.wb-startup-ring::after,.wb-startup-scanline,.wb-startup-orbit span{animation:none}.wb-startup-name,.wb-startup-phase{transition:none}}
-`;
+const NAME_INTERVAL_MS = 1000;
+const FADE_MS = 180;
+const EXIT_MS = 360;
+const TICK_MS = 100;
+const SVG_NS = 'http://www.w3.org/2000/svg';
 
-function mountStyle() {
-  if (document.getElementById(STYLE_ID)) return;
-  const style = document.createElement('style');
-  style.id = STYLE_ID;
-  style.textContent = STYLE;
-  (document.head || document.body || document.documentElement).appendChild(style);
+function reduceMotion() {
+  try {
+    return !!globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+  } catch {
+    return false;
+  }
 }
 
 function node(tag, className, text) {
@@ -58,10 +27,25 @@ function node(tag, className, text) {
   return element;
 }
 
-function removeElement(element) {
+function svgNode(tag, className) {
+  const element = document.createElementNS ? document.createElementNS(SVG_NS, tag) : node('div', className);
+  element.setAttribute?.('class', className);
+  return element;
+}
+
+function clearChildren(element) {
+  element.textContent = '';
+  if (Array.isArray(element.children)) element.children.length = 0;
+}
+
+function removeElement(element, host) {
   if (!element) return;
   element.remove?.();
-  if (element.parentNode) element.parentNode.removeChild(element);
+  if (element.parentNode?.removeChild) element.parentNode.removeChild(element);
+  if (Array.isArray(host?.children)) {
+    const index = host.children.indexOf(element);
+    if (index >= 0) host.children.splice(index, 1);
+  }
 }
 
 export function normalizeAnimationStyle(value) {
@@ -77,6 +61,56 @@ function phaseText(style, syncing) {
   return 'Waking the workspace';
 }
 
+function curtainLayer() {
+  const svg = svgNode('svg', 'wb-startup-curtain');
+  svg.setAttribute?.('viewBox', '0 0 100 100');
+  svg.setAttribute?.('preserveAspectRatio', 'none');
+  svg.setAttribute?.('aria-hidden', 'true');
+  const path = svgNode('path', 'wb-startup-curtain-path');
+  path.setAttribute?.('d', 'M0 20 Q50 2 100 20 L100 100 L0 100 Z');
+  svg.appendChild(path);
+  return svg;
+}
+
+function shutterLayer() {
+  const shutters = node('div', 'wb-startup-shutters');
+  shutters.setAttribute('aria-hidden', 'true');
+  for (let index = 0; index < 5; index++) {
+    const column = node('span', 'wb-startup-shutter');
+    column.style?.setProperty?.('--i', String(index));
+    shutters.appendChild(column);
+  }
+  return shutters;
+}
+
+function gateLayer() {
+  const gate = node('div', 'wb-startup-gate');
+  gate.setAttribute('aria-hidden', 'true');
+  gate.appendChild(node('span', 'wb-startup-gate-half is-top'));
+  gate.appendChild(node('span', 'wb-startup-gate-half is-bottom'));
+  gate.appendChild(node('span', 'wb-startup-gate-seam'));
+  return gate;
+}
+
+function beamLayer() {
+  const beam = node('div', 'wb-startup-beam');
+  beam.setAttribute('aria-hidden', 'true');
+  return beam;
+}
+
+function buildFx(container, style) {
+  clearChildren(container);
+  if (style === 'names') {
+    container.appendChild(shutterLayer());
+    container.appendChild(gateLayer());
+  } else if (style === 'scan') {
+    container.appendChild(shutterLayer());
+    container.appendChild(beamLayer());
+  } else if (style === 'orbital') {
+    container.appendChild(shutterLayer());
+  }
+}
+
 export function startStartupAnimation(options = {}) {
   const onFinish = typeof options.onFinish === 'function' ? options.onFinish : () => {};
   const style = normalizeAnimationStyle(options.style ?? options.animationStyle);
@@ -88,10 +122,34 @@ export function startStartupAnimation(options = {}) {
   const cancelSchedule = options.cancelSchedule || clearTimeout;
   const cancelRepeat = options.cancelRepeat || clearInterval;
   const host = options.host && typeof options.host.appendChild === 'function' ? options.host : null;
+  const exitMs = Number.isFinite(options.exitMs) ? Math.max(0, options.exitMs) : EXIT_MS;
+  const reduced = reduceMotion();
+
+  if (reduced) {
+    // 减少动画：直接给出静态品牌，绝不创建遮罩层，也绝不遮挡登录/概览。
+    let done = false;
+    const settle = () => { if (done) return; done = true; onFinish(); };
+    return {
+      root: null,
+      style,
+      preview,
+      reduced: true,
+      setStyle: value => normalizeAnimationStyle(value),
+      setPhase: () => {},
+      finish: settle,
+      destroy: settle,
+      finished: () => done,
+    };
+  }
+
+  const parent = host || document.body || document.documentElement;
   const previous = (!preview && !host) ? document.getElementById('wbStartup') : null;
-  if (previous) removeElement(previous);
-  const reduced = !!globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  mountStyle();
+  if (previous) removeElement(previous, previous.parentNode || parent);
+
+  const shell = document.querySelector?.('.shell') || null;
+  const shellWasInert = !!shell?.inert;
+  if (!preview && shell) shell.inert = true;
+
   const root = node('div', preview ? 'wb-startup wb-startup-preview' : 'wb-startup');
   if (!preview && !host) root.id = 'wbStartup';
   if (preview) root.id = 'wbStartupPreview';
@@ -100,125 +158,239 @@ export function startStartupAnimation(options = {}) {
   root.setAttribute('role', 'status');
   root.setAttribute('aria-live', 'polite');
   root.setAttribute('aria-label', preview ? '启动动画预览' : '正在启动工作台');
+  root.style?.setProperty?.('--wb-duration', String(Math.max(0, targetMs)) + 'ms');
+
+  const noise = node('div', 'wb-startup-noise');
+  noise.setAttribute('aria-hidden', 'true');
   const glow = node('div', 'wb-startup-glow');
   glow.setAttribute('aria-hidden', 'true');
+  const fx = node('div', 'wb-startup-fx');
+  fx.setAttribute('aria-hidden', 'true');
+  buildFx(fx, style);
+
   const stage = node('div', 'wb-startup-stage');
+  const brand = node('p', 'wb-startup-brand', 'W·');
+  brand.setAttribute('aria-hidden', 'true');
   const ring = node('div', 'wb-startup-ring');
   ring.setAttribute('aria-hidden', 'true');
-  const name = node('p', 'wb-startup-name', AI_NAMES[0]);
-  const phase = node('p', 'wb-startup-phase', phaseText(style, false));
-  stage.appendChild(ring);
-  stage.appendChild(name);
-  stage.appendChild(phase);
-  root.appendChild(glow);
-  root.appendChild(stage);
   const orbit = node('div', 'wb-startup-orbit');
   const dots = preview ? 10 : 18;
   for (let index = 0; index < dots; index++) {
     const dot = node('span');
     dot.style?.setProperty?.('--a', (index * 360 / dots) + 'deg');
-    dot.style?.setProperty?.('--r', String(64 + (index % 3) * 11));
+    dot.style?.setProperty?.('--r', String(52 + (index % 3) * 9));
+    dot.style?.setProperty?.('--d', String((index % 6) * 60) + 'ms');
     orbit.appendChild(dot);
   }
   ring.appendChild(orbit);
-  const scanline = node('div', 'wb-startup-scanline');
-  scanline.setAttribute('aria-hidden', 'true');
-  stage.appendChild(scanline);
-  (host || document.body || document.documentElement).appendChild(root);
+  const name = node('p', 'wb-startup-name', AI_NAMES[0]);
+  const tagline = node('p', 'wb-startup-tagline', 'Workspace online');
+  const phase = node('p', 'wb-startup-phase', phaseText(style, false));
+  stage.appendChild(brand);
+  stage.appendChild(ring);
+  stage.appendChild(name);
+  stage.appendChild(tagline);
+  stage.appendChild(phase);
 
+  const footer = node('div', 'wb-startup-footer');
+  const meta = node('div', 'wb-startup-meta');
+  meta.appendChild(node('span', 'wb-startup-meta-mark', 'WorkBuddy'));
+  meta.appendChild(node('span', 'wb-startup-meta-hint', 'Local workspace'));
+  const readout = node('div', 'wb-startup-readout');
+  const track = node('div', 'wb-startup-progress');
+  track.appendChild(node('div', 'wb-startup-progress-fill'));
+  const counter = node('p', 'wb-startup-count');
+  counter.setAttribute('aria-hidden', 'true');
+  const counterValue = node('span', 'wb-startup-count-value', '00');
+  counter.appendChild(counterValue);
+  counter.appendChild(node('span', 'wb-startup-count-unit', '%'));
+  readout.appendChild(track);
+  readout.appendChild(counter);
+  footer.appendChild(meta);
+  footer.appendChild(readout);
+
+  const curtain = curtainLayer();
+  const decorations = [glow, curtain, fx];
+  root.appendChild(noise);
+  if (style !== 'minimal') decorations.forEach(layer => root.appendChild(layer));
+  root.appendChild(stage);
+  root.appendChild(footer);
+
+  function syncDecorations(next) {
+    if (next === 'minimal') {
+      decorations.forEach(layer => removeElement(layer, root));
+      return;
+    }
+    for (const layer of decorations) {
+      if (layer.parentNode || root.children?.includes?.(layer)) continue;
+      if (root.insertBefore) root.insertBefore(layer, stage);
+      else root.appendChild(layer);
+    }
+  }
+  parent.appendChild(root);
+
+  const startedAt = Date.now();
+  let finished = false;
+  let notified = false;
+  let released = false;
+  let paused = !!document.hidden;
+  let hiddenAt = paused ? startedAt : 0;
+  let hiddenTotal = 0;
   let nameIndex = 0;
-  let nameTimer = null;
+  let lastPercent = -1;
+  let nextNameAt = NAME_INTERVAL_MS;
+  let tickTimer = null;
   let fadeTimer = null;
   let targetTimer = null;
   let hardTimer = null;
-  let finished = false;
-  let paused = false;
-  let phaseName = 'idle';
+  let exitTimer = null;
+  let phaseName = 'names';
+
+  if (paused) root.classList.add('is-paused');
 
   function clearTimers() {
-    if (nameTimer !== null) cancelRepeat(nameTimer);
-    if (fadeTimer !== null) cancelSchedule(fadeTimer);
-    if (targetTimer !== null) cancelSchedule(targetTimer);
-    if (hardTimer !== null) cancelSchedule(hardTimer);
-    nameTimer = fadeTimer = targetTimer = hardTimer = null;
+    if (tickTimer !== null) { cancelRepeat(tickTimer); tickTimer = null; }
+    if (fadeTimer !== null) { cancelSchedule(fadeTimer); fadeTimer = null; }
+    if (targetTimer !== null) { cancelSchedule(targetTimer); targetTimer = null; }
+    if (hardTimer !== null) { cancelSchedule(hardTimer); hardTimer = null; }
+    if (exitTimer !== null) { cancelSchedule(exitTimer); exitTimer = null; }
   }
 
-  function teardown() {
-    if (finished) return;
-    finished = true;
+  function restoreShell() {
+    if (!shell) return;
+    shell.inert = session.authenticated ? shellWasInert : true;
+  }
+
+  function release() {
+    if (released) return;
+    released = true;
     clearTimers();
     document.removeEventListener('visibilitychange', onVisibility);
-    removeElement(root);
+    globalThis.removeEventListener?.('pagehide', onPageHide);
+    removeElement(root, parent);
+  }
+
+  function notify() {
+    if (notified) return;
+    notified = true;
+    restoreShell();
     onFinish();
   }
 
-  function finish() { teardown(); }
-  function destroy() { teardown(); }
+  function dismiss(graceful) {
+    if (finished) return;
+    finished = true;
+    if (tickTimer !== null) { cancelRepeat(tickTimer); tickTimer = null; }
+    if (fadeTimer !== null) { cancelSchedule(fadeTimer); fadeTimer = null; }
+    if (targetTimer !== null) { cancelSchedule(targetTimer); targetTimer = null; }
+    if (hardTimer !== null) { cancelSchedule(hardTimer); hardTimer = null; }
+    notify();
+    if (!graceful || exitMs === 0) { release(); return; }
+    root.classList.add('is-leaving');
+    exitTimer = schedule(() => {
+      exitTimer = null;
+      release();
+    }, exitMs);
+  }
+
+  function finish() { dismiss(true); }
+
+  function destroy() {
+    // 契约要求 destroy() 同步无残留；主链路的 360ms 退场由 syncing 相位驱动。
+    if (released) return;
+    if (finished) { release(); return; }
+    dismiss(false);
+  }
 
   function setPhase(value) {
     if (finished) return;
     phaseName = value === 'syncing' ? 'syncing' : 'names';
     root.dataset.phase = phaseName;
     phase.textContent = phaseText(root.dataset.style, phaseName === 'syncing');
+    if (phaseName === 'syncing' && root.dataset.style === 'names') root.classList.add('is-gate');
   }
 
   function setStyle(value) {
-    if (finished) return;
+    if (finished) return style;
     const next = normalizeAnimationStyle(value);
     root.dataset.style = next;
+    buildFx(fx, next);
+    syncDecorations(next);
     phase.textContent = phaseText(next, phaseName === 'syncing');
-    syncMotion(next);
+    if (next === 'names' && phaseName === 'syncing') root.classList.add('is-gate');
     return next;
   }
 
-  function onVisibility() {
-    if (document.hidden) {
-      paused = true;
-      if (nameTimer !== null) { cancelRepeat(nameTimer); nameTimer = null; }
-      if (fadeTimer !== null) { cancelSchedule(fadeTimer); fadeTimer = null; }
-      name.classList.remove('is-fading');
-      return;
-    }
-    if (paused && !finished && !reduced && nameTimer === null && needsNameCycle() && !options.staticName) resumeNames();
-    paused = false;
+  function elapsedNow() {
+    const now = Date.now();
+    const hidden = paused ? Math.max(0, now - hiddenAt) : 0;
+    return Math.max(0, now - startedAt - hiddenTotal - hidden);
   }
 
-  function resumeNames() {
-    if (nameTimer !== null) return;
-    nameTimer = repeat(() => {
-      nameIndex = (nameIndex + 1) % AI_NAMES.length;
-      name.classList.add('is-fading');
-      fadeTimer = schedule(() => {
-        fadeTimer = null;
-        if (finished) return;
-        name.textContent = AI_NAMES[nameIndex];
-        name.classList.remove('is-fading');
-      }, FADE_MS);
-    }, NAME_INTERVAL_MS);
+  function rotateName() {
+    if (finished || paused || options.staticName || root.dataset.style === 'minimal') return;
+    nameIndex = (nameIndex + 1) % AI_NAMES.length;
+    name.classList.add('is-fading');
+    fadeTimer = schedule(() => {
+      fadeTimer = null;
+      if (finished || paused) return;
+      name.textContent = AI_NAMES[nameIndex];
+      name.classList.remove('is-fading');
+    }, FADE_MS);
   }
-  function syncMotion(value) {
-    const motionStyle = value === undefined ? root.dataset.style : normalizeAnimationStyle(value);
-    if (motionStyle === 'orbital' || motionStyle === 'scan') {
-      if (nameTimer !== null) { cancelRepeat(nameTimer); nameTimer = null; }
+
+  function tick() {
+    if (finished || paused) return;
+    const elapsed = elapsedNow();
+    const percent = Math.max(0, Math.min(100, Math.floor((elapsed / Math.max(1, targetMs)) * 100)));
+    if (percent !== lastPercent) {
+      lastPercent = percent;
+      counterValue.textContent = percent < 10 ? '0' + percent : String(percent);
+    }
+    if (elapsed >= nextNameAt) {
+      nextNameAt = elapsed + NAME_INTERVAL_MS;
+      rotateName();
+    }
+  }
+
+  function startTicking() {
+    if (tickTimer !== null || finished) return;
+    tickTimer = repeat(tick, TICK_MS);
+  }
+
+  function onVisibility() {
+    if (finished) return;
+    if (document.hidden) {
+      if (!paused) { paused = true; hiddenAt = Date.now(); }
+      if (tickTimer !== null) { cancelRepeat(tickTimer); tickTimer = null; }
       if (fadeTimer !== null) { cancelSchedule(fadeTimer); fadeTimer = null; }
       name.classList.remove('is-fading');
-      name.textContent = AI_NAMES[nameIndex];
+      root.classList.add('is-paused');
       return;
     }
-    if (!reduced && !document.hidden) resumeNames();
+    if (paused) {
+      hiddenTotal += Math.max(0, Date.now() - hiddenAt);
+      hiddenAt = 0;
+      paused = false;
+    }
+    root.classList.remove('is-paused');
+    startTicking();
+    tick();
   }
-  function needsNameCycle() {
-    return root.dataset.style !== 'orbital' && root.dataset.style !== 'scan';
+
+  function onPageHide() {
+    destroy();
   }
+
   document.addEventListener('visibilitychange', onVisibility);
-  setPhase('running');
-  if (!reduced && !document.hidden) resumeNames();
-  syncMotion(style);
+  globalThis.addEventListener?.('pagehide', onPageHide);
+  if (!paused) startTicking();
   targetTimer = schedule(() => {
     targetTimer = null;
     if (!finished) setPhase('syncing');
   }, targetMs);
-  if (hardLimitMs > 0) hardTimer = schedule(finish, hardLimitMs);
+  if (hardLimitMs > 0) hardTimer = schedule(() => { hardTimer = null; destroy(); }, hardLimitMs);
+
   return { root, style, preview, setStyle, setPhase, finish, destroy, finished: () => finished };
 }
 

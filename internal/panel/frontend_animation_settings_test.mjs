@@ -20,10 +20,24 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function descendants(element, found = []) {
+  for (const child of element?.children || []) {
+    found.push(child);
+    descendants(child, found);
+  }
+  return found;
+}
+
+function classesOf(player) {
+  return descendants(player.root).map(el => String(el.className || ''));
+}
+
 test('four animation styles share one lifecycle and expose distinct visuals', () => {
   const seen = [];
+  const visuals = {};
   for (const style of animation.ANIMATION_STYLES) {
     const player = animation.startStartupAnimation({ style, targetMs: 50, hardLimitMs: 60 });
+    visuals[style] = classesOf(player);
     seen.push(style);
     assert.equal(player.style, style);
     assert.equal(player.root.dataset.style, style);
@@ -37,9 +51,38 @@ test('four animation styles share one lifecycle and expose distinct visuals', ()
     assert.equal(document.getElementById('wbStartup'), null);
   }
   assert.deepEqual(seen, ['names', 'orbital', 'scan', 'minimal']);
+  assert.ok(visuals.names.includes('wb-startup-gate-seam'), 'names adds the center light gate');
+  assert.equal(visuals.names.filter(name => name === 'wb-startup-shutter').length, 5);
+  assert.ok(visuals.orbital.includes('wb-startup-orbit'), 'orbital aggregates particles');
+  assert.equal(visuals.orbital.includes('wb-startup-gate-seam'), false);
+  assert.ok(visuals.scan.includes('wb-startup-beam'), 'scan sweeps a light band');
+  assert.equal(visuals.scan.includes('wb-startup-gate-seam'), false);
+  assert.ok(visuals.minimal.includes('wb-startup-brand'));
+  for (const decoration of ['wb-startup-shutter', 'wb-startup-gate-seam', 'wb-startup-beam', 'wb-startup-curtain-path']) {
+    assert.equal(visuals.minimal.includes(decoration), false, 'minimal stays a static brand mark: ' + decoration);
+  }
+  for (const style of ['names', 'orbital', 'scan']) {
+    assert.ok(visuals[style].includes('wb-startup-progress-fill'), style + ' keeps the 1px progress bar');
+    assert.ok(visuals[style].includes('wb-startup-count'), style + ' keeps the counter readout');
+  }
   assert.equal(animation.normalizeAnimationStyle('ORBITAL'), 'orbital');
   assert.equal(animation.normalizeAnimationStyle('unknown'), 'names');
   assert.equal(animation.normalizeAnimationStyle(undefined), 'names');
+});
+
+test('startup animation honors 8s target and 12s hard limit by default', () => {
+  assert.equal(animation.TARGET_MS, 8000);
+  assert.equal(animation.HARD_LIMIT_MS, 12000);
+  const scheduled = [];
+  const player = animation.startStartupAnimation({
+    schedule: (fn, ms) => { scheduled.push({ fn, ms }); return scheduled.length; },
+    repeat: () => 1,
+    cancelSchedule: () => {},
+    cancelRepeat: () => {},
+  });
+  assert.ok(scheduled.some(entry => entry.ms === 8000), 'phase switch waits for the 8s minimum');
+  assert.ok(scheduled.some(entry => entry.ms === 12000), 'hard limit stays at 12s');
+  player.destroy();
 });
 
 test('preview animation is isolated from the startup overlay and never refreshes accounts', async () => {
