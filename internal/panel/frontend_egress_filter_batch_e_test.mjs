@@ -297,7 +297,7 @@ test('batch 3 first screen is a node grid with a compact subscription overview, 
   assert.doesNotMatch(html, /内核累计值；重启可能归零/);
   assert.doesNotMatch(html, /每个账号使用一个独立出口/);
   assert.doesNotMatch(html, /延迟显示在节点名称后/);
-  assert.match(css, /\.egress-node-grid\s*\{[^}]*repeat\(auto-fill,minmax\(176px,1fr\)\)/);
+  assert.match(css, /\.egress-node-grid\s*\{[^}]*repeat\(auto-fill,minmax\(150px,1fr\)\)/);
 });
 
 test('the main node grid binds with a read-back and keeps a 48h cache marker without clearing nodes', async () => {
