@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { setupDOM, mockAPI, flush } from './frontend_helpers_test.mjs';
 
 const dom = setupDOM();
 const $ = dom.$;
 const client = await import('./assets/api.js');
 const egress = await import('./assets/egress.js');
+const html = readFileSync(new URL('index.html', import.meta.url), 'utf8');
+const css = readFileSync(new URL('assets/styles.css', import.meta.url), 'utf8');
 
 function auth() { client.acceptSession({ authenticated: true, csrf_token: 'token' }); }
 function clickTest() {
@@ -23,6 +26,13 @@ function mountFilter() {
   }
   select.value = '';
   return select;
+}
+
+function clickCard(id) {
+  return $('egressNodeGrid').fire('click', { target: { closest: selector => selector === '[data-node-id]' ? { dataset: { nodeId: id } } : null } });
+}
+function detailButton(name) {
+  return { dataset: { subscriptionReveal: name }, closest: selector => selector === '[data-subscription-reveal]' ? { dataset: { subscriptionReveal: name } } : null };
 }
 
 const subscriptions = [{ id: 'sub-a', name: 'A 订阅', node_count: 2 }, { id: 'sub-b', name: 'B 订阅', node_count: 1 }];
@@ -272,4 +282,159 @@ test('latency polling under a filter keeps only that subscription and preserves 
   await select.fire('change');
   assert.match($('nodeList').innerHTML, /当前账号出口/, '轮询期间外部的绑定不得丢失');
   egress.closeNodeModal();
+});
+
+test('batch 3 first screen is a node grid with a compact subscription overview, not traffic cards', () => {
+  const view = html.slice(html.indexOf('id="view-egress"'), html.indexOf('<!-- ===== /view:egress ===== -->'));
+  assert.match(view, /id="egressOverviewText"/);
+  assert.match(view, /id="egressNodeGrid"[^>]*class="egress-node-grid"/);
+  assert.match(view, /id="nodeSubscriptionFilter"/);
+  assert.ok(view.indexOf('egressOverviewText') < view.indexOf('egressNodeGrid'), 'overview precedes the node body');
+  assert.ok(view.indexOf('egressNodeGrid') < view.indexOf('class="egress-metrics"'), 'traffic sits below the nodes');
+  assert.doesNotMatch(view, /class="egress-top"/);
+  assert.doesNotMatch(view, /class="metric-card"/);
+  assert.doesNotMatch(html, /按账号独立绑定，不修改系统代理或 TUN/);
+  assert.doesNotMatch(html, /内核累计值；重启可能归零/);
+  assert.doesNotMatch(html, /每个账号使用一个独立出口/);
+  assert.doesNotMatch(html, /延迟显示在节点名称后/);
+  assert.match(css, /\.egress-node-grid\s*\{[^}]*repeat\(auto-fill,minmax\(176px,1fr\)\)/);
+});
+
+test('the main node grid binds with a read-back and keeps a 48h cache marker without clearing nodes', async () => {
+  auth();
+  const old = new Date(Date.now() - 49 * 60 * 60 * 1000).toISOString();
+  let bound = [];
+  const calls = mockAPI((url, opts) => {
+    const method = (opts.method || 'GET').toUpperCase();
+    if (url.endsWith('meta/status')) return { available: true, running: true };
+    if (url.endsWith('meta/stats')) return {};
+    if (url.endsWith('meta/tests')) return { id: 'cached', running: false, total: 3 };
+    if (url.endsWith('/overview')) return { accounts: [{ uid: 'acct', nickname: '主账号' }] };
+    if (url.endsWith('meta/subscriptions')) return { subscriptions: [{ id: 'sub-a', name: '主力', enabled: true, node_count: 2, last_refresh_at: old, has_url: true, url_preview: 'https://secret.example/…' }] };
+    if (url.includes('meta/nodes')) return { nodes: allNodes, bindings: bound };
+    if (url.endsWith('/bind')) { bound = [{ uid: 'acct', node: JSON.parse(opts.body).node }]; return { ok: true }; }
+    throw new Error(method + ' ' + url);
+  });
+  await egress.loadEgress();
+  assert.match($('egressOverviewText').textContent, /1 个订阅 · 1 启用 · 2 节点/);
+  assert.match($('egressOverviewText').textContent, /缓存已过期/);
+  assert.match($('egressNodeGrid').innerHTML, /A1/);
+  assert.doesNotMatch($('egressNodeGrid').innerHTML, /secret\.example/);
+  assert.doesNotMatch($('egressNodeGrid').innerHTML, /绑定此节点/);
+  assert.equal(dom.intervals.size, 0);
+  await clickCard('a1');
+  assert.equal($('egressAccountBar').hidden, false, 'no target UID falls back to the compact account picker');
+  $('egressAccountSelect').value = 'acct';
+  await $('egressAccountSelect').fire('change');
+  const bindCalls = calls.filter(call => call.url.endsWith('/bind'));
+  assert.deepEqual(JSON.parse(bindCalls[0].opts.body), { node: 'a1' });
+  assert.ok(calls.some(call => call.url.endsWith('meta/nodes') && (call.opts.method || 'GET') === 'GET'), 'binding reads back');
+  assert.match($('egressNodeGrid').innerHTML, /aria-pressed="true"/);
+  assert.equal(dom.intervals.size, 0, 'binding never starts latency polling');
+});
+
+test('main filter switches with one GET and never posts or clears a failed read', async () => {
+  auth();
+  const calls = mockAPI((url, opts) => {
+    if (url.endsWith('meta/status')) return { available: true, running: true };
+    if (url.endsWith('meta/stats')) return {};
+    if (url.endsWith('meta/tests')) return { id: 'cached', running: false, total: 3 };
+    if (url.endsWith('/overview')) return { accounts: [] };
+    if (url.endsWith('meta/subscriptions')) return { subscriptions };
+    if (url.includes('subscription_id=sub%20a%26b')) throw Object.assign(new Error('read failed'), { status: 500 });
+    if (url.includes('meta/nodes')) return { nodes: allNodes, bindings: [] };
+    throw new Error((opts.method || 'GET') + ' ' + url);
+  });
+  await egress.loadEgress();
+  assert.match($('egressNodeGrid').innerHTML, /A1/);
+  const before = calls.length;
+  $('nodeSubscriptionFilter').value = 'sub a&b';
+  await $('nodeSubscriptionFilter').fire('change');
+  const fresh = calls.slice(before);
+  assert.equal(fresh.length, 1);
+  assert.equal(fresh[0].url, '/panel/api/meta/nodes?subscription_id=sub%20a%26b');
+  assert.equal(fresh[0].opts.method, 'GET');
+  assert.match($('egressNodeGrid').innerHTML, /A1/, 'a failed filter read keeps the cached node list');
+  assert.equal(dom.intervals.size, 0);
+});
+
+test('refreshSubscriptionsOnce refreshes enabled subscriptions serially, skips tests and absorbs a single failure', async () => {
+  auth();
+  const started = [];
+  const calls = mockAPI(async (url, opts) => {
+    if (url.endsWith('meta/subscriptions')) {
+      if ((opts.method || 'GET') === 'GET') return { subscriptions: [
+        { id: 'sub-a', enabled: true }, { id: 'sub-off', enabled: false }, { id: 'sub-b', enabled: true },
+      ] };
+      const body = JSON.parse(opts.body);
+      started.push(body.id);
+      if (body.id === 'sub-b') throw new Error('upstream failed');
+      return { ok: true, nodes: 1 };
+    }
+    if (url.endsWith('meta/nodes')) return { nodes: allNodes, bindings: [] };
+    throw new Error(url);
+  });
+  const result = await egress.refreshSubscriptionsOnce({ timeoutMs: 8000 });
+  assert.deepEqual(started, ['sub-a', 'sub-b'], 'enabled subscriptions refresh serially');
+  assert.equal(result.refreshed, 1);
+  assert.deepEqual(result.failed.map(item => item.id), ['sub-b']);
+  assert.equal(result.nodes.length, 3);
+  assert.equal(result.ok, false);
+  assert.doesNotMatch(calls.map(call => call.url).join('\n'), /meta\/tests/);
+});
+
+test('subscription details request the reveal only on click and clear the plain URL on close', async () => {
+  auth();
+  const calls = mockAPI((url) => {
+    if (url.endsWith('meta/status')) return { available: true, running: true };
+    if (url.endsWith('meta/stats')) return {};
+    if (url.endsWith('meta/tests')) return { id: 'cached', running: false, total: 3 };
+    if (url.endsWith('/overview')) return { accounts: [] };
+    if (url.includes('reveal=1')) return { id: 'sub-a', url: 'https://secret.example/private?token=1' };
+    if (url.endsWith('meta/subscriptions')) return { subscriptions: [{ id: 'sub-a', name: '主力', enabled: true, node_count: 2, has_url: true, url_preview: 'https://secret.example/…' }] };
+    if (url.includes('meta/nodes')) return { nodes: allNodes, bindings: [] };
+    throw new Error(url);
+  });
+  await egress.loadEgress();
+  assert.equal(calls.filter(call => call.url.includes('reveal=1')).length, 0, 'loading never reveals');
+  await dom.click('btnSubscriptionDetails');
+  assert.equal(calls.filter(call => call.url.includes('reveal=1')).length, 0, 'opening details never reveals');
+  assert.match($('subscriptionDetailList').innerHTML, /查看地址/);
+  assert.doesNotMatch($('subscriptionDetailList').innerHTML, /private\?token/);
+  await $('subscriptionDetailList').fire('click', { target: { closest: selector => selector === '[data-subscription-reveal]' ? { dataset: { subscriptionReveal: 'sub-a' } } : null } });
+  assert.equal($('subscriptionRevealURL').textContent, 'https://secret.example/private?token=1');
+  await dom.click('btnCloseSubscriptions');
+  assert.equal($('subscriptionRevealURL').textContent, '');
+  assert.equal($('subscriptionRevealLabel').textContent, '');
+  assert.equal($('subscriptionDetailList').innerHTML, '');
+  assert.deepEqual(calls.filter(call => call.url.includes('reveal=1')).map(call => call.url), ['/panel/api/meta/subscriptions?id=sub-a&reveal=1']);
+});
+
+test('inline import posts URL and optional name, then rereads subscriptions and nodes for four or more rows', async () => {
+  auth();
+  const rows = Array.from({ length: 5 }, (_, index) => ({ id: 'sub-' + index, name: '订阅 ' + index, enabled: true, node_count: index + 1 }));
+  const calls = mockAPI((url, opts) => {
+    const method = (opts.method || 'GET').toUpperCase();
+    if (url.endsWith('meta/status')) return { available: true, running: true };
+    if (url.endsWith('meta/stats')) return {};
+    if (url.endsWith('meta/tests')) return { id: 'cached', running: false, total: 3 };
+    if (url.endsWith('/overview')) return { accounts: [] };
+    if (url.endsWith('meta/subscriptions')) return method === 'POST' ? { ok: true, nodes: 2 } : { subscriptions: rows };
+    if (url.includes('meta/nodes')) return { nodes: allNodes, bindings: [] };
+    throw new Error(method + ' ' + url);
+  });
+  await egress.loadEgress();
+  assert.equal(calls.filter(call => call.url.endsWith('meta/subscriptions') && call.opts.method === 'POST').length, 0, 'loading never imports');
+  await dom.click('btnEgressImport');
+  $('egressSubscriptionURL').value = 'https://example.com/sub?token=x';
+  $('egressSubscriptionName').value = '备用';
+  const before = calls.length;
+  await $('egressSubscriptionForm').onsubmit({ preventDefault() {} });
+  const fresh = calls.slice(before);
+  assert.deepEqual(JSON.parse(fresh[0].opts.body), { url: 'https://example.com/sub?token=x', name: '备用' });
+  assert.ok(fresh.some(call => call.url.endsWith('meta/subscriptions') && call.opts.method === 'GET'), 'import rereads subscriptions');
+  assert.ok(fresh.some(call => call.url.endsWith('meta/nodes')), 'import rereads nodes');
+  assert.doesNotMatch(fresh.map(call => call.url).join('\n'), /meta\/tests/);
+  assert.equal($('egressSubscriptionForm').hidden, true);
+  assert.match($('egressOverviewText').textContent, /5 个订阅/);
 });
