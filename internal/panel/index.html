@@ -104,7 +104,7 @@
         <div class="egress-overview-actions">
           <button id="btnEgressImport" type="button">导入订阅</button>
           <button id="btnSubscriptionDetails" type="button">订阅详情</button>
-          <button id="btnRefreshNodes" type="button">刷新节点</button>
+          <button id="btnRefreshNodes" type="button" title="手动刷新节点，默认 48h 缓存">刷新节点</button>
         </div>
       </section>
       <p id="egressRefreshHint" class="egress-refresh-hint" role="status"></p>
@@ -131,6 +131,16 @@
       <p id="egressNodeError" class="error-text" role="alert"></p>
       <div id="egressNodeGrid" class="egress-node-grid" aria-live="polite"></div>
       <div id="egressNodePager"></div>
+      <section class="egress-details" id="egressDetails" aria-label="订阅与节点详情">
+        <div class="egress-detail-col">
+          <h3 class="egress-detail-title">订阅来源</h3>
+          <div class="egress-detail-body" id="egressDetailSubscriptions"></div>
+        </div>
+        <div class="egress-detail-col">
+          <h3 class="egress-detail-title">当前节点</h3>
+          <div class="egress-detail-body" id="egressDetailNode"></div>
+        </div>
+      </section>
       <details class="egress-metrics">
         <summary>流量 / 速率</summary>
         <div class="egress-metric-line"><span>↓ <strong id="trafficDownload">—</strong></span><span>↑ <strong id="trafficUpload">—</strong></span><span>↓ <strong id="rateDownload">—</strong></span><span>↑ <strong id="rateUpload">—</strong></span><span id="metaConnections" class="hint">连接数未知</span><span id="metaSample" class="hint">暂无有效采样</span></div>

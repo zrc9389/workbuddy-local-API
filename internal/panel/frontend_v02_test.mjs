@@ -29,7 +29,10 @@ test('responsive surfaces wrap content instead of concealing horizontal overflow
  assert.match(css, /\.overview-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*2fr\)\s*minmax\(0,\s*1fr\)/);
  assert.match(css, /@media \(max-width:980px\)[\s\S]*?\.overview-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
  assert.match(css, /prefers-reduced-motion/);
- assert.doesNotMatch(css, /overflow-x:\s*(?:hidden|clip|auto|scroll)|text-overflow:\s*ellipsis|white-space:\s*nowrap/);
+ assert.doesNotMatch(css, /overflow-x:\s*(?:hidden|clip|auto|scroll)/);
+ // Batch 16 allows one-line ellipsis for node names/sources inside the egress section only.
+ const cssOutsideEgress = css.slice(0, css.indexOf('/* ===== 06 egress ===== */')) + css.slice(css.indexOf('/* ===== 07 packages ===== */'));
+ assert.doesNotMatch(cssOutsideEgress, /text-overflow:\s*ellipsis|white-space:\s*nowrap/);
 });
 
 test('batch D navigation keeps nine flat entries, no nav groups and a floating glass nav', () => {

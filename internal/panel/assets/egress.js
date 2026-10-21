@@ -26,8 +26,31 @@ export function formatBytes(value) {
   while (n >= 1024 && unit < units.length - 1) { n /= 1024; unit++; }
   return (unit ? n.toFixed(n >= 10 ? 1 : 2) : String(n)) + ' ' + units[unit];
 }
+// Latency label. The live measurement wins, then the last successful sample
+// from the server-side history (the "cached" value). Nothing is stored locally:
+// CSP and the privacy contract forbid keeping node data in the page.
+function latencyTone(ms) {
+  return ms < 200 ? 'ok' : ms < 500 ? 'warn' : 'bad';
+}
+function cachedDelay(node) {
+  const samples = Array.isArray(node?.history) ? node.history : [];
+  for (let index = samples.length - 1; index >= 0; index--) {
+    const delay = Number(samples[index]?.delay);
+    if (Number.isFinite(delay) && delay > 0) return delay;
+  }
+  return null;
+}
 export function nodeLatency(node) {
-  return node.status === 'ok' && Number.isFinite(node.delay_ms) ? {tone:'ok',text:node.delay_ms + ' ms'} : ({testing:{tone:'warn',text:'测试中'},timeout:{tone:'warn',text:'超时'},error:{tone:'bad',text:'测试失败'}}[node.status] || {tone:'muted',text:'未测试'});
+  const source = node || {};
+  if (source.status === 'testing') return {tone:'warn',text:'测试中'};
+  const live = Number(source.delay_ms);
+  if (source.delay_ms != null && Number.isFinite(live) && live > 0) return {tone:latencyTone(live),text:live + ' ms'};
+  const cached = cachedDelay(source);
+  if (cached != null) return {tone:'muted',text:cached + ' ms'};
+  if (source.status === 'timeout') return {tone:'warn',text:'超时'};
+  if (source.status === 'error') return {tone:'bad',text:'测试失败'};
+  if (source.status === 'untested') return {tone:'muted',text:'未测试'};
+  return {tone:'muted',text:'—'};
 }
 export function nodeTrendHTML(history, helper = trendHelper) {
   const samples = (history || []).filter(sample => Number.isFinite(sample.delay) && sample.delay > 0);
@@ -81,12 +104,57 @@ function renderMainNodes() {
   const uid = currentNodeUID(), selected = boundNodesFor(uid);
   host.innerHTML = page.rows.map(node => {
     const latency = nodeLatency(node), name = displayNodeName(node), isBound = selected.has(node.id);
-    return '<button type="button" class="egress-node-card" data-node-id="' + esc(node.id) + '" aria-pressed="' + isBound + '" title="' + esc(name) + '"><span class="egress-node-check" aria-hidden="' + !isBound + '">✓</span><strong>' + esc(name) + '</strong><span class="egress-node-source">' + esc(providerLabel(node)) + '</span><span class="tag ' + latency.tone + '">' + esc(latency.text) + '</span>' + (isBound ? '<span class="sr-only">当前绑定</span>' : '') + '</button>';
+    return '<button type="button" class="egress-node-card" data-node-id="' + esc(node.id) + '" aria-pressed="' + isBound + '" title="' + esc(name) + '"><span class="egress-node-top"><strong>' + esc(name) + '</strong><span class="tag ' + latency.tone + '">' + esc(latency.text) + '</span><span class="egress-node-check" aria-hidden="true">✓</span></span><span class="egress-node-source">' + esc(providerLabel(node)) + '</span>' + (isBound ? '<span class="sr-only">当前绑定</span>' : '') + '</button>';
   }).join('') || '<div class="empty">尚无节点</div>';
   $('egressNodePager').innerHTML = pagerHTML(page, 'egress-nodes');
   $('egressNodeCount').textContent = nodes.length ? '显示 ' + nodes.length + ' 个节点' : '';
   const statusEl = $('egressNodeStatus');
   if (statusEl) statusEl.textContent = tests.running ? testText(tests) : '';
+  renderEgressDetails();
+}
+// The detail band under the grid answers "which subscription is this node from
+// and what is its URL" without duplicating the reveal modal. Plain-text URLs stay
+// server-side until the explicit reveal request, and the DOM is cleared on close.
+function detailNode() {
+  const uid = currentNodeUID();
+  const bound = uid ? bindings.find(item => item.uid === uid)?.node : '';
+  const fallback = !uid && !pendingNode && bindings.length === 1 ? bindings[0].node : '';
+  const id = pendingNode || bound || fallback || '';
+  if (!id) return {state:'none'};
+  const node = nodes.find(item => item.id === id);
+  // A bound node outside the active subscription filter has no name in memory;
+  // say so instead of printing the opaque id.
+  return node ? {state:'node', node} : {state:'filtered', id};
+}
+function renderEgressDetails() {
+  const sources = $('egressDetailSubscriptions'), current = $('egressDetailNode');
+  if (sources) {
+    sources.innerHTML = subscriptions.length ? subscriptions.map(item => {
+      const enabled = item.enabled !== false, id = String(item.id || '');
+      return '<div class="egress-source-row"><span class="egress-source-name" title="' + esc(item.name || id) + '">' + esc(item.name || id) + '</span><span class="egress-source-count">' + esc(item.node_count ?? 0) + ' 个节点</span><span class="tag ' + (enabled ? 'ok' : 'muted') + '">' + (enabled ? '启用' : '停用') + '</span><button type="button" class="egress-source-reveal" data-egress-reveal="' + esc(id) + '">查看地址</button></div>';
+    }).join('') : '<div class="egress-detail-empty"><span>尚未导入订阅</span><button type="button" data-egress-import>导入订阅</button></div>';
+  }
+  if (!current) return;
+  const selected = detailNode();
+  if (selected.state !== 'node') {
+    current.innerHTML = '<div class="egress-detail-empty"><span>' + (selected.state === 'filtered' ? '该节点不在当前订阅筛选中' : '未选择节点') + '</span></div>';
+    return;
+  }
+  const node = selected.node;
+  const latency = nodeLatency(node);
+  const tested = node.tested_at ? ago(node.tested_at) : '未测速';
+  current.innerHTML = '<dl class="egress-node-facts"><div><dt>节点</dt><dd title="' + esc(displayNodeName(node)) + '">' + esc(displayNodeName(node)) + '</dd></div><div><dt>订阅</dt><dd>' + esc(providerLabel(node)) + '</dd></div><div><dt>协议</dt><dd>' + esc(node.type || '—') + '</dd></div><div><dt>延迟</dt><dd><span class="tag ' + latency.tone + '">' + esc(latency.text) + '</span></dd></div><div><dt>测速</dt><dd>' + esc(tested) + '</dd></div></dl>';
+}
+// Opening the shared subscription veil keeps one plaintext entry point: the URL
+// is fetched with &reveal=1 only after this click and wiped by closeSubscriptionDetails.
+async function openSubscriptionReveal(id) {
+  if (!session.authenticated || !id) return;
+  subscriptionsOpen = true; detailGeneration++;
+  const epoch = detailGeneration;
+  $('subscriptionDetailNote').textContent = '';
+  renderSubscriptionDetails();
+  showModal('subscriptionVeil');
+  await revealSubscription(id, epoch);
 }
 function testText(data) {
   if (data.cancelled) return '测试已取消';
@@ -117,6 +185,7 @@ function renderAccounts() {
     return '<article class="route-card"><div><strong>' + esc(account.nickname || account.uid) + '</strong><p class="mono hint">' + esc(account.uid) + '</p></div><button class="egress-badge" data-route-uid="' + esc(account.uid) + '">' + esc(node ? displayNodeName(node) : (bound ? displayNodeName({ id: bound.node }) : '未绑定节点')) + (latency ? ' · ' + esc(latency.text) : '') + ' ↗</button></article>';
   }).join('') || '<div class="empty">尚无账号</div>';
   $('egressPages').innerHTML = pagerHTML(page, 'routes');
+  renderEgressDetails();
   renderAccountSelect();
 }
 const filterBound = new WeakSet();
@@ -162,6 +231,7 @@ async function loadSubscriptionList(signal) {
   }
   renderSubscriptionFilter(subscriptions);
   renderOverview();
+  renderEgressDetails();
   return subscriptions;
 }
 // The filtered response only carries bindings for the nodes it returns. Keep the
@@ -393,6 +463,9 @@ async function revealSubscription(id, epoch) {
     label.textContent = item?.name || id;
     url.textContent = data.url || '';
     reveal.hidden = false;
+    // The reveal card sits under the subscription list; bring it into view so the
+    // click from the detail band lands on the address instead of the list top.
+    reveal.scrollIntoView?.({block:'nearest'});
   } catch (error) {
     if (error.name !== 'AbortError' && subscriptionsOpen && epoch === detailGeneration) note.textContent = '地址读取失败：' + error.message;
   }
@@ -443,6 +516,8 @@ async function refreshNodes() {
     if (result.failed.length) hint.textContent = result.failed.length + ' 个订阅刷新失败';
   } finally {
     refreshing = false;
+    // #btnRefreshNodes owns a .5s color/border transition, so dropping the class
+    // fades the accent tint out instead of swapping text or showing a spinner.
     button.classList.remove('refreshing');
   }
 }
@@ -576,6 +651,14 @@ function leaveEgress() {
   const bar = $('egressAccountBar'); if (bar) bar.hidden = true;
   renderSubscriptionFilter([]);
 }
+if ($('egressDetails')) $('egressDetails').addEventListener('click', async event => {
+  const reveal = event.target.closest('[data-egress-reveal]');
+  if (reveal) { await openSubscriptionReveal(reveal.dataset.egressReveal); return; }
+  if (event.target.closest('[data-egress-import]')) {
+    const form = $('egressSubscriptionForm');
+    if (form) { form.hidden = false; $('egressSubscriptionNote').textContent = ''; $('egressSubscriptionURL').focus?.(); }
+  }
+});
 $('btnCloseNodes').onclick = closeNodeModal;
 const openNodesButton = $('btnOpenNodes');
 if (openNodesButton) openNodesButton.onclick = () => openNodeModal();
@@ -610,6 +693,7 @@ if ($('egressNodeGrid')) $('egressNodeGrid').addEventListener('click', async eve
   if (select) { renderAccountSelect(); select.focus?.(); }
   const node = nodes.find(item => item.id === pendingNode);
   $('egressAccountHint').textContent = '已选 ' + displayNodeName(node) + '，选择账号后绑定';
+  renderEgressDetails();
 });
 if (accountSelect()) accountSelect().addEventListener('change', async () => {
   const uid = String(accountSelect().value || '');

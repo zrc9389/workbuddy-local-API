@@ -457,3 +457,104 @@ test('inline import posts URL and optional name, then rereads subscriptions and 
   assert.equal($('egressSubscriptionForm').hidden, true);
   assert.match($('egressOverviewText').textContent, /5 个订阅/);
 });
+
+test('nodeLatency prefers the live value, then the cached history sample, then the status text', () => {
+  assert.equal(egress.nodeLatency({ status: 'ok', delay_ms: 42 }).text, '42 ms');
+  assert.equal(egress.nodeLatency({ status: 'ok', delay_ms: 150 }).tone, 'ok');
+  assert.equal(egress.nodeLatency({ status: 'ok', delay_ms: 300 }).tone, 'warn');
+  assert.equal(egress.nodeLatency({ status: 'ok', delay_ms: 640 }).tone, 'bad');
+  const cached = egress.nodeLatency({ status: 'untested', history: [{ delay: 0, time: '2026-10-21T00:00:00Z' }, { delay: 120, time: '2026-10-21T00:00:00Z' }] });
+  assert.deepEqual(cached, { tone: 'muted', text: '120 ms' }, 'the last successful sample is the fallback cache');
+  assert.deepEqual(egress.nodeLatency({ status: 'timeout', history: [{ delay: 88 }] }), { tone: 'muted', text: '88 ms' }, 'cache beats a timeout label');
+  assert.deepEqual(egress.nodeLatency({ status: 'timeout', history: [] }), { tone: 'warn', text: '超时' });
+  assert.deepEqual(egress.nodeLatency({ status: 'error', history: [] }), { tone: 'bad', text: '测试失败' });
+  assert.deepEqual(egress.nodeLatency({ status: 'untested', history: [] }), { tone: 'muted', text: '未测试' });
+  assert.deepEqual(egress.nodeLatency({ status: 'testing', delay_ms: 70 }), { tone: 'warn', text: '测试中' });
+  assert.deepEqual(egress.nodeLatency({}), { tone: 'muted', text: '—' });
+});
+
+test('the detail band lists every subscription source and the selected node without caching plaintext', async () => {
+  auth();
+  const calls = mockAPI((url) => {
+    if (url.endsWith('meta/status')) return { available: true, running: true };
+    if (url.endsWith('meta/stats')) return {};
+    if (url.endsWith('meta/tests')) return { id: 'cached', running: false, total: 3 };
+    if (url.endsWith('/overview')) return { accounts: [{ uid: 'acct', nickname: '主账号' }] };
+    if (url.includes('reveal=1')) return { id: 'sub-a', url: 'https://secret.example/private?token=1' };
+    if (url.endsWith('meta/subscriptions')) return { subscriptions: [
+      { id: 'sub-a', name: '主力订阅', enabled: true, node_count: 2, has_url: true, url_preview: 'https://secret.example/…' },
+      { id: 'sub-b', name: '备用订阅', enabled: false, node_count: 1, has_url: true },
+    ] };
+    if (url.includes('meta/nodes')) return { nodes: [
+      { id: 'a1', name: 'sub-a/A1', type: 'Shadowsocks', provider: 'sub-a', status: 'untested', history: [{ delay: 210 }], tested_at: new Date(Date.now() - 60000).toISOString() },
+    ], bindings: [{ uid: 'acct', node: 'a1' }] };
+    throw new Error(url);
+  });
+  await egress.loadEgress();
+  const sources = $('egressDetailSubscriptions').innerHTML;
+  assert.match(sources, /主力订阅/);
+  assert.match(sources, /2 个节点/);
+  assert.match(sources, /启用/);
+  assert.match(sources, /备用订阅/);
+  assert.match(sources, /停用/);
+  assert.equal((sources.match(/data-egress-reveal/g) || []).length, 2, 'one reveal button per subscription');
+  assert.doesNotMatch(sources, /secret\.example|token=1/);
+  const facts = $('egressDetailNode').innerHTML;
+  assert.match(facts, /A1/);
+  assert.match(facts, /主力订阅/);
+  assert.match(facts, /Shadowsocks/);
+  assert.match(facts, /210 ms/, 'the cached sample fills the latency cell');
+  assert.match(facts, /分钟前/);
+  assert.equal(calls.filter(call => call.url.includes('reveal=1')).length, 0, 'reading the page never reveals');
+  await $('egressDetails').fire('click', { target: { closest: selector => selector === '[data-egress-reveal]' ? { dataset: { egressReveal: 'sub-a' } } : null } });
+  assert.equal($('subscriptionRevealURL').textContent, 'https://secret.example/private?token=1');
+  assert.deepEqual(calls.filter(call => call.url.includes('reveal=1')).map(call => call.url), ['/panel/api/meta/subscriptions?id=sub-a&reveal=1']);
+  await dom.click('btnCloseSubscriptions');
+  assert.equal($('subscriptionRevealURL').textContent, '', 'closing wipes the plaintext');
+  assert.equal($('egressDetailSubscriptions').innerHTML.includes('token=1'), false, 'the band never stores the URL');
+});
+
+test('an empty detail band offers the import entry instead of a blank block', async () => {
+  auth();
+  mockAPI((url) => {
+    if (url.endsWith('meta/status')) return { available: true, running: true };
+    if (url.endsWith('meta/stats')) return {};
+    if (url.endsWith('meta/tests')) return { id: 'cached', running: false, total: 0 };
+    if (url.endsWith('/overview')) return { accounts: [] };
+    if (url.endsWith('meta/subscriptions')) return { subscriptions: [] };
+    if (url.includes('meta/nodes')) return { nodes: [], bindings: [] };
+    throw new Error(url);
+  });
+  await egress.loadEgress();
+  assert.match($('egressDetailSubscriptions').innerHTML, /尚未导入订阅/);
+  assert.match($('egressDetailSubscriptions').innerHTML, /data-egress-import/);
+  assert.match($('egressDetailNode').innerHTML, /未选择节点/);
+  $('egressSubscriptionForm').hidden = true;
+  await $('egressDetails').fire('click', { target: { closest: selector => selector === '[data-egress-import]' ? { dataset: {} } : null } });
+  assert.equal($('egressSubscriptionForm').hidden, false, 'the empty state opens the existing import form');
+  $('egressSubscriptionForm').hidden = true;
+});
+
+test('a bound node hidden by the active filter is named as filtered, never as a raw id', async () => {
+  auth();
+  const select = mountFilter();
+  mockAPI((url, opts) => {
+    const method = (opts.method || 'GET').toUpperCase();
+    if (url.endsWith('meta/status')) return { available: true, running: true };
+    if (url.endsWith('meta/stats')) return {};
+    if (url.endsWith('meta/tests')) return { id: 'cached', running: false, total: 3 };
+    if (url.endsWith('/overview')) return { accounts: [{ uid: 'acct', nickname: '主账号' }] };
+    if (url.endsWith('meta/subscriptions')) return { subscriptions };
+    if (url.includes('subscription_id=sub-b')) return { nodes: [allNodes[2]], bindings: [] };
+    if (url.includes('meta/nodes')) return { nodes: allNodes, bindings: [{ uid: 'acct', node: 'a1' }] };
+    throw new Error(method + ' ' + url);
+  });
+  await egress.loadEgress();
+  assert.match($('egressDetailNode').innerHTML, /A1/);
+  select.value = 'sub-b';
+  await select.fire('change');
+  const facts = $('egressDetailNode').innerHTML;
+  assert.match(facts, /不在当前订阅筛选中/);
+  assert.doesNotMatch(facts, /a1/);
+  egress.closeNodeModal();
+});
