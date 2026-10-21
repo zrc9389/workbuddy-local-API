@@ -7,8 +7,12 @@ const read=name=>readFileSync(new URL(name,import.meta.url),'utf8');
 const client=await import('./assets/api.js');
 
 test('shell and module graph preserve session security and do not contain bearer/legacy key UI',()=>{
- const html=read('index.html');for(const view of ['overview','accounts','usage','packages','taskscenter','egress','models','config','logs'])assert.ok(html.includes(`id="view-${view}"`),view);
- assert.match(html,/type="module"/);assert.match(html,/\/panel\/assets\/styles.css/);assert.doesNotMatch(html,/api_key|keyInput|keyVeil|onsubmit=/);assert.match(html,/passwordForm/);assert.match(html,/123456/);assert.doesNotMatch(html,/preferencesForm|creditGuardLow|settingTheme|btnPreferencesSave/);assert.match(html,/系统设置/);assert.match(html,/subscriptionForm/);assert.match(html,/localBaseURL/);
+ const html=read('index.html'),settings=html.slice(html.indexOf('id="view-config"'),html.indexOf('id="view-logs"'));
+ for(const view of ['overview','accounts','usage','packages','taskscenter','egress','models','config','logs'])assert.ok(html.includes(`id="view-${view}"`),view);
+ assert.match(html,/type="module"/);assert.match(html,/\/panel\/assets\/styles.css/);assert.doesNotMatch(html,/api_key|keyInput|keyVeil|onsubmit=/);assert.match(settings,/passwordForm/);assert.doesNotMatch(html,/123456/);
+ assert.doesNotMatch(settings,/preferencesForm|creditGuardLow|settingTheme|btnPreferencesSave|subscriptionForm|subscriptionURL|subscriptionName|subscriptionList|subscriptionCount|btnSubscriptionSave|subscriptionNote|localBaseURL|localChatURL|localResponsesURL/);
+ assert.match(settings,/系统设置/);assert.match(settings,/id="animationStyle"/);assert.match(settings,/id="passwordForm"/);
+ assert.doesNotMatch(settings,/管理订阅、密码和本机接口|名称轮播：英文 AI 名称逐字切换/);
  for(const name of readdirSync(new URL('assets/',import.meta.url)).filter(name=>name.endsWith('.js')))assert.doesNotMatch(read(`assets/${name}`),/Bearer |LS_KEY|api_key/);
  assert.ok(read('app.js').length<4000);
 });
@@ -48,14 +52,14 @@ test('batch 2 account and task copy stays compact in HTML and CSS',()=>{
  assert.match(accounts,/\.failure-count \{ color: var\(--ink-3\); \}/);
 });
 
-test('settings view is bounded and subscription import keeps its backend-only URL contract',async()=>{
+test('settings view is bounded and no longer initializes subscription management',async()=>{
  client.acceptSession({authenticated:true,csrf_token:'token'});const calls=mockAPI(()=>({nodes:3}));
- const config=await import('./assets/config.js');$('ttl').textContent='系统设置';
- assert.equal($('ttl').textContent,'系统设置');assert.equal($('subscriptionNote').textContent,'');
- $('subscriptionURL').value='javascript:alert(1)';await $('subscriptionForm').onsubmit({preventDefault(){}});assert.equal(calls.length,0);
- $('subscriptionURL').value='https://example.com/sub';await $('subscriptionForm').onsubmit({preventDefault(){}});
- assert.deepEqual(calls.map(c=>c.url),['/panel/api/meta/subscriptions','/panel/api/meta/subscriptions']);assert.equal(calls[0].opts.method,'POST');assert.equal(JSON.parse(calls[0].opts.body).url,'https://example.com/sub');
- assert.equal($('subscriptionURL').value,'');assert.match($('subscriptionNote').textContent,/已导入 3 个节点/);
+ const config=await import('./assets/config.js');$('ttl').textContent='';
+ await config.loadConfig();
+ assert.equal($('ttl').textContent,'系统设置');assert.equal(calls.length,0);
+ const configSource=read('assets/config.js');
+ assert.doesNotMatch(configSource,/\$\('subscriptionForm'\)\.onsubmit|getElementById\('subscriptionList'\)\?\.addEventListener/);
+ assert.doesNotMatch(configSource,/localBaseURL|credit_guard_low|creditGuardLow|settingTheme|btnPreferencesSave/);
 });
 test('background intervals pause hidden/locked pages and never overlap',async()=>{
  const {visibleInterval}=await import('./assets/lifecycle.js');client.acceptSession({authenticated:true,csrf_token:'token'});

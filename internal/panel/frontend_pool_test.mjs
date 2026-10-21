@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {setupDOM,mockAPI,flush} from './frontend_helpers_test.mjs';
 const dom=setupDOM(),$=dom.$,client=await import('./assets/api.js');
+const read=name=>readFileSync(new URL(name,import.meta.url),'utf8');
 const pool=Array.from({length:1003},(_,i)=>({uid:'uid-'+i,nickname:'用户 '+i,realm:i%2?'global':'cn',manual_disabled:i===0,system_blocked:i===1,balance_blocked:i===2,balance_known:i!==3,cool_remaining_sec:i===4?20:0,credits:i}));
 const fakeButton=(dataset,disabled=false)=>({dataset,disabled,closest(){return this;}});
 
@@ -132,8 +134,13 @@ test('Meta really uses the pinned upstream trend helper without claiming the ful
  const html=egress.nodeTrendHTML([{delay:20},{delay:0},{delay:40}],helper);assert.match(html,/metacubexd 延迟趋势组件/);assert.match(html,/viewBox="0 0 100 50"/);assert.match(html,/M 0 45 L 100 5/);assert.equal(egress.nodeTrendHTML([{delay:0},{delay:20}],helper),'');
 });
 
-test('model context overrides preserve enabled state and read back zero to restore upstream display',async()=>{
- const policy=await import('./assets/model-policy.js');let saved={disabled:true,context_length:1000000};const calls=mockAPI((_url,opts)=>{if(opts.method==='POST')saved=JSON.parse(opts.body);return{models:{'test-model':saved}};});
- await policy.loadModelPolicy();assert.equal(policy.displayContext({id:'test-model',context_length:128000}),1000000);policy.bindModelPolicy(()=>{});policy.openContextEditor('test-model');$('modelContextValue').value='0';await $('modelContextForm').onsubmit({preventDefault(){}});
- assert.deepEqual(JSON.parse(calls.find(c=>c.opts.method==='POST').opts.body),{id:'test-model',disabled:true,context_length:0});assert.equal(policy.displayContext({id:'test-model',context_length:128000}),128000);
+test('model context editor is removed end to end while upstream display context still honours stored overrides',async()=>{
+ const policy=await import('./assets/model-policy.js'),html=read('index.html');
+ assert.equal('openContextEditor' in policy,false);
+ assert.doesNotMatch(read('assets/model-policy.js'),/openContextEditor|modelContextForm|btnModelContextSave/);
+ assert.doesNotMatch(html,/modelContextVeil|btnModelContextSave|上下文展示/);
+ mockAPI(()=>({models:{'test-model':{disabled:true,context_length:1000000}}}));
+ await policy.loadModelPolicy();
+ assert.equal(policy.displayContext({id:'test-model',context_length:128000}),1000000);
+ assert.equal(policy.displayContext({id:'other-model',context_length:128000}),128000);
 });

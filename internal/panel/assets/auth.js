@@ -8,7 +8,7 @@ function reflectSession() {
   document.querySelector('.shell').inert = locked;
   $('sessionState').textContent = locked ? '尚未登录' : '本机会话';
   $('defaultPasswordNotice').hidden = locked || !session.default_password;
-  if (locked) { $('subscriptionURL').value = ''; $('loginPassword').value = ''; $('oldPassword').value = ''; $('newPassword').value = ''; $('confirmPassword').value = ''; $('loginPassword').focus(); }
+  if (locked) { $('loginPassword').value = ''; $('oldPassword').value = ''; $('newPassword').value = ''; $('confirmPassword').value = ''; $('loginPassword').focus(); }
 }
 document.addEventListener('panel:session', reflectSession);
 $('loginForm').onsubmit = async event => {

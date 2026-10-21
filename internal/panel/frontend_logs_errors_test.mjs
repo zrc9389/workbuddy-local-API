@@ -87,7 +87,9 @@ test('summary fetch is used for the list and detail is fetched by stable id on c
   const logs = await import('./assets/logs.js');
   await logs.loadLogs();
   const list = $('reqBody').innerHTML;
-  assert.match(list, /data-event-id="a{32}"/);
+  assert.match(list, /data-error-index="0"/);
+  assert.match(list, /data-error-index="1"/);
+  assert.doesNotMatch(list, /a{32}/);
   assert.doesNotMatch(list, /req-private|private-account|203\.0\.113\.7/);
   assert.ok(!calls.some(c => /\/panel\/api\/logs(\?|$)/.test(c.url)), 'error page must not read system logs');
   assert.equal($('logBox').innerHTML, '');
@@ -114,6 +116,7 @@ test('memory-only metrics expose summaries and still allow id lookup', async () 
   await cap.loadCapabilities();
   const logs = await import('./assets/logs.js');
   await logs.loadLogs();
-  assert.match($('reqBody').innerHTML, /data-event-id="c{32}"/);
+  assert.match($('reqBody').innerHTML, /data-error-index="0"/);
+  assert.doesNotMatch($('reqBody').innerHTML, /c{32}/);
   assert.match($('reqBody').innerHTML, /503/);
 });

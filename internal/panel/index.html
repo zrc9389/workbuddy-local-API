@@ -35,7 +35,7 @@
   <main id="content" tabindex="-1">
     <header class="topbar"><h1 id="ttl" class="sr-only">概览</h1><p class="sr-only" id="subMeta">本机 · 密码保护</p><div class="top-actions"><span id="sessionState" class="session-badge sr-only">尚未登录</span><button id="btnLogout" class="ghost" type="button">退出</button><button id="btnRefresh" type="button" hidden>刷新</button><button id="btnAdd" class="primary" type="button" hidden>添加账号</button></div></header>
     <div id="demoNotice" class="demo-notice" role="status" hidden><span class="tag warn">DEMO / 演示模式</span><strong>当前为隔离演示数据，不代表真实账号、流量或生产状态。</strong></div>
-    <div id="defaultPasswordNotice" class="security-notice" hidden>仍在使用初始管理密码 <code>123456</code>。请前往 <a href="#config">设置中的管理密码</a> 修改。</div>
+    <div id="defaultPasswordNotice" class="security-notice" hidden>仍在使用初始管理密码。请前往 <a href="#config">设置中的管理密码</a> 修改。</div>
     <!-- ===== view:overview ===== -->
     <section class="view overview" id="view-overview" aria-label="概览">
       <header class="view-heading"><h2>概览</h2></header>
@@ -160,12 +160,10 @@
     <!-- ===== /view:models ===== -->
     <!-- ===== view:config ===== -->
     <section class="view" id="view-config" aria-label="系统设置" hidden>
-      <header class="view-heading"><h2>系统设置</h2><p class="hint">管理订阅、密码和本机接口。</p></header>
+      <header class="view-heading"><h2>系统设置</h2></header>
       <div class="settings-grid">
-      <article class="surface subscription-manager"><div class="section-heading"><h3>Meta 节点订阅</h3><p class="hint" id="subscriptionCount" role="status">尚无订阅</p></div><form id="subscriptionForm"><label for="subscriptionURL">HTTP(S) 订阅地址</label><input id="subscriptionURL" type="url" autocomplete="off" spellcheck="false" placeholder="https://…" required><label for="subscriptionName">订阅名称（可选）</label><input id="subscriptionName" type="text" maxlength="64" autocomplete="off" spellcheck="false" placeholder="例如：主力节点"><p class="hint">订阅密钥仅交给本机后端保存，不回显、不写入浏览器存储。</p><button id="btnSubscriptionSave" type="submit">导入订阅</button><p id="subscriptionNote" class="hint" role="status"></p></form><div id="subscriptionList" class="subscription-list" aria-label="已导入订阅"></div></article>
       <article class="surface"><h3>管理密码</h3><form id="passwordForm"><label for="oldPassword">当前密码</label><input id="oldPassword" type="password" autocomplete="current-password" required><label for="newPassword">新密码</label><input id="newPassword" type="password" autocomplete="new-password" minlength="8" required><label for="confirmPassword">确认新密码</label><input id="confirmPassword" type="password" autocomplete="new-password" minlength="8" required><p class="hint">修改后所有管理会话会退出。</p><button id="btnPasswordSave" type="submit">修改密码</button></form></article>
-      <article class="surface motion-settings"><div class="section-heading"><h3>启动动画</h3><p class="hint">更改后自动保存</p></div><label for="animationStyle">动画风格</label><select id="animationStyle" name="animationStyle"><option value="names">名称轮播 · Names</option><option value="orbital">轨道聚合 · Orbital</option><option value="scan">扫描唤醒 · Scan</option><option value="minimal">极简淡入 · Minimal</option></select><p class="hint">名称轮播：英文 AI 名称逐字切换；轨道聚合：同心环收束与粒子聚合；扫描唤醒：水平光带扫过并点亮标语；极简淡入：仅保留标记与淡入淡出。</p><div class="form-actions"><button id="animationPreview" type="button">预览动画</button><span id="animationNote" class="hint" role="status">预览仅播放一次，不写入偏好。</span></div></article>
-      <article class="surface endpoints"><h3>本机 API</h3><dl><dt>Base URL</dt><dd><code id="localBaseURL"></code></dd><dt>Chat Completions</dt><dd><code id="localChatURL"></code></dd><dt>Responses</dt><dd><code id="localResponsesURL"></code></dd></dl><p class="hint">仅限本机，无需 API key。Chat 历史由调用方管理；Responses 归档与缓存分离。</p></article></div>
+      <article class="surface motion-settings"><div class="section-heading"><h3>启动动画</h3></div><label for="animationStyle">动画风格</label><select id="animationStyle" name="animationStyle"><option value="names">名称轮播 · Names</option><option value="orbital">轨道聚合 · Orbital</option><option value="scan">扫描唤醒 · Scan</option><option value="minimal">极简淡入 · Minimal</option></select><div class="form-actions"><button id="animationPreview" type="button">预览动画</button><span id="animationNote" class="hint" role="status">预览仅播放一次，不写入偏好。</span></div></article></div>
     </section>
     <!-- ===== /view:config ===== -->
     <!-- ===== view:logs ===== -->
@@ -176,7 +174,7 @@
   </main>
 </div>
 <!-- ===== login: auth veil ===== -->
-<div class="veil on" id="authVeil"><section class="modal auth-card" role="dialog" aria-modal="true" aria-labelledby="authTitle"><h2 id="authTitle">你的本机工作台。</h2><p class="hint">使用管理密码进入。账号凭据仅由本机后端管理。</p><form id="loginForm"><label for="loginPassword">管理密码</label><input id="loginPassword" type="password" autocomplete="current-password" required autofocus><p id="authError" class="error-notice" role="alert" hidden></p><button id="btnLogin" type="submit" class="primary">进入工作台</button></form><p class="hint">首次使用初始密码 123456；登录后请在设置中修改。</p></section></div>
+<div class="veil on" id="authVeil"><section class="modal auth-card" role="dialog" aria-modal="true" aria-labelledby="authTitle"><span class="brand-mark" aria-hidden="true">W<span>·</span></span><h2 id="authTitle">你的本机工作台</h2><form id="loginForm"><label for="loginPassword">管理密码</label><input id="loginPassword" type="password" autocomplete="current-password" required autofocus><p id="authError" class="error-notice" role="alert" hidden></p><button id="btnLogin" type="submit" class="primary">进入工作台</button></form></section></div>
 <!-- ===== overlays: node / model-context / add-account / request-detail / task-failure ===== -->
 <div class="veil" id="nodeVeil" inert><section class="modal node-modal" role="dialog" aria-modal="true" aria-labelledby="nodeTitle" tabindex="-1"><div class="card-heading"><div><h2 id="nodeTitle">选择账号出口</h2></div><button id="btnCloseNodes" type="button" class="ghost" data-modal-close aria-label="关闭节点选择">关闭 ×</button></div><p id="nodeStatus" class="hint" role="status"></p><p id="nodeError" class="error-text" role="alert"></p><div id="nodeList" class="node-grid"></div><div id="nodePages"></div></section></div>
 
