@@ -1,10 +1,9 @@
-import { $, esc, toast } from './common.js';
+import { $, esc } from './common.js';
 import { api } from './api.js';
 let subscriptions = [];
 export async function loadConfig() {
   const title = $('ttl');
   if (title) title.textContent = '系统设置';
-  await loadSubscriptions();
 }
 
 function note(text, error = false) {
@@ -97,30 +96,3 @@ export async function subscriptionAction(action, id, extra = {}) {
   return null;
 }
 
-$('subscriptionForm').onsubmit = async event => {
-  event.preventDefault(); const input = $('subscriptionURL'), button = $('btnSubscriptionSave');
-  const raw = input.value.trim();
-  try { const url = new URL(raw); if (!['https:','http:'].includes(url.protocol)) throw new Error(); }
-  catch { toast('请输入有效的 HTTP(S) 订阅地址', 'err'); return; }
-  button.disabled = true; note('正在由本机后端导入订阅…');
-  try { const nameInput = globalThis.document?.getElementById('subscriptionName'); const body = {url:raw}; if (nameInput?.value.trim()) body.name = nameInput.value.trim(); const result = await api('meta/subscriptions', {method:'POST',body:JSON.stringify(body)}); input.value = ''; if (nameInput) nameInput.value = ''; await loadSubscriptions(); note('已导入 ' + (result.nodes ?? '—') + ' 个节点；订阅地址仅保存在后端。'); }
-  catch (error) { note('订阅导入失败：' + error.message, true); }
-  finally { button.disabled = false; }
-};
-
-const subscriptionList = globalThis.document?.getElementById('subscriptionList');
-if (subscriptionList) subscriptionList.addEventListener('click', async event => {
-  const button = event.target.closest('button[data-subscription-toggle],button[data-subscription-rename],button[data-subscription-refresh],button[data-subscription-reveal],button[data-subscription-delete]');
-  if (!button || button.disabled) return;
-  const id = button.dataset.subscriptionToggle || button.dataset.subscriptionRename || button.dataset.subscriptionRefresh || button.dataset.subscriptionReveal || button.dataset.subscriptionDelete;
-  const action = button.dataset.subscriptionToggle ? 'toggle' : button.dataset.subscriptionRename ? 'rename' : button.dataset.subscriptionRefresh ? 'refresh' : button.dataset.subscriptionReveal ? 'reveal' : 'delete';
-  button.disabled = true;
-  try {
-    const result = await subscriptionAction(action, id);
-    if (action === 'reveal') {
-      const row = button.closest('.subscription-row'), target = row?.querySelector('.subscription-url');
-      if (target) { target.textContent = result || '订阅地址不可用'; target.hidden = !result; }
-    }
-  } catch (error) { note(error.status === 409 ? '该订阅仍有账号绑定，请先解除绑定。' : '订阅操作失败：' + error.message, true); }
-  finally { button.disabled = false; }
-});

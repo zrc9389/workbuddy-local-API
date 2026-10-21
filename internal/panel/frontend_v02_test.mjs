@@ -15,7 +15,7 @@ test('v0.2 Overview exposes the visual contract without legacy search or task UI
  assert.match(html, /id="ovTheme"[^>]*aria-pressed/);
  assert.ok(html.indexOf('data-view="overview"') < html.indexOf('data-view="accounts"'));
  assert.doesNotMatch(html, /type="search"|id="(?:accQ|accStatus|accRealm|mdQ|mdRealm|reqQ|reqOutcome|reqRange|usRange|cfgForm|logChips|accSelectPage|accBulk\w*|btnCheckinAll|btnTravelAll|btnActivityAll|btnKeepaliveAll|preferencesForm|creditGuardLow|settingTheme|btnPreferencesSave)"/);
- assert.match(html, /id="subscriptionForm"/);assert.match(html, /id="passwordForm"/);assert.match(html, /id="localBaseURL"/);assert.match(html, /系统设置/);
+ assert.match(html, /id="passwordForm"/);assert.match(html, /系统设置/);
  assert.doesNotMatch(read('assets/config.js'), /credit_guard_low|creditGuardLow|settingTheme|savePreferences|setTheme/);
  assert.match(html, /id="btnRunAll"/);
  assert.match(html, /id="demoNotice"[^>]*hidden/);
@@ -32,18 +32,20 @@ test('responsive surfaces wrap content instead of concealing horizontal overflow
  assert.doesNotMatch(css, /overflow-x:\s*(?:hidden|clip|auto|scroll)|text-overflow:\s*ellipsis|white-space:\s*nowrap/);
 });
 
-test('batch D navigation keeps six primary entries, hides the desktop theme control and tightens the shell', () => {
+test('batch D navigation keeps nine flat entries, no nav groups and a floating glass nav', () => {
  const html = read('index.html'), css = read('assets/styles.css'), nav = html.slice(html.indexOf('<nav'), html.indexOf('</nav>'));
- const labels = [...nav.matchAll(/class="nav-label">([^<]+)</g)].map(match => match[1]);
- assert.deepEqual(labels, ['账号任务', '积分用量']);
- for (const label of ['概览','账号池','账号出口','模型查看','错误记录','系统设置']) assert.match(nav, new RegExp('>' + label + '<'), label);
- assert.doesNotMatch(nav, /nav-index|nav-arrow|运行日志/);
+ const entries = [...nav.matchAll(/class="nav-item"[^>]*>\s*<a[^>]*>([^<]+)<\/a>/g)].map(match => match[1]);
+ assert.deepEqual(entries, ['概览','账号池','账号任务','账号出口','积分用量','积分构成','模型查看','错误记录','系统设置']);
+ assert.doesNotMatch(nav, /nav-group|nav-label|nav-sub|nav-index|nav-arrow|运行日志/);
  assert.doesNotMatch(html.slice(0, html.indexOf('</nav>')), /id="btnTheme"|theme-toggle|本机会话/);
  assert.match(html, /id="ovTheme"[^>]*aria-pressed/);
  assert.match(css, /\.shell\s*\{[^}]*width:\s*100%/);
  assert.match(css, /\.shell\s*\{[^}]*max-width:\s*none/);
- assert.match(css, /\.shell\s*\{[^}]*padding:\s*0\s+clamp\(16px,2vw,32px\)\s+52px\s+0/);
- assert.match(css, /\.nav\s*\{[^}]*position:\s*sticky[^}]*height:\s*100dvh[^}]*border-radius:\s*0/);
+ assert.match(css, /\.shell\s*\{[^}]*padding:\s*16px\s+20px\s+48px\s+16px/);
+ assert.match(css, /\.nav\s*\{[^}]*position:\s*sticky[^}]*top:\s*16px[^}]*border-radius:\s*var\(--glass-radius\)/);
+ const navRadius = css.match(/\.nav\s*\{[^}]*border-radius:\s*([^;}]+)/);
+ assert.ok(navRadius && navRadius[1].trim() !== '0', 'floating nav must not use a zero radius');
+ assert.match(css, /\.nav\s*\{[^}]*padding:\s*26px\s+16px\s+18px/);
  assert.equal((css.match(/@media \(max-width:700px\)/g) || []).length, 1);
  assert.match(css, /@media \(max-width:980px\)[\s\S]*?\.nav\s*\{[^}]*height:\s*auto/);
  assert.match(css, /button\.refreshing\s*\{[^}]*border-color:\s*var\(--accent\)[^}]*color:\s*var\(--accent\)/);
@@ -52,26 +54,24 @@ test('batch D navigation keeps six primary entries, hides the desktop theme cont
  assert.match(css, /\.model-grid\s*\{[^}]*minmax\(min\(100%,\s*280px\),\s*1fr\)/);
 });
 
-test('batch B/C integration exposes subscription management, error detail and node filter markup', () => {
+test('batch B/C integration exposes egress subscription entry, error detail and node filter markup', () => {
  const html = read('index.html'), css = read('assets/styles.css');
- for (const id of ['subscriptionName','subscriptionCount','subscriptionList','reqDetailVeil','reqDetailTitle','btnCloseReqDetail','reqDetailBody','nodeSubscriptionFilter']) {
+ for (const id of ['btnEgressImport','egressSubscriptionName','reqDetailVeil','reqDetailTitle','btnCloseReqDetail','reqDetailBody','nodeSubscriptionFilter']) {
   assert.match(html, new RegExp('id="' + id + '"'), id);
  }
- assert.match(html, /id="subscriptionName"[^>]*maxlength="64"/);
- assert.match(html, /id="subscriptionName"[^>]*type="text"/);
+ assert.match(html, /id="egressSubscriptionName"[^>]*maxlength="64"/);
+ assert.match(html, /id="egressSubscriptionName"[^>]*type="text"/);
  assert.match(html, /<select id="nodeSubscriptionFilter"[^>]*>[\s\S]*?<option value="">全部订阅<\/option>/);
  assert.match(html, /<div class="veil" id="reqDetailVeil" inert>[\s\S]*?aria-labelledby="reqDetailTitle"[\s\S]*?id="btnCloseReqDetail"/);
  assert.match(html, /id="reqDetailBody"/);
- assert.ok(html.indexOf('id="subscriptionURL"') < html.indexOf('id="subscriptionName"'), 'name follows URL input');
- assert.ok(html.indexOf('id="subscriptionForm"') < html.indexOf('id="subscriptionList"'), 'list follows import form');
  assert.ok(html.indexOf('id="nodeAccount"') < html.indexOf('id="nodeSubscriptionFilter"'), 'filter follows account label');
  assert.ok(html.indexOf('id="nodeSubscriptionFilter"') < html.indexOf('id="nodeStatus"'), 'filter precedes node status');
  assert.match(html, /id="logsNavItem" class="nav-item"><a href="#logs" data-view="logs">错误记录<\/a>/);
  assert.doesNotMatch(html, /id="logsNavItem"[^>]*hidden/);
- for (const cls of ['subscription-list','subscription-row','subscription-copy','subscription-actions','subscription-url']) {
+ for (const cls of ['subscription-detail-row','subscription-detail-main','subscription-detail-actions']) {
   assert.ok(css.includes('.' + cls + ' {'), cls);
  }
- assert.match(css, /\.subscription-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\)\s+auto/);
+ assert.match(css, /\.subscription-detail-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,1fr\)\s+auto/);
  assert.match(css, /\.req-detail-modal\s*\{[^}]*width:\s*min\(100%,\s*760px\)/);
  assert.match(css, /#nodeSubscriptionFilter\s*\{[^}]*width:\s*100%/);
 });
@@ -132,11 +132,16 @@ test('request list keeps details out of the row and archive empty is authoritati
  const calls=mockAPI(url=>url.endsWith('/request_metrics')?{archive:{enabled:true},recent:[entry]}:url.includes('/request_logs')?{entries:[]}:{entries:[]});await logs.loadLogs();assert.match($('reqBody').innerHTML,/暂无错误记录/);assert.doesNotMatch($('reqBody').innerHTML,/req-1/);assert.ok(calls.some(c=>c.url==='/panel/api/request_logs?summary=1&limit=1000'));
 });
 
-test('settings reject non-HTTP subscription URLs and keep the import failure visible',async()=>{
- const config=await import('./assets/config.js');const calls=mockAPI(()=>{throw new Error('offline');});
- $('subscriptionURL').value='javascript:alert(1)';await $('subscriptionForm').onsubmit({preventDefault(){}});assert.equal(calls.length,0);
- $('subscriptionURL').value='https://example.com/sub';await $('subscriptionForm').onsubmit({preventDefault(){}});
- assert.deepEqual(calls.map(c=>c.url),['/panel/api/meta/subscriptions']);assert.match($('subscriptionNote').textContent,/订阅导入失败：offline/);
+test('settings keep only password, startup animation and no subscription or endpoint blocks',async()=>{
+ const html=read('index.html'),config=read('assets/config.js');
+ const settings=html.slice(html.indexOf('id="view-config"'),html.indexOf('id="view-logs"'));
+ for(const gone of ['subscription-manager','subscriptionForm','subscriptionURL','subscriptionName','subscriptionCount','subscriptionList','btnSubscriptionSave','subscriptionNote','endpoints','localBaseURL','localChatURL','localResponsesURL','settingTheme','creditGuardLow','btnPreferencesSave'])assert.ok(!settings.includes(gone),gone);
+ assert.ok(!settings.includes('管理订阅、密码和本机接口'),'settings subtitle removed');
+ assert.match(settings,/id="passwordForm"/);assert.match(settings,/修改后所有管理会话会退出。/);
+ assert.match(settings,/id="animationStyle"/);assert.match(settings,/id="animationPreview"/);assert.match(settings,/id="animationNote"/);
+ assert.doesNotMatch(settings,/名称轮播：英文 AI 名称逐字切换/);
+ assert.doesNotMatch(config,/subscriptionForm|subscriptionURL|btnSubscriptionSave/);
+ assert.doesNotMatch(config,/credit_guard_low|creditGuardLow|settingTheme|btnPreferencesSave|savePreferences|setTheme/);
 });
 test('overview only requests accounts after authentication and keeps the aggregate contract',async()=>{
  const client=await import('./assets/api.js'),overview=await import('./assets/overview.js');client.lockSession();
