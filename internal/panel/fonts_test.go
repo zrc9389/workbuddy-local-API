@@ -16,6 +16,11 @@ func TestFontAssetsServed(t *testing.T) {
 		"source-sans-3-600.woff2",
 		"noto-sans-sc-400.woff2",
 		"noto-sans-sc-500.woff2",
+		"source-serif-4-400.woff2",
+		"source-serif-4-600.woff2",
+		"source-serif-4-400-italic.woff2",
+		"noto-serif-sc-400.woff2",
+		"noto-serif-sc-500.woff2",
 	}
 	for _, name := range fonts {
 		rec := httptest.NewRecorder()
