@@ -11,15 +11,39 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function descendants(element, found = []) {
+  for (const child of element?.children || []) {
+    found.push(child);
+    descendants(child, found);
+  }
+  return found;
+}
+
+function classesOf(player) {
+  return descendants(player.root).map(el => String(el.className || ''));
+}
+
+const intervalsBeforeReduced = dom.intervals.size;
+
+function withReducedMotion(run) {
+  const original = globalThis.matchMedia;
+  globalThis.matchMedia = () => ({ matches: true, addEventListener() {} });
+  try { return run(); }
+  finally { globalThis.matchMedia = original; }
+}
+
 test('startup animation cycles English AI names and finishes at the hard limit', async () => {
   assert.deepEqual(animation.AI_NAMES, ['GPT', 'Claude', 'Gemini', 'DeepSeek', 'Qwen', 'Kimi', 'GLM']);
   assert.equal(animation.TARGET_MS, 8000);
-  assert.equal(animation.HARD_LIMIT_MS, 10000);
+  assert.equal(animation.HARD_LIMIT_MS, 12000);
   let finished = 0;
-  const player = animation.startStartupAnimation({ onFinish: () => finished++ });
-  assert.equal(player.root.parentNode, document.body);
+  const host = new dom.Element('startupHost');
+  const player = animation.startStartupAnimation({ host, onFinish: () => finished++ });
+  assert.equal(host.children.length, 1);
+  assert.equal(host.children[0], player.root);
   assert.equal(player.root.dataset.phase, 'names');
-  assert.equal(player.root.querySelector?.('.wb-startup-name')?.textContent || 'GPT', 'GPT');
+  assert.equal(classesOf(player).some(name => name.includes('wb-startup-name')), true);
+  assert.ok(descendants(player.root).some(el => el.textContent === 'GPT'));
   player.setPhase('syncing');
   assert.equal(player.root.dataset.phase, 'syncing');
   player.destroy();
@@ -28,9 +52,23 @@ test('startup animation cycles English AI names and finishes at the hard limit',
   player.finish();
   player.destroy();
   assert.equal(finished, 1);
+  player.destroy();
+  assert.equal(finished, 1);
 });
 
-test('startup animation hides and removes itself at ten seconds, and stops cycling while hidden', async () => {
+test('finish plays the 360ms exit before unmounting the overlay', async () => {
+  const host = new dom.Element('startupHost');
+  let finished = 0;
+  const player = animation.startStartupAnimation({ host, targetMs: 8000, hardLimitMs: 12000, onFinish: () => finished++ });
+  player.finish();
+  assert.equal(player.finished(), true);
+  assert.equal(finished, 1);
+  assert.equal(host.children.length, 1, 'exit keeps the node during the fade');
+  await sleep(420);
+  assert.equal(host.children.length, 0);
+});
+
+test('startup animation stops its interval while hidden and tears down at the hard limit', async () => {
   let removed = 0;
   const player = animation.startStartupAnimation({ targetMs: 30, hardLimitMs: 60, onFinish: () => removed++ });
   assert.equal(player.finished(), false);
@@ -59,12 +97,105 @@ test('the hard limit tears down the overlay even when the target phase is still 
     onFinish: () => finished++,
   });
   assert.equal(player.finished(), false);
-  const hard = scheduled.find(entry => entry.ms === 10000);
+  const hard = scheduled.find(entry => entry.ms === 12000);
   assert.ok(hard);
   hard.fn();
   assert.equal(player.finished(), true);
   assert.equal(finished, 1);
   assert.equal(document.getElementById('wbStartup'), null);
+});
+
+test('each style builds its own decorative DOM and the animation never calls fetch', () => {
+  const originalFetch = globalThis.fetch;
+  let fetches = 0;
+  globalThis.fetch = () => { fetches++; throw new Error('startup must not call fetch'); };
+  try {
+    const host = new dom.Element('startupHost');
+    const names = animation.startStartupAnimation({ host, style: 'names', targetMs: 8000, hardLimitMs: 12000 });
+    const namesClasses = classesOf(names);
+    assert.equal(namesClasses.filter(name => name === 'wb-startup-shutter').length, 5);
+    assert.equal(namesClasses.filter(name => name === 'wb-startup-gate-half is-top' || name === 'wb-startup-gate-half is-bottom').length, 2);
+    assert.ok(namesClasses.includes('wb-startup-gate-seam'));
+    assert.ok(namesClasses.includes('wb-startup-progress-fill'));
+    assert.ok(namesClasses.includes('wb-startup-noise'));
+    assert.ok(namesClasses.includes('wb-startup-curtain-path'));
+    names.destroy();
+
+    const orbital = animation.startStartupAnimation({ host, style: 'orbital', targetMs: 8000, hardLimitMs: 12000 });
+    const orbitalClasses = classesOf(orbital);
+    assert.equal(orbitalClasses.filter(name => name === 'wb-startup-shutter').length, 5);
+    assert.ok(orbitalClasses.includes('wb-startup-orbit'));
+    assert.equal(orbitalClasses.includes('wb-startup-gate-seam'), false);
+    orbital.destroy();
+
+    const scan = animation.startStartupAnimation({ host, style: 'scan', targetMs: 8000, hardLimitMs: 12000 });
+    const scanClasses = classesOf(scan);
+    assert.equal(scanClasses.filter(name => name === 'wb-startup-shutter').length, 5);
+    assert.ok(scanClasses.includes('wb-startup-beam'));
+    assert.equal(scanClasses.includes('wb-startup-gate-half is-top'), false);
+    scan.destroy();
+
+    const minimal = animation.startStartupAnimation({ host, style: 'minimal', targetMs: 8000, hardLimitMs: 12000 });
+    const minimalClasses = classesOf(minimal);
+    assert.ok(minimalClasses.includes('wb-startup-brand'));
+    assert.equal(minimalClasses.includes('wb-startup-shutter'), false);
+    assert.equal(minimalClasses.includes('wb-startup-gate-seam'), false);
+    assert.equal(minimalClasses.includes('wb-startup-beam'), false);
+    minimal.destroy();
+  }
+  finally { globalThis.fetch = originalFetch; }
+  assert.equal(fetches, 0);
+});
+
+test('reduced motion shows static branding without mounting the overlay', () => {
+  let finished = 0;
+  const host = new dom.Element('startupHost');
+  const player = withReducedMotion(() => animation.startStartupAnimation({ host, onFinish: () => finished++ }));
+  assert.equal(player.reduced, true);
+  assert.equal(player.root, null);
+  assert.equal(host.children.length, 0);
+  assert.equal(dom.intervals.size, intervalsBeforeReduced);
+  player.setStyle('orbital');
+  player.setPhase('syncing');
+  player.finish();
+  player.destroy();
+  assert.equal(finished, 1);
+  assert.equal(player.finished(), true);
+});
+
+test('destroy stops every timer and listener at once and leaves no node behind', async () => {
+  const intervalsBefore = dom.intervals.size;
+  const listenersBefore = (dom.events.get('visibilitychange') || []).length;
+  const host = new dom.Element('startupHost');
+  const player = animation.startStartupAnimation({ host, style: 'names', targetMs: 8000, hardLimitMs: 12000 });
+  assert.equal(host.children.length, 1);
+  assert.equal(dom.intervals.size, intervalsBefore + 1);
+  assert.equal((dom.events.get('visibilitychange') || []).length, listenersBefore + 1);
+  player.destroy();
+  assert.equal(player.finished(), true);
+  assert.equal(dom.intervals.size, intervalsBefore);
+  assert.equal((dom.events.get('visibilitychange') || []).length, listenersBefore);
+  await sleep(420);
+  assert.equal(host.children.length, 0);
+});
+
+test('syncing phase fades the overlay out while destroy stays synchronous', async () => {
+  const host = new dom.Element('startupHost');
+  const player = animation.startStartupAnimation({ host, style: 'names', targetMs: 8000, hardLimitMs: 12000 });
+  player.setPhase('syncing');
+  assert.equal(player.root.dataset.phase, 'syncing');
+  player.destroy();
+  assert.equal(host.children.length, 0);
+  await sleep(10);
+  assert.equal(host.children.length, 0);
+});
+
+test('logout destroys the overlay immediately so it never covers the login card', () => {
+  const host = new dom.Element('startupHost');
+  const player = animation.startStartupAnimation({ host, style: 'names', targetMs: 8000, hardLimitMs: 12000 });
+  client.lockSession();
+  player.destroy();
+  assert.equal(host.children.length, 0);
 });
 
 test('authentication starts one bootstrap and does not repeat on a duplicate session event', async () => {
