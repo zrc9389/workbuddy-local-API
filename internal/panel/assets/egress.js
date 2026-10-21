@@ -5,6 +5,21 @@ import { registerPageCleanup, registerViewCleanup, onViewHidden, visibleInterval
 import { showModal, hideModal } from './modals.js';
 let nodes = [], bindings = [], accounts = [], subscriptions = [], nodePage = 1, mainPage = 1, accountPage = 1, targetUID = '', opened = false, starting = false, binding = false, refreshing = false, polling = false, pollTimer = null, pollDeadline = 0, pollAbort = null, readAbort = null, pollGeneration = 0, generation = 0, trendGeneration = 0, status = {}, tests = {}, trendHelper = null, subscriptionFilter = '', mainFilter = '', filterGeneration = 0, subscriptionsOpen = false, detailGeneration = 0, pendingNode = '';
 const CACHE_TTL_MS = 48 * 60 * 60 * 1000;
+// Pure 48h cache state for the subscription snapshot. Kept DOM-free so the
+// label, age and expiry rule can be asserted without rendering the egress page.
+export function subscriptionCacheState(lastRefreshAt, now = Date.now()) {
+  let stamp = NaN;
+  if (lastRefreshAt instanceof Date) stamp = lastRefreshAt.getTime();
+  else if (typeof lastRefreshAt === 'number') stamp = lastRefreshAt;
+  else if (typeof lastRefreshAt === 'string' && lastRefreshAt.trim()) stamp = Date.parse(lastRefreshAt);
+  const current = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  if (!Number.isFinite(stamp) || stamp <= 0) return {expired:false, ageHours:null, label:'未刷新过'};
+  const ageMs = Math.max(0, current - stamp);
+  const ageHours = Math.floor(ageMs / 3600000);
+  // The contract is strict: exactly 48h is still fresh, >48h is expired.
+  if (ageMs > CACHE_TTL_MS) return {expired:true, ageHours, label:'缓存已过期'};
+  return {expired:false, ageHours, label:'缓存 ' + ageHours + ' 小时前'};
+}
 export function formatBytes(value) {
   if (value == null || !Number.isFinite(Number(value)) || Number(value) < 0) return '—';
   let n = Number(value), unit = 0; const units = ['B','KB','MB','GB','TB'];
@@ -232,11 +247,13 @@ async function reloadSubscriptionsAndNodes(signal = readAbort?.signal) {
     if (error.name !== 'AbortError' && current === generation) $('egressNodeError').textContent = '节点读取失败：' + error.message;
   }
 }
-function stopPolling() {
+function pausePolling() {
   if (pollTimer) clearVisibleInterval(pollTimer);
-  pollTimer = null; pollDeadline = 0;
-  if (pollAbort) { pollAbort.abort(); pollAbort = null; polling = false; }
+  pollTimer = null;
+  if (pollAbort) { pollAbort.abort(); pollAbort = null; }
+  polling = false;
 }
+function stopPolling() { pausePolling(); pollDeadline = 0; }
 function beginReads() {
   readAbort?.abort();
   readAbort = new AbortController();
@@ -245,13 +262,35 @@ function beginReads() {
 function abortReads() { readAbort?.abort(); readAbort = null; }
 function startPolling() {
   stopPolling();
+  if (!opened) return pollGeneration;
   pollDeadline = Date.now() + 30 * 60 * 1000 + 10000;
   const epoch = ++pollGeneration;
+  // A hidden tab keeps the deadline so `visibilitychange` can resume inside the
+  // same 30 minute window without ever running a timer while hidden.
+  if (document.hidden) return epoch;
   pollTimer = visibleInterval(pollNodeTests, 1500);
   return epoch;
 }
+// Hiding the page pauses polling without discarding the 30 minute window; the
+// timer is recreated only when the node modal is still open and the window has
+// not elapsed. Anything later than that keeps the poll stopped.
+function resumePolling() {
+  if (pollTimer || polling) return;
+  if (!opened || !pollDeadline || !session.authenticated) { stopPolling(); return; }
+  if (Date.now() > pollDeadline) {
+    stopPolling();
+    const errorEl = $('nodeError');
+    if (errorEl) errorEl.textContent = '已停止等待测试结果。';
+    return;
+  }
+  pollTimer = visibleInterval(pollNodeTests, 1500);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { if (pollTimer) pausePolling(); return; }
+  if (opened) resumePolling();
+});
 export async function pollNodeTests(epoch = pollGeneration) {
-  if (!opened || polling) return;
+  if (!opened || polling || document.hidden) return;
   if (epoch !== pollGeneration) return;
   if (pollDeadline && Date.now() > pollDeadline) { stopPolling(); $('nodeError').textContent = '已停止等待测试结果。'; return; }
   const current = generation, filterEpoch = filterGeneration, controller = new AbortController(), signal = controller.signal;
@@ -284,7 +323,9 @@ export async function startNodeTests() {
     catch (error) { if (error.status !== 409) throw error; job = await api('meta/tests', {signal}); }
     if (!opened || current !== generation) return;
     tests = job; renderNodes();
-    if (tests.running) { await pollNodeTests(); if (opened && current === generation && tests.running) startPolling(); }
+    // The awaits above may finish after the user hides the page or leaves the
+    // view; in that case polling must never be started behind their back.
+    if (tests.running) { await pollNodeTests(); if (opened && !document.hidden && current === generation && tests.running) startPolling(); }
   } catch (error) {
     if (error.name !== 'AbortError' && opened && current === generation) {
       $('nodeError').textContent = '无法启动节点测试：' + error.message;
@@ -423,16 +464,34 @@ async function bindAccountNode(node, uid = targetUID) {
   } catch (error) { if (current === generation) { const target = nodeErrorElement(); if (target) target.textContent = '绑定未确认：' + error.message; } }
   finally { binding = false; if (current === generation) { renderNodes(); renderMainNodes(); } }
 }
+// Refresh every enabled subscription once, strictly serially. Each item gets its
+// own AbortController and a short timeout; one failure never stops the rest. The
+// whole run shares a 12s ceiling so it can never outlive the startup animation.
+// It only ever posts `{action:'refresh',id}` and never touches `meta/tests`.
 export async function refreshSubscriptionsOnce({ signal, timeoutMs = 8000 } = {}) {
   const failed = [], refreshed = [];
-  let list = [];
   const startedAt = Date.now();
-  const totalBudget = Math.min(12000, Math.max(4000, Number(timeoutMs) || 8000));
-  try {
-    const result = await api('meta/subscriptions', { signal });
-    list = Array.isArray(result?.subscriptions) ? result.subscriptions.filter(item => item && item.id && item.enabled === true) : [];
-  } catch (error) {
-    return { ok: false, refreshed: 0, failed: [{id: 'subscriptions', error: error.name === 'AbortError' ? '已取消' : error.message}], nodes: [] };
+  const itemTimeout = Math.min(4000, Math.max(500, Number(timeoutMs) || 8000));
+  const totalBudget = 12000;
+  const remainingBudget = () => totalBudget - (Date.now() - startedAt);
+  let list = [];
+  {
+    // The list read shares the 12s ceiling too; otherwise a stalled GET could
+    // outlive the startup animation before the first POST is ever attempted.
+    const controller = new AbortController(), onAbort = () => controller.abort();
+    let timedOut = false;
+    signal?.addEventListener('abort', onAbort, {once:true});
+    if (signal?.aborted) controller.abort();
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(1, Math.min(itemTimeout, remainingBudget())));
+    try {
+      const result = await api('meta/subscriptions', { signal: controller.signal });
+      list = Array.isArray(result?.subscriptions) ? result.subscriptions.filter(item => item && item.id && item.enabled === true) : [];
+    } catch (error) {
+      const reason = timedOut ? '超时' : controller.signal.aborted ? '已取消' : error.message;
+      return notifySubscriptionsRefreshed({ ok: false, refreshed: 0, failed: [{id: 'subscriptions', error: reason}], nodes: [] }, signal);
+    } finally {
+      clearTimeout(timer); signal?.removeEventListener('abort', onAbort);
+    }
   }
   for (let index = 0; index < list.length; index++) {
     const item = list[index];
@@ -440,13 +499,13 @@ export async function refreshSubscriptionsOnce({ signal, timeoutMs = 8000 } = {}
       for (const rest of list.slice(index)) failed.push({id: rest.id, error: '已取消'});
       break;
     }
-    const remaining = totalBudget - (Date.now() - startedAt);
+    const remaining = remainingBudget();
     if (remaining <= 0) { for (const rest of list.slice(index)) failed.push({id: rest.id, error: '总预算已用尽'}); break; }
     const controller = new AbortController(), onAbort = () => controller.abort();
     let timedOut = false;
     signal?.addEventListener('abort', onAbort, {once:true});
     if (signal?.aborted) controller.abort();
-    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(1, Math.min(4000, Number(timeoutMs) || 8000, remaining)));
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(1, Math.min(itemTimeout, remaining)));
     try {
       await api('meta/subscriptions', {method:'POST', body: JSON.stringify({action:'refresh', id:item.id}), signal:controller.signal});
       refreshed.push(item.id);
@@ -458,13 +517,46 @@ export async function refreshSubscriptionsOnce({ signal, timeoutMs = 8000 } = {}
     }
   }
   let nextNodes = [];
-  try {
-    const data = await api('meta/nodes', { signal });
-    nextNodes = Array.isArray(data?.nodes) ? data.nodes : [];
-  } catch (error) {
-    failed.push({id:'nodes', error:error.name === 'AbortError' ? '已取消' : error.message});
+  if (!signal?.aborted) {
+    const remaining = remainingBudget();
+    if (remaining <= 0) {
+      failed.push({id:'nodes', error:'总预算已用尽'});
+    } else {
+      const controller = new AbortController(), onAbort = () => controller.abort();
+      let timedOut = false;
+      signal?.addEventListener('abort', onAbort, {once:true});
+      const timer = setTimeout(() => { timedOut = true; controller.abort(); }, Math.max(1, remaining));
+      try {
+        const data = await api('meta/nodes', { signal: controller.signal });
+        nextNodes = Array.isArray(data?.nodes) ? data.nodes : [];
+      } catch (error) {
+        failed.push({id:'nodes', error: timedOut ? '超时' : controller.signal.aborted ? '已取消' : error.message});
+      } finally {
+        clearTimeout(timer); signal?.removeEventListener('abort', onAbort);
+      }
+    }
+  } else {
+    failed.push({id:'nodes', error:'已取消'});
   }
-  return { ok: failed.length === 0, refreshed: refreshed.length, failed, nodes: nextNodes };
+  return notifySubscriptionsRefreshed({ ok: failed.length === 0, refreshed: refreshed.length, failed, nodes: nextNodes }, signal);
+}
+// In-memory notification only. The egress page listens for it to show the
+// failure count; nothing is persisted and no global dialog is opened.
+function notifySubscriptionsRefreshed(result, signal) {
+  if (signal?.aborted) return result;
+  try {
+    if (typeof document !== 'undefined' && typeof CustomEvent === 'function') document.dispatchEvent(new CustomEvent('panel:subscriptions-refreshed', {detail: result}));
+  } catch { /* Notification is best effort; the result is still returned. */ }
+  return result;
+}
+function pauseEgressWork() {
+  // A hidden tab only pauses work: the node modal and its 30 minute window stay
+  // intact so `visibilitychange` can resume polling when the tab returns.
+  if (pollTimer || pollAbort) pausePolling();
+  abortReads();
+  pollGeneration++;
+  trendGeneration++;
+  trendHelper = null;
 }
 function stopEgressWork() {
   if (opened) closeNodeModal();
@@ -495,6 +587,14 @@ if ($('egressSubscriptionForm')) $('egressSubscriptionForm').onsubmit = importSu
 if ($('btnRefreshNodes')) $('btnRefreshNodes').onclick = refreshNodes;
 if ($('btnSubscriptionDetails')) $('btnSubscriptionDetails').onclick = openSubscriptionDetails;
 if ($('btnCloseSubscriptions')) $('btnCloseSubscriptions').onclick = closeSubscriptionDetails;
+// Login-time refreshes report through an in-memory event; the egress page owns
+// the static hint so no global dialog ever appears.
+document.addEventListener('panel:subscriptions-refreshed', event => {
+  const hint = $('egressRefreshHint');
+  if (!hint) return;
+  const failed = Array.isArray(event.detail?.failed) ? event.detail.failed.length : 0;
+  hint.textContent = failed ? failed + ' 个订阅刷新失败' : '';
+});
 bindPager('nodePages', (_key, page) => { nodePage = page; renderNodes(); });
 bindPager('egressNodePager', (_key, page) => { mainPage = page; renderMainNodes(); });
 bindPager('egressPages', (_key, page) => { accountPage = page; renderAccounts(); });
@@ -533,8 +633,8 @@ $('nodeList').addEventListener('click', async event => {
   if (!button || button.disabled || binding || !targetUID || !opened || !nodes.some(node => node.id === button.dataset.bindNode)) return;
   await bindAccountNode(button.dataset.bindNode);
 });
-document.addEventListener('panel:session', event => { if (!event.detail.authenticated) { if (opened) closeNodeModal(); if (subscriptionsOpen) closeSubscriptionDetails(); nodes = []; bindings = []; accounts = []; subscriptions = []; } });
-registerViewCleanup(stopEgressWork);
+document.addEventListener('panel:session', event => { if (!event.detail.authenticated) { if (opened) closeNodeModal(); if (subscriptionsOpen) closeSubscriptionDetails(); nodes = []; bindings = []; accounts = []; subscriptions = []; const hint = $('egressRefreshHint'); if (hint) hint.textContent = ''; } });
+registerViewCleanup(pauseEgressWork);
 onViewHidden('egress', stopEgressWork);
 registerPageCleanup(leaveEgress);
 document.addEventListener('hashchange', () => { if (location.hash.slice(1) !== 'egress') stopEgressWork(); });

@@ -6,7 +6,8 @@ const dom = setupDOM();
 const $ = dom.$;
 const pageHideListeners = [];
 const nativeAdd = globalThis.addEventListener;
-globalThis.addEventListener = (type, fn) => { if (type === 'pagehide') pageHideListeners.push(fn); return nativeAdd(type, fn); };
+const pageShowListeners = [];
+globalThis.addEventListener = (type, fn) => { if (type === 'pagehide') pageHideListeners.push(fn); if (type === 'pageshow') pageShowListeners.push(fn); return nativeAdd(type, fn); };
 const client = await import('./assets/api.js');
 const lifecycle = await import('./assets/lifecycle.js');
 const egress = await import('./assets/egress.js');
@@ -153,6 +154,101 @@ test('leaving the egress section aborts the in-flight poll and blocks its late r
   assert.doesNotMatch($('nodeList').innerHTML, /LATE/, '中止后的迟到响应不得渲染');
 });
 
+test('opening and closing the node modal twenty times leaves zero intervals and no listeners', async () => {
+  auth();
+  metaAPI();
+  await egress.loadEgress();
+  const shell = dom.shell;
+  const documentListeners = Object.fromEntries(['visibilitychange', 'panel:session', 'panel:subscriptions-refreshed', 'hashchange'].map(type => [type, (dom.events.get(type) || []).length]));
+  for (let index = 0; index < 20; index++) {
+    await egress.openNodeModal('acct');
+    assert.equal(shell.inert, true, 'open mounts exactly one modal owner');
+    egress.closeNodeModal();
+    assert.equal(shell.inert, false, 'close releases the shell every time');
+    assert.equal(dom.intervals.size, 0, 'close leaves no interval behind');
+  }
+  const nodesAfter = dom.nodes.size;
+  for (let index = 0; index < 20; index++) {
+    await egress.openNodeModal('acct');
+    egress.closeNodeModal();
+  }
+  assert.equal(dom.nodes.size, nodesAfter, 'DOM nodes do not accumulate');
+  assert.equal(dom.views.length, 9, 'view list stays fixed');
+  for (const [type, count] of Object.entries(documentListeners)) {
+    assert.equal((dom.events.get(type) || []).length, count, 'document listener count stays fixed for ' + type);
+  }
+});
+
+test('hiding pauses polling inside the 30 minute window and resumes, then stops after the deadline', async () => {
+  auth();
+  metaAPI({ 'meta/tests': (_url, opts) => opts.method === 'POST' ? { id: 'job', running: true, total: 1 } : { id: 'job', running: true, completed: 0 } });
+  await egress.loadEgress();
+  await egress.openNodeModal('acct');
+  egress.startNodeTests();
+  await flush();
+  assert.equal(dom.intervals.size, 1, 'testing starts one poll interval');
+  document.hidden = true;
+  await dom.emit('visibilitychange');
+  assert.equal(dom.intervals.size, 0, 'hidden stops the poll interval');
+  document.hidden = false;
+  await dom.emit('visibilitychange');
+  assert.equal(dom.intervals.size, 1, 'visible inside the window resumes polling');
+  egress.closeNodeModal();
+  assert.equal(dom.intervals.size, 0);
+});
+
+test('resuming after the 30 minute window stops polling instead of restarting it', async () => {
+  auth();
+  metaAPI({ 'meta/tests': (_url, opts) => opts.method === 'POST' ? { id: 'job', running: true, total: 1 } : { id: 'job', running: true, completed: 0 } });
+  await egress.loadEgress();
+  await egress.openNodeModal('acct');
+  egress.startNodeTests();
+  await flush();
+  assert.equal(dom.intervals.size, 1);
+  document.hidden = true;
+  await dom.emit('visibilitychange');
+  assert.equal(dom.intervals.size, 0, 'hidden pauses polling');
+  const realNow = Date.now;
+  Date.now = () => realNow() + 31 * 60 * 1000;
+  try {
+    document.hidden = false;
+    await dom.emit('visibilitychange');
+  } finally {
+    Date.now = realNow;
+  }
+  assert.equal(dom.intervals.size, 0, 'past 30 minutes the poll stays stopped');
+  assert.match($('nodeError').textContent, /已停止等待测试结果/);
+  egress.closeNodeModal();
+  assert.equal(dom.intervals.size, 0);
+});
+
+test('navigating away and back twenty times leaves no timers or in-flight reads', async () => {
+  auth();
+  const calls = metaAPI({ 'meta/tests': (_url, opts) => opts.method === 'POST' ? { id: 'job', running: true, total: 1 } : { id: 'job', running: true, completed: 0 } });
+  await egress.loadEgress();
+  const view = $('view-egress');
+  // Earlier tests may have started the router's 5s visible refresh; only the
+  // egress-owned intervals matter, so compare against that baseline.
+  const baselineIntervals = dom.intervals.size;
+  for (let index = 0; index < 20; index++) {
+    view.hidden = false;
+    await dom.mutation();
+    await egress.openNodeModal('acct');
+    egress.startNodeTests();
+    await flush();
+    assert.equal(dom.intervals.size, baselineIntervals + 1, 'one poll interval while the modal is open');
+    view.hidden = true;
+    await dom.mutation();
+    const postsAfterHide = calls.filter(call => call.url.endsWith('meta/tests') && call.opts.method === 'POST').length;
+    await flush();
+    assert.equal(calls.filter(call => call.url.endsWith('meta/tests') && call.opts.method === 'POST').length, postsAfterHide, 'no test POST after leaving the view');
+    assert.equal(dom.intervals.size, baselineIntervals, 'leaving the view stops the interval every time');
+    assert.equal(dom.shell.inert, false, 'leaving the view releases the shell');
+  }
+});
+
+// pagehide permanently tears down the lifecycle registry, so this case must run
+// after every assertion that depends on view cleanup still working.
 test('pagehide runs page and view cleanups once and stops stale interval callbacks', async () => {
   auth();
   let viewRuns = 0, pageRuns = 0, ticks = 0;
@@ -176,4 +272,136 @@ test('pagehide runs page and view cleanups once and stops stale interval callbac
   assert.equal(ticks, 1);
   for (const listener of pageHideListeners) await listener({ type: 'pagehide' });
   assert.equal(pageRuns, 1);
+});
+
+test('login refreshes enabled subscriptions once, serially, and navigation never repeats it', async () => {
+  const order = [];
+  const calls = mockAPI(async (url, opts) => {
+    const method = (opts.method || 'GET').toUpperCase();
+    if (url.endsWith('/capabilities')) return { logs: true };
+    if (url.endsWith('/preferences')) return { theme: 'dark' };
+    if (url === '/panel/api/session/bootstrap') return { running: true };
+    if (url.endsWith('/session/bootstrap/status')) return { running: false, completed: true };
+    if (url.endsWith('meta/status')) return { available: true, running: true };
+    if (url.endsWith('meta/stats')) return {};
+    if (url.endsWith('meta/tests')) return { id: 'cached', running: false, total: 0 };
+    if (url.endsWith('meta/subscriptions')) {
+      if (method === 'GET') return { subscriptions: [
+        { id: 'sub-a', enabled: true }, { id: 'sub-off', enabled: false }, { id: 'sub-b', enabled: true },
+      ] };
+      const body = JSON.parse(opts.body);
+      order.push('start:' + body.id);
+      await flush();
+      order.push('end:' + body.id);
+      if (body.id === 'sub-b') throw new Error('upstream failed');
+      return { ok: true, nodes: 2 };
+    }
+    if (url.endsWith('meta/nodes')) return { nodes: [{ id: 'n1', name: 'A', status: 'ok', delay_ms: 8 }], bindings: [] };
+    if (url.endsWith('/overview')) return { total: 0, accounts: [] };
+    throw new Error(method + ' ' + url);
+  });
+  const router = await import('./assets/router.js');
+  client.acceptSession({ authenticated: true, csrf_token: 'login-refresh' });
+  await dom.emit('panel:authenticated');
+  await flush();
+  assert.deepEqual(order, ['start:sub-a', 'end:sub-a', 'start:sub-b', 'end:sub-b'], 'one serial sequence, each enabled id once');
+  const refreshPosts = calls.filter(call => call.url.endsWith('meta/subscriptions') && call.opts.method === 'POST');
+  assert.equal(refreshPosts.length, 2, 'exactly one POST per enabled subscription');
+  assert.ok(refreshPosts.every(call => JSON.parse(call.opts.body).action === 'refresh'), 'refresh action only');
+  assert.ok(refreshPosts.every(call => call.opts.signal instanceof AbortSignal), 'refresh carries an abort signal');
+  assert.equal(calls.filter(call => call.url.endsWith('meta/tests') && call.opts.method === 'POST').length, 0, 'login never posts tests');
+  assert.equal($('egressRefreshHint').textContent, '1 个订阅刷新失败', 'failure count lands in the egress hint');
+  const intervalsAfterLogin = dom.intervals.size;
+
+  await dom.emit('panel:authenticated');
+  await flush();
+  assert.equal(calls.filter(call => call.url.endsWith('meta/subscriptions') && call.opts.method === 'POST').length, 2, 'duplicate auth event stays idempotent');
+
+  for (let index = 0; index < 20; index++) await router.go(index % 2 ? 'accounts' : 'egress');
+  assert.equal(calls.filter(call => call.url.endsWith('meta/subscriptions') && call.opts.method === 'POST').length, 2, 'navigation never refreshes subscriptions');
+  assert.equal(calls.filter(call => call.url.endsWith('meta/tests') && call.opts.method === 'POST').length, 0, 'navigation never posts tests');
+  assert.equal(dom.intervals.size, intervalsAfterLogin, 'navigation does not add timers');
+  location.hash = '#egress';
+  await dom.emit('hashchange');
+  location.hash = '#overview';
+  await dom.emit('hashchange');
+  assert.equal(calls.filter(call => call.url.endsWith('meta/subscriptions') && call.opts.method === 'POST').length, 2, 'hashchange never refreshes subscriptions');
+  assert.equal(calls.filter(call => call.url.endsWith('meta/tests') && call.opts.method === 'POST').length, 0, 'hashchange never posts tests');
+  const hint = $('egressRefreshHint');
+  hint.textContent = '';
+  const toastsBefore = $('toasts').children.length;
+  document.dispatchEvent(new CustomEvent('panel:subscriptions-refreshed', { detail: { ok: true, refreshed: 2, failed: [], nodes: [] } }));
+  assert.equal(hint.textContent, '', 'a clean refresh clears the stale failure hint');
+  document.dispatchEvent(new CustomEvent('panel:subscriptions-refreshed', { detail: { ok: false, refreshed: 0, failed: [{ id: 'sub-a', error: 'x' }, { id: 'sub-b', error: 'y' }], nodes: [] } }));
+  assert.equal(hint.textContent, '2 个订阅刷新失败', 'the page shows the failure count without a dialog');
+  assert.equal($('toasts').children.length, toastsBefore, 'refresh failures never use a global toast');
+  router.destroyStartup();
+  client.lockSession();
+});
+
+test('logging out aborts the in-flight login refresh instead of waiting for it', async () => {
+  let refreshSignal = null;
+  mockAPI((url, opts) => {
+    const method = (opts.method || 'GET').toUpperCase();
+    if (url.endsWith('/capabilities')) return { logs: true };
+    if (url.endsWith('/preferences')) return { theme: 'dark' };
+    if (url === '/panel/api/session/bootstrap') return { running: true };
+    if (url.endsWith('/session/bootstrap/status')) return { running: false, completed: true };
+    if (url.endsWith('meta/subscriptions') && method === 'GET') return { subscriptions: [{ id: 'sub-slow', enabled: true }] };
+    if (url.endsWith('meta/subscriptions')) {
+      refreshSignal = opts.signal;
+      return new Promise((_resolve, reject) => opts.signal.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError'))));
+    }
+    if (url.endsWith('meta/nodes')) return { nodes: [], bindings: [] };
+    if (url.endsWith('/overview')) return { total: 0, accounts: [] };
+    throw new Error(method + ' ' + url);
+  });
+  const router = await import('./assets/router.js');
+  client.acceptSession({ authenticated: true, csrf_token: 'logout-refresh' });
+  const pending = dom.emit('panel:authenticated');
+  for (let attempt = 0; attempt < 20 && !refreshSignal; attempt++) await flush();
+  assert.ok(refreshSignal, 'the refresh POST carries a signal');
+  assert.equal(refreshSignal.aborted, false);
+  client.lockSession();
+  assert.equal(refreshSignal.aborted, true, 'logout aborts the late refresh');
+  await pending;
+  router.destroyStartup();
+});
+
+test('pagehide aborts the login refresh, runs cleanup once, and pageshow does not reinitialize', async () => {
+  let refreshSignal = null, bootstrapPosts = 0;
+  mockAPI((url, opts) => {
+    const method = (opts.method || 'GET').toUpperCase();
+    if (url.endsWith('/capabilities')) return { logs: true };
+    if (url.endsWith('/preferences')) return { theme: 'dark' };
+    if (url === '/panel/api/session/bootstrap') { bootstrapPosts++; return { running: true }; }
+    if (url.endsWith('/session/bootstrap/status')) return { running: false, completed: true };
+    if (url.endsWith('meta/subscriptions') && method === 'GET') return { subscriptions: [{ id: 'sub-slow', enabled: true }] };
+    if (url.endsWith('meta/subscriptions')) {
+      refreshSignal = opts.signal;
+      return new Promise((_resolve, reject) => opts.signal.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError'))));
+    }
+    if (url.endsWith('meta/nodes')) return { nodes: [], bindings: [] };
+    if (url.endsWith('/overview')) return { total: 0, accounts: [] };
+    throw new Error(method + ' ' + url);
+  });
+  const router = await import('./assets/router.js');
+  client.acceptSession({ authenticated: true, csrf_token: 'pagehide-refresh' });
+  const pending = dom.emit('panel:authenticated');
+  for (let attempt = 0; attempt < 20 && !refreshSignal; attempt++) await flush();
+  assert.ok(refreshSignal);
+  for (const listener of pageHideListeners) await listener({ type: 'pagehide' });
+  assert.equal(refreshSignal.aborted, true, 'pagehide aborts the late refresh');
+  assert.equal(document.getElementById('wbStartup'), null, 'pagehide tears the overlay down once');
+  const postsAfterHide = bootstrapPosts;
+  for (const listener of pageShowListeners) await listener({ type: 'pageshow', persisted: true });
+  await flush();
+  assert.equal(bootstrapPosts, postsAfterHide, 'pageshow alone never reinitializes the login flow');
+  assert.equal(document.getElementById('wbStartup'), null, 'pageshow does not remount the overlay');
+  // A second pagehide must be a no-op thanks to the idempotence flag.
+  for (const listener of pageHideListeners) await listener({ type: 'pagehide' });
+  assert.equal(document.getElementById('wbStartup'), null, 'repeated pagehide stays torn down');
+  await pending;
+  router.destroyStartup();
+  client.lockSession();
 });

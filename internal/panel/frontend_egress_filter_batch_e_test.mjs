@@ -361,13 +361,15 @@ test('main filter switches with one GET and never posts or clears a failed read'
 test('refreshSubscriptionsOnce refreshes enabled subscriptions serially, skips tests and absorbs a single failure', async () => {
   auth();
   const started = [];
+  const events = [];
+  document.addEventListener('panel:subscriptions-refreshed', event => events.push(event.detail));
   const calls = mockAPI(async (url, opts) => {
     if (url.endsWith('meta/subscriptions')) {
       if ((opts.method || 'GET') === 'GET') return { subscriptions: [
         { id: 'sub-a', enabled: true }, { id: 'sub-off', enabled: false }, { id: 'sub-b', enabled: true },
       ] };
       const body = JSON.parse(opts.body);
-      started.push(body.id);
+      started.push({id: body.id, action: body.action, signal: opts.signal});
       if (body.id === 'sub-b') throw new Error('upstream failed');
       return { ok: true, nodes: 1 };
     }
@@ -375,12 +377,29 @@ test('refreshSubscriptionsOnce refreshes enabled subscriptions serially, skips t
     throw new Error(url);
   });
   const result = await egress.refreshSubscriptionsOnce({ timeoutMs: 8000 });
-  assert.deepEqual(started, ['sub-a', 'sub-b'], 'enabled subscriptions refresh serially');
+  assert.deepEqual(started.map(item => item.id), ['sub-a', 'sub-b'], 'enabled subscriptions refresh serially');
+  assert.ok(started.every(item => item.action === 'refresh'), 'only the per-id refresh action is posted');
+  assert.ok(started.every(item => item.signal instanceof AbortSignal), 'each refresh carries its own abort signal');
+  assert.notEqual(started[0].signal, started[1].signal, 'each item owns an independent controller');
   assert.equal(result.refreshed, 1);
   assert.deepEqual(result.failed.map(item => item.id), ['sub-b']);
   assert.equal(result.nodes.length, 3);
   assert.equal(result.ok, false);
   assert.doesNotMatch(calls.map(call => call.url).join('\n'), /meta\/tests/);
+  assert.equal(events.length, 1, 'the refresh notifies listeners through one in-memory event');
+  assert.deepEqual(events[0].failed.map(item => item.id), ['sub-b']);
+});
+
+test('subscriptionCacheState reports 47h fresh, 49h expired and empty as never refreshed', () => {
+  const now = Date.parse('2026-10-21T12:00:00Z');
+  const fresh = egress.subscriptionCacheState(new Date(now - 47 * 3600000).toISOString(), now);
+  assert.deepEqual(fresh, { expired: false, ageHours: 47, label: '缓存 47 小时前' });
+  const stale = egress.subscriptionCacheState(new Date(now - 49 * 3600000).toISOString(), now);
+  assert.deepEqual(stale, { expired: true, ageHours: 49, label: '缓存已过期' });
+  assert.deepEqual(egress.subscriptionCacheState(null, now), { expired: false, ageHours: null, label: '未刷新过' });
+  assert.deepEqual(egress.subscriptionCacheState('', now), { expired: false, ageHours: null, label: '未刷新过' });
+  const exactly48 = egress.subscriptionCacheState(new Date(now - 48 * 3600000).toISOString(), now);
+  assert.equal(exactly48.expired, false, 'only >48h expires');
 });
 
 test('subscription details request the reveal only on click and clear the plain URL on close', async () => {
