@@ -326,7 +326,33 @@ dt { color: var(--ink-3); font-size: 11px; }dd { margin: 2px 0 0; font-size: 12p
 .data-list { margin-top: 18px; display: grid; gap: 13px; }.data-row { padding-top: 13px; border-top: 1px solid var(--line); }.data-row > strong { font-size: 12px; font-weight: 500; }.data-row .mini-metrics { margin-bottom: 0; font-size: 11px; }.expiry-list { display: grid; gap: 12px; margin-top: 22px; }.expiry-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,3fr) minmax(0,1fr); gap: 15px; align-items: center; font-size: 11px; }.expiry-track { height: 7px; border-radius: 4px; background: var(--input); }.expiry-track i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }.package-grid { margin-top: 22px; }.package-entry { margin-top: 15px; padding-top: 13px; border-top: 1px solid var(--line); font-size: 12px; }.package-entry .hint { margin-top: 4px; }
 
 /* ===== 08 models ===== */
-.model-grid { grid-template-columns: repeat(auto-fit,minmax(min(100%,280px),1fr)); gap: 14px; }.model-card { padding: 20px; }.model-card h3 { font-size: 17px; }.model-card > p { margin: 7px 0; }.model-card .mini-metrics { margin: 14px 0; gap: 10px; }.model-card .mini-metrics > div:last-child { grid-column: auto; }.model-policy-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }.model-policy-actions button { font-size: 12px; }.model-policy-actions + .note,.note { color: var(--ink-3); font-size: 12px; }
+.model-grid { grid-template-columns: repeat(auto-fit,minmax(min(100%,280px),1fr)); gap: 14px; }
+.model-card { display: flex; flex-direction: column; gap: 12px; padding: 18px 20px; }
+.model-card.is-disabled { opacity: .62; border-style: dashed; }
+.model-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; }
+.model-identity { min-width: 0; }.model-identity h3 { font-size: 16px; }.model-identity .hint { margin-top: 4px; font-size: 10px; }
+.model-switch { flex: 0 0 auto; width: 38px; height: 22px; min-height: 0; padding: 2px; border-radius: 999px; border: 1px solid var(--line); background: var(--input); }
+.model-switch:hover:not(:disabled) { transform: none; background: var(--input); border-color: var(--line); }
+.model-switch i { display: block; width: 16px; height: 16px; border-radius: 50%; background: var(--ink-3); transition: transform .18s, background .18s; }
+.model-switch[aria-checked="true"] { border-color: color-mix(in srgb,var(--ok) 55%,transparent); background: color-mix(in srgb,var(--ok) 20%,transparent); }
+.model-switch[aria-checked="true"] i { background: var(--ok); transform: translateX(16px); }
+.model-switch.off { border-style: dashed; }
+.model-switch.unknown { background: transparent; border-style: dashed; opacity: .55; }
+.model-effort-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.model-label { color: var(--ink-3); font-size: 11px; }
+.effort-pills { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.effort-pill { display: inline-flex; align-items: center; padding: 2px 8px; border: 1px solid var(--line); border-radius: 7px; font: 500 10px/1.6 var(--mono); color: var(--ink-2); }
+.effort-pill.off { color: var(--ink-3); border-style: dashed; }
+.model-metrics { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 16px; }
+.model-metrics > div { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.model-metrics > div > span { color: var(--ink-3); font-size: 10px; }.model-metrics > div > strong { font-size: 12px; font-weight: 500; }
+.model-capabilities { display: flex; flex-wrap: wrap; gap: 5px; }
+.model-status { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.view-heading > .model-status { flex: 0 1 auto; }
+.model-status .tag { align-self: center; }
+#btnModelsRefresh { font-size: 12px; }
+#btnModelsRefresh.cooldown { border-color: var(--warn); color: var(--warn); }
+#mdRefreshWait { font-size: 11px; color: var(--warn); }
 
 /* ===== 09 logs ===== */
 .req-detail-modal { width: min(100%,760px); }

@@ -1,8 +1,9 @@
 import { $, esc } from './common.js';
 import { api } from './api.js';
-import { fmtTok } from './format.js';
 import { paginate, pagerHTML, bindPager } from './pagination.js';
 const DAY = 86400000;
+// 到期展示上限：上游存在远期包（实测 2928 天），统一折到 30 天内，既不显示原值也不归零。
+export const MAX_EXPIRY_DAYS = 30;
 let accounts = [], accountPage = 1, chartPage = 1;
 const detailPages = new Map();
 export function pkExpiryMs(pack) {
@@ -25,6 +26,10 @@ function fmtCredits(value) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.trunc(number).toLocaleString('zh-CN') : '未知';
 }
+// 未取得余额 = 请求失败/字段缺失/不可解析，与余额 0 严格区分。
+export function pkHasBalance(account) {
+  return !account?.error && account?.remain != null && Number.isFinite(Number(account.remain));
+}
 export function pkAccountSegments(account,now) {
   let balance = Math.max(0,Number(account.remain)||0); const result = [];
   // Respect the observed account balance even if upstream repeats package rows.
@@ -35,14 +40,21 @@ export function pkAccountSegments(account,now) {
   }
   return result.sort((a,b)=>(a.expiresAt??Infinity)-(b.expiresAt??Infinity));
 }
+export function creditDaysLabel(days) {
+  const value = Math.ceil(Number(days));
+  if (!Number.isFinite(value)) return '未知';
+  if (value <= 0) return '已到期';
+  return Math.min(MAX_EXPIRY_DAYS,value) + ' 天内';
+}
 export function summarizeCreditDays(list,now) {
   const buckets = new Map(); let unavailable = 0;
   for (const account of list || []) {
-    if (account.error || account.remain == null || !Number.isFinite(Number(account.remain))) {unavailable++;continue;}
+    if (!pkHasBalance(account)) {unavailable++;continue;}
     for (const part of pkAccountSegments(account,now)) {
       if (part.days == null) continue;
-      if (!buckets.has(part.days)) buckets.set(part.days,{days:part.days,credits:0,segments:[]});
-      const row = buckets.get(part.days); row.credits += part.amount; row.segments.push(part);
+      const days = Math.min(MAX_EXPIRY_DAYS,Math.max(0,Math.ceil(Number(part.days)||0)));
+      if (!buckets.has(days)) buckets.set(days,{days,credits:0,segments:[]});
+      const row = buckets.get(days); row.credits += part.amount; row.segments.push({...part,days});
     }
   }
   return {rows:[...buckets.values()].sort((a,b)=>a.days-b.days),accountCount:(list||[]).length,unavailable};
@@ -51,21 +63,26 @@ function expiryText(pack) {
   const timestamp = pkExpiryMs(pack); return timestamp == null ? '到期时间未知' : '到期 ' + new Date(timestamp).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false});
 }
 function render() {
-  const summary = summarizeCreditDays(accounts,Date.now()), total = accounts.reduce((sum,a)=>sum+(!a.error && a.remain != null ? Number(a.remain)||0 : 0),0);
-  $('pkStats').innerHTML = '<article class="stat"><span>已读取账号</span><strong>' + (accounts.length-summary.unavailable) + ' / ' + accounts.length + '</strong></article><article class="stat"><span>已知剩余积分</span><strong>' + fmtCredits(total) + '</strong></article><article class="stat warn"><span>未取得余额</span><strong>' + summary.unavailable + '</strong></article>';
+  const summary = summarizeCreditDays(accounts,Date.now()), total = accounts.reduce((sum,a)=>sum+(pkHasBalance(a) ? Number(a.remain)||0 : 0),0);
+  const known = accounts.filter(pkHasBalance).length;
+  $('pkStats').innerHTML = '<article class="stat"><span>已读取账号</span><strong>' + known + ' / ' + accounts.length + '</strong></article><article class="stat"><span>已知剩余积分</span><strong>' + fmtCredits(total) + '</strong></article><article class="stat warn" title="请求失败或字段缺失，不按 0 计"><span>未取得余额</span><strong>' + summary.unavailable + '</strong></article>';
   const chart = paginate(summary.rows,chartPage,20); chartPage = chart.page;
   const max = Math.max(1,...summary.rows.map(row=>row.credits));
-  $('pkChart').innerHTML = '<div class="expiry-list">' + (chart.rows.map(row=>'<div class="expiry-row"><span>' + (row.days===0?'已到期':row.days+' 天内') + '</span><div class="expiry-track"><i style="width:' + (row.credits/max*100) + '%"></i></div><strong>' + fmtCredits(row.credits) + '</strong></div>').join('') || '<div class="empty">暂无已知到期日的余额</div>') + '</div>';
+  $('pkChart').innerHTML = '<div class="expiry-list">' + (chart.rows.map(row=>'<div class="expiry-row"><span>' + creditDaysLabel(row.days) + '</span><div class="expiry-track"><i style="width:' + (row.credits/max*100) + '%"></i></div><strong>' + fmtCredits(row.credits) + '</strong></div>').join('') || '<div class="empty">暂无已知到期日的余额</div>') + '</div>';
   $('pkChartPages').innerHTML = pagerHTML(chart,'expiry');
   const result = paginate(accounts,accountPage,12); accountPage = result.page;
   $('pkBody').innerHTML = result.rows.map(account=>{
     const groups = pkDetailGroups(account.packages), ordered = [...groups.visible,...groups.rest], detail = paginate(ordered,detailPages.get(account.uid),5); detailPages.set(account.uid,detail.page);
-    return '<article class="package-card"><div class="card-heading"><h3>' + esc(account.nickname||account.uid) + '</h3><span class="tag ' + (account.error?'warn':'ok') + '">' + (account.error?'未读取':fmtCredits(account.remain)+' 积分') + '</span></div><p class="hint mono">' + esc(account.uid) + '</p>' + (account.error?'<p class="error-text">'+esc(account.error)+'</p>':detail.rows.map(pack=>'<div class="package-entry"><strong>' + esc(pack.name||'积分包') + '</strong><p>剩余 ' + fmtCredits(pack.remain) + ' / ' + fmtCredits(pack.size) + ' · 已用 ' + fmtCredits(pack.used) + '</p><p class="hint">' + esc(expiryText(pack)) + '</p>' + (pack.created_at?'<p class="hint">发放 '+esc(pack.created_at)+'</p>':'') + '</div>').join('') + (!ordered.length?'<p class="hint">无剩余积分包</p>':'') + pagerHTML(detail,account.uid)) + '</article>';
+    const tag = pkHasBalance(account) ? '<span class="tag ok">' + fmtCredits(account.remain) + ' 积分</span>' : '<span class="tag warn">未读取</span>';
+    const body = pkHasBalance(account) && Number(account.remain) > 0
+      ? detail.rows.map(pack=>'<div class="package-entry"><strong>' + esc(pack.name||'积分包') + '</strong><p>剩余 ' + fmtCredits(pack.remain) + ' / ' + fmtCredits(pack.size) + ' · 已用 ' + fmtCredits(pack.used) + '</p><p class="hint">' + esc(expiryText(pack)) + '</p>' + (pack.created_at?'<p class="hint">发放 '+esc(pack.created_at)+'</p>':'') + '</div>').join('') + (!ordered.length?'<p class="hint">无剩余积分包</p>':'') + pagerHTML(detail,account.uid)
+      : (account.error ? '<p class="error-text">'+esc(account.error)+'</p>' : pkHasBalance(account) ? '<p class="hint">无剩余积分包</p>' : '<p class="hint">未取得余额</p>');
+    return '<article class="package-card"><div class="card-heading"><h3>' + esc(account.nickname||account.uid) + '</h3>' + tag + '</div><p class="hint mono">' + esc(account.uid) + '</p>' + body + '</article>';
   }).join('') || '<div class="empty">暂无账号积分数据</div>';
-  $('pkPages').innerHTML = pagerHTML(result,'accounts'); $('pkNote').textContent = '读取上游积分包 · 余额内约束逐包汇总；未取得余额的账号不计为 0。';
+  $('pkPages').innerHTML = pagerHTML(result,'accounts'); $('pkNote').textContent = '';
 }
 export async function loadPackages() {
-  $('pkNote').textContent = '正在读取上游积分包…';
+  $('pkNote').textContent = '正在读取积分包…';
   try { const response = await api('packages'); accounts = response.accounts || []; render(); }
   catch (error) { if (error.name === 'AbortError') return; accounts = []; $('pkStats').innerHTML = ''; $('pkChart').innerHTML = ''; $('pkChartPages').innerHTML = ''; $('pkPages').innerHTML = ''; $('pkBody').innerHTML = '<div class="error-notice">积分读取失败：' + esc(error.message) + '</div>'; $('pkNote').textContent = '数据未取得'; }
 }
