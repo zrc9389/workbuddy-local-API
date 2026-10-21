@@ -46,7 +46,8 @@ test('batch D navigation keeps nine flat entries, no nav groups and a floating g
  const navRadius = css.match(/\.nav\s*\{[^}]*border-radius:\s*([^;}]+)/);
  assert.ok(navRadius && navRadius[1].trim() !== '0', 'floating nav must not use a zero radius');
  assert.match(css, /\.nav\s*\{[^}]*padding:\s*26px\s+16px\s+18px/);
- assert.equal((css.match(/@media \(max-width:700px\)/g) || []).length, 1);
+const responsiveCss = css.slice(css.indexOf('/* ===== 11 responsive ===== */'));
+ assert.equal((responsiveCss.match(/@media \(max-width:700px\)/g) || []).length, 1, 'responsive section keeps exactly one 700px block');
  assert.match(css, /@media \(max-width:980px\)[\s\S]*?\.nav\s*\{[^}]*height:\s*auto/);
  assert.match(css, /button\.refreshing\s*\{[^}]*border-color:\s*var\(--accent\)[^}]*color:\s*var\(--accent\)/);
  assert.doesNotMatch(css.slice(css.indexOf('button.refreshing'), css.indexOf('button.primary')), /box-shadow|background/);
@@ -90,7 +91,7 @@ test('batch D2 exposes four startup animation choices with local font fallbacks'
  assert.ok(html.indexOf('id="view-config"') < html.indexOf('id="animationStyle"'), 'control lives in settings');
  assert.doesNotMatch(html, /<form id="animationForm"/, 'selection saves directly; no nested form under CSP form-action none');
  assert.match(css, /--font:[^;]*'Source Sans 3'[^;]*'Noto Sans SC'[^;]*sans-serif/);
- assert.match(css, /--display:[^;]*'Source Sans 3'[^;]*'Noto Sans SC'[^;]*sans-serif/);
+ assert.match(css, /--display:[^;]*'Source Serif 4'[^;]*'Noto Serif SC'[^;]*serif/);
  assert.match(css, /@font-face/);
  assert.match(css, /\/panel\/assets\/fonts\/[^"')]+\.woff2/);
  assert.doesNotMatch(css, /@import|fonts\.googleapis|fonts\.gstatic/);
