@@ -36,6 +36,18 @@ test('pagination bounds every data set while keeping every final row reachable',
  assert.equal(paginate(list,-99,-2).size,1);assert.match(pagerHTML(paginate(list),'x"<'),/x&quot;&lt;/);
 });
 
+test('batch 2 account and task copy stays compact in HTML and CSS',()=>{
+ const html=read('index.html'),css=read('assets/styles.css');
+ assert.match(html,/id="btnRunAll"[^>]*>全部执行</);assert.doesNotMatch(html,/全部执行 · Run All|正在启动|执行中…/);
+ assert.match(html,/id="maintenanceSummary">上次执行：尚无执行记录</);
+ assert.doesNotMatch(html,/维持账号凭据有效/);
+ const accounts=css.slice(css.indexOf('/* ===== 05 accounts ===== */'),css.indexOf('/* ===== 06 egress ===== */'));
+ assert.match(accounts,/\.account-grid \.account-card \{ padding: 10px 14px;/);assert.match(accounts,/\.account-grid \.account-card \{[^}]*max-height: 132px;/);
+ assert.match(accounts,/\.account-grid \.card-actions \{ flex-wrap: nowrap;/);
+ assert.match(accounts,/\.failure-count\[data-state="failed"\] \{ color: var\(--bad\); \}/);
+ assert.match(accounts,/\.failure-count \{ color: var\(--ink-3\); \}/);
+});
+
 test('settings view is bounded and subscription import keeps its backend-only URL contract',async()=>{
  client.acceptSession({authenticated:true,csrf_token:'token'});const calls=mockAPI(()=>({nodes:3}));
  const config=await import('./assets/config.js');$('ttl').textContent='系统设置';

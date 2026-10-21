@@ -1,4 +1,4 @@
-import { esc, dur, parseAPITime, rateLimitRowsHtml, formatTokenCount, formatLatency, formatRate } from './common.js';
+import { esc, dur, parseAPITime } from './common.js';
 export function accountState(account, now = Date.now()) {
   const cooling = Math.max(Number(account.cool_remaining_sec) || 0, (parseAPITime(account.breaker_until) - now) / 1000, (parseAPITime(account.degrade_until) - now) / 1000, 0);
   const reasons = [];
@@ -11,11 +11,16 @@ export function accountState(account, now = Date.now()) {
   const tone = account.manual_disabled ? 'bad' : (account.balance_blocked || account.system_blocked || account.disabled || account.paused || cooling > 0) ? 'warn' : 'ok';
   return { tone, label: tone === 'bad' ? '手动禁用' : tone === 'warn' ? '暂不可用' : '健康', reasons: reasons.length ? reasons : ['正常参与选号'], cooling };
 }
+function shortUID(value) {
+  const text = String(value || '');
+  return text.length > 8 ? '#' + text.slice(-6) : '';
+}
 export function accountCard(account, busy = false) {
-  const state = accountState(account), uid = esc(account.uid), token = account.token_usage || {};
+  const state = accountState(account), uid = esc(account.uid);
   const balance = account.credits_total === -1 ? '不限量' : account.balance_known === true && account.credits != null ? esc(account.credits) + (account.credits_total > 0 ? ' / ' + esc(account.credits_total) : '') : '余额未知';
   const node = account.egress_node || account.node_name || '选择节点';
-  return '<article class="account-card state-' + state.tone + '" data-account="' + uid + '"><div class="card-heading"><div><span class="eyebrow">' + (account.realm === 'global' ? 'GLOBAL' : 'CN') + (account.enterprise ? ' · ENTERPRISE' : '') + '</span><h3>' + esc(account.nickname || '未命名账号') + '</h3></div><span class="tag ' + state.tone + '">' + state.label + '</span></div><p class="account-uid mono">' + uid + '</p><ul class="state-reasons">' + state.reasons.map(reason => '<li>' + esc(reason) + '</li>').join('') + '</ul><div class="account-balance"><span>可用积分</span><strong>' + balance + '</strong></div><dl class="mini-metrics"><div><dt>请求</dt><dd>' + esc(token.request_count ?? '—') + '</dd></div><div><dt>Token</dt><dd>' + esc(formatTokenCount(token.total_tokens)) + '</dd></div><div><dt>延迟 / 速率</dt><dd>' + esc(formatLatency(token.last_latency_ms)) + ' / ' + esc(formatRate(token.last_tokens_per_second)) + '</dd></div></dl>' + rateLimitRowsHtml(account.rate_limited_models, Date.now()) + '<div class="card-actions"><button class="egress-badge" data-a="egress" data-u="' + uid + '"' + (busy ? ' disabled' : '') + '>出口 · ' + esc(node) + ' ↗</button><div class="action-pair"><button data-a="toggle" data-u="' + uid + '" aria-pressed="' + !!account.manual_disabled + '"' + (busy ? ' disabled' : '') + '>' + (account.manual_disabled ? '启用' : '禁用') + '</button><button class="danger ghost" data-a="remove" data-u="' + uid + '"' + (busy ? ' disabled' : '') + '>删除</button></div></div></article>';
+  const suffix = shortUID(account.uid);
+  return '<article class="account-card state-' + state.tone + '" data-account="' + uid + '" data-state="' + state.tone + '"><div class="card-heading"><div class="account-title"><h3>' + esc(account.nickname || '未命名账号') + '</h3>' + (suffix ? '<span class="account-suffix mono">' + esc(suffix) + '</span>' : '') + '</div><span class="tag ' + state.tone + '" title="' + esc(state.reasons.join('；')) + '">' + state.label + '</span></div><div class="account-balance"><span>可用积分</span><strong>' + balance + '</strong></div><div class="card-actions"><span class="egress-current" title="当前出口：' + esc(node) + '">' + esc(node) + '</span><div class="action-pair"><button class="egress-badge" data-a="egress" data-u="' + uid + '"' + (busy ? ' disabled' : '') + '>出口</button><button data-a="toggle" data-u="' + uid + '" aria-pressed="' + !!account.manual_disabled + '"' + (busy ? ' disabled' : '') + '>' + (account.manual_disabled ? '启用' : '禁用') + '</button><button class="danger ghost" data-a="remove" data-u="' + uid + '"' + (busy ? ' disabled' : '') + '>删除</button></div></div></article>';
 }
 export function renderAccountRows(list, busy = false) {
   document.getElementById('accBody').innerHTML = list.map(account => accountCard(account, busy)).join('') || '<div class="empty"><strong>账号池还是空的</strong><p>添加账号后，状态与出口会显示在这里。</p></div>';

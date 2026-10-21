@@ -94,7 +94,7 @@
     <!-- ===== /view:overview ===== -->
     <!-- ===== view:accounts ===== -->
     <section class="view" id="view-accounts" aria-label="账号池" hidden>
-      <header class="view-heading"><h2>账号池</h2><p class="hint">红色为手动禁用，黄色为系统保护，绿色为健康。</p></header>
+      <header class="view-heading"><h2>账号池</h2><p class="hint">红色为手动禁用，黄色为系统保护，绿色为健康。完整 UID 在账号出口页查看。</p></header>
       <div class="stats-row"><article class="stat"><span>账号总数</span><strong id="sTotal">—</strong></article><article class="stat good"><span>可用</span><strong id="sHealthy">—</strong></article><article class="stat warn"><span>冷却</span><strong id="sCooling">—</strong></article><article class="stat bad"><span>凭据 / 手动禁用</span><strong id="sDisabled">—</strong></article></div>
       <div id="accBody" class="account-grid" aria-live="polite"><div class="empty">正在读取账号…</div></div>
       <div class="pager"><button id="accPrev" type="button" aria-label="上一页账号">←</button><span id="accPageInfo">1 / 1 页</span><button id="accNext" type="button" aria-label="下一页账号">→</button></div>
@@ -102,7 +102,7 @@
     <!-- ===== /view:accounts ===== -->
     <!-- ===== view:taskscenter ===== -->
     <section class="view" id="view-taskscenter" aria-label="任务" hidden>
-      <header class="view-heading"><div><h2>维护任务</h2><p class="hint" id="maintenanceSummary">四项维护统一执行；不提供独立开关或自动任务入口。</p></div><button class="primary" id="btnRunAll" type="button">全部执行</button></header>
+      <header class="view-heading"><div><h2>维护任务</h2><p class="hint" id="maintenanceSummary">上次执行：尚无执行记录</p></div><button class="primary" id="btnRunAll" type="button">全部执行</button></header>
       <p id="maintenanceError" class="error-notice" role="alert" hidden></p><div id="maintenanceJobs" class="job-grid" aria-live="polite"></div>
     </section>
     <!-- ===== /view:taskscenter ===== -->
