@@ -84,3 +84,65 @@ test('theme tolerates disabled storage and pauses fluid background when hidden',
  globalThis.localStorage={getItem(){throw new Error('blocked');},setItem(){throw new Error('blocked');},removeItem(){}};
  const theme=await import('./assets/theme.js');theme.setTheme('light');assert.equal(document.documentElement.dataset.theme,'light');document.hidden=true;await dom.emit('visibilitychange');assert.equal(document.documentElement.dataset.paused,'true');document.hidden=false;await dom.emit('visibilitychange');
 });
+
+test('credit expiry caps at 30 days without showing 2928 or collapsing to zero',async()=>{
+ const pk=await import('./assets/packages.js'),day=86400000,now=100000;
+ assert.equal(pk.MAX_EXPIRY_DAYS,30);assert.equal(pk.creditDaysLabel(2928),'30 天内');assert.equal(pk.creditDaysLabel(30),'30 天内');assert.equal(pk.creditDaysLabel(7),'7 天内');assert.equal(pk.creditDaysLabel(0),'已到期');
+ const far=pk.summarizeCreditDays([{uid:'far',remain:500,packages:[{name:'far-package',remain:500,expires_at:now+2928*day}]}],now);
+ assert.deepEqual(far.rows.map(row=>({days:row.days,credits:row.credits})),[{days:30,credits:500}]);
+ assert.doesNotMatch(JSON.stringify(far.rows),/2928/);assert.notEqual(far.rows[0].days,0);
+ const mixed=pk.summarizeCreditDays([{uid:'m',remain:90,packages:[{name:'far',remain:60,expires_at:now+2928*day},{name:'near',remain:30,expires_at:now+day}]}],now);
+ assert.deepEqual(mixed.rows.map(row=>({days:row.days,credits:row.credits})),[{days:1,credits:30},{days:30,credits:60}]);
+});
+
+test('packages render hides zero-balance entries, keeps unknown separate and shows full credit numbers',async()=>{
+ const pk=await import('./assets/packages.js');
+ const zero={uid:'zero',nickname:'零余额账号',remain:0,packages:[{name:'zero-package',remain:0,size:100,expires_at:Date.now()+86400000}]};
+ const positive={uid:'pos',nickname:'有余额账号',remain:12500,packages:[{name:'live-package',remain:12500,size:20000,used:7500,expires_at:Date.now()+86400000}]};
+ const unknown={uid:'unknown',nickname:'未知账号',remain:null,packages:[]};
+ mockAPI(()=>({accounts:[zero,positive,unknown]}));client.acceptSession({authenticated:true,csrf_token:'fixture'});
+ await pk.loadPackages();
+ const body=$('pkBody').innerHTML;
+ assert.doesNotMatch(body,/zero-package/);assert.match(body,/无剩余积分包/);assert.match(body,/live-package/);assert.match(body,/12,500/);assert.doesNotMatch(body,/12\.5k|125k/);
+ assert.match($('pkStats').innerHTML,/未取得余额<\/span><strong>1</);assert.match($('pkStats').innerHTML,/已知剩余积分<\/span><strong>12,500/);
+ assert.doesNotMatch($('pkNote').textContent,/未取得余额的账号不计为 0|逐包汇总/);
+});
+
+test('model efforts keep the fixed horizontal order and disabled models sink below enabled ones',async()=>{
+ const models=await import('./assets/models.js'),policy=await import('./assets/model-policy.js');
+ assert.deepEqual(models.orderedEfforts({supported_efforts:['ultra','high','off','max','low','xhigh','medium']}),['off','low','medium','high','xhigh','max','ultra']);
+ assert.deepEqual(models.orderedEfforts({supported_efforts:['high','medium'],can_disable_thinking:true}),['off','medium','high']);
+ const html=models.effortRowHTML({supported_efforts:['ultra','off','low']});
+ assert.match(html,/class="effort-pills"/);assert.match(html,/off<\/span><span class="effort-pill">low<\/span><span class="effort-pill">ultra/);
+ assert.deepEqual(policy.sortModelsByPolicy([{id:'a'},{id:'b'},{id:'c'},{id:'d'}],{b:{disabled:true},d:{disabled:true}}).map(m=>m.id),['a','c','b','d']);
+ assert.deepEqual(policy.sortModelsByPolicy([{id:'b'},{id:'a'}],{}).map(m=>m.id),['b','a']);
+});
+
+test('model switch is the single top-right control, disables through the real endpoint and re-reads',async()=>{
+ const models=await import('./assets/models.js'),policy=await import('./assets/model-policy.js');
+ client.acceptSession({authenticated:true,csrf_token:'fixture'});
+ let saved={enabled:{},off:{disabled:true}};
+ const calls=mockAPI((_url,opts)=>{if(opts.method==='POST'){const body=JSON.parse(opts.body);saved={...saved,[body.id]:{disabled:!!body.disabled}};}return{models:saved};});
+ await policy.loadModelPolicy();
+ const cell=policy.modelPolicySwitch('enabled'),offCell=policy.modelPolicySwitch('off');
+ assert.match(cell,/role="switch"/);assert.match(cell,/data-model-toggle="enabled"/);assert.doesNotMatch(cell,/上下文展示/);assert.match(offCell,/aria-checked="false"/);
+ await $('mdBody').fire('click',{target:{closest:selector=>selector==='button[data-model-toggle]'?{dataset:{modelToggle:'enabled'}}:null}});
+ assert.ok(calls.some(c=>c.opts.method==='POST'&&c.url==='/panel/api/model_policy'));assert.equal(JSON.parse(calls.find(c=>c.opts.method==='POST').opts.body).disabled,true);
+ assert.equal(policy.modelDisabled('enabled'),true);assert.equal(calls.filter(c=>c.url==='/panel/api/model_policy'&&c.opts.method==='GET').length>=2,true);
+ assert.deepEqual(policy.sortModelsByPolicy([{id:'x'},{id:'y'}],{x:{disabled:true}}).map(m=>m.id),['y','x']);
+});
+
+test('model refresh posts once, honours cooldown without sending and reports cache state',async()=>{
+ const models=await import('./assets/models.js');
+ client.acceptSession({authenticated:true,csrf_token:'fixture'});
+ assert.equal(models.cacheStatusText({cached:true,cache_age_seconds:600}),'缓存 10 分钟前');
+ assert.equal(models.cacheStatusText({cached:true,stale:true,cache_age_seconds:900}),'缓存已过期');
+ const calls=mockAPI(()=>({ok:true,models:[{id:'cn:x',name:'X',supported_efforts:['low']}],cached:false,cache_age_seconds:0}));
+ models.startModelCooldown(120);
+ const blocked=await models.refreshModels();
+ assert.equal(blocked.ok,false);assert.equal(calls.length,0);assert.match($('mdRefreshWait').textContent,/剩余 \d+ 秒/);
+ models.startModelCooldown(0);
+ const done=await models.refreshModels();
+ assert.equal(done.ok,true);assert.deepEqual(calls.map(c=>[c.opts.method,c.url]),[['POST','/panel/api/models/refresh']]);
+ assert.match($('mdBody').innerHTML,/cn:x/);assert.equal($('mdRefreshWait').textContent,'剩余 300 秒');
+});
