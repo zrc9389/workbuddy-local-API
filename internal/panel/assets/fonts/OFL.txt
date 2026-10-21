@@ -1,6 +1,6 @@
 Bundled font licensing
 
-This directory contains two SIL Open Font License 1.1 font families.
+This directory contains four SIL Open Font License 1.1 font families.
 
 1) Source Sans 3
    Files: source-sans-3-400.woff2, source-sans-3-500.woff2, source-sans-3-600.woff2
@@ -12,10 +12,31 @@ This directory contains two SIL Open Font License 1.1 font families.
    Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.
    Upstream: https://github.com/googlefonts/noto-cjk
 
-Both families are licensed under the SIL Open Font License, Version 1.1.
+3) Source Serif 4
+   Files: source-serif-4-400.woff2, source-serif-4-600.woff2, source-serif-4-400-italic.woff2
+   Copyright 2014 The Source Serif 4 Project Authors (https://github.com/adobe-fonts/source-serif)
+   Upstream: https://github.com/google/fonts/tree/main/ofl/sourceserif4
+
+4) Noto Serif SC
+   Files: noto-serif-sc-400.woff2, noto-serif-sc-500.woff2
+   Copyright 2012 Google Inc. All Rights Reserved.
+   Upstream: https://github.com/google/fonts/tree/main/ofl/notoserifsc
+
+All four families are licensed under the SIL Open Font License, Version 1.1.
 The woff2 files are subsets produced with fontTools from the upstream sources;
 they are redistributed under the same license. The full license text below
 applies to every file in this directory.
+
+Build notes (fontTools 4.67.0, reproducible):
+- English subsets: instantiated from the upstream variable fonts at
+  wght=400/600 and wght=400 italic, opsz=36; Latin-1 + Latin Extended-A +
+  UI punctuation, hinting removed.
+- Chinese subsets: instantiated at wght=400/500; GB2312 level-1 (3755 glyphs)
+  plus all CJK characters present in internal/panel/{*.html,assets/*.js,assets/*.css}
+  and ASCII/fullwidth punctuation (3941 codepoints total).
+- The Chinese outlines are uniformly scaled from 1000 to 548 units/em so each
+  weight stays within its 620 KB budget; metrics scale with the outlines, so
+  text layout is unchanged.
 
 -----------------------------------------------------------
 
