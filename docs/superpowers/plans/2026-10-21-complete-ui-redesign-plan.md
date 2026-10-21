@@ -2217,3 +2217,123 @@ node --test internal/panel/*_test.mjs -> 全绿（基线 126/126）
 ### 33.10 合并方式
 
 按 §32.1.2：**禁止 `git merge` 整分支**。先 `git diff --stat main FETCH_HEAD` 检查越界，`styles.css` 只取 06 段拼接到 main，其余文件若只属本批次可直接 `git checkout FETCH_HEAD -- <file>`。
+
+---
+
+## 34. 批次 25 / 26 / 22 补充规格（2026-10-22 02:55 追加）
+
+### 34.1 批次 25：启动动画视觉重做
+
+**问题定位**：批次 17 只修了「时长被 56ms 截断」，没有解决「退场没有高级感」。实测 1600×1000 截图（`tmp_bin/b25-startup-900.png`）显示衬线斜体 `GPT`、等宽 `STAGE 01 // ACCOUNT SYNC`、右下大计数器 `14%` 都已存在，但退场只有 `opacity: 0` + `translateY(-8px)`。
+
+**参考文件 `F:\下载\新建 文本文档.html`（只读）的 `runAnimation()` 三段式**：
+
+| 阶段 | 时长 | 行为 |
+|---|---|---|
+| count | 1900ms | 非线性计数 + 中心词切换 |
+| hold | 180ms | 100% 满格定格 |
+| reveal | 1150ms | 幕布揭开 + 主视觉入场 |
+
+reveal 阶段四件事，当前实现**全部缺失**：
+
+1. 遮罩内文字向上滑出裁切框：`counterNumber` `translateY(-115*easeInOutQuart(textExitP))%`，`wordCycler` `translateY(-120*…)%`，header/footer `opacity = 1-easedTextExit`，`textExitP = min(rT/0.45,1)`。
+2. 三种幕布：`curve`（SVG `M 0 0 L 100 0 L 100 yEdge Q 50 yControl 0 yEdge Z`，`yEdge=100*(1-easeInOutQuart(rT))`，`archTension=sin(rT*PI)*34`）、`shutter`（5 列，`delay=i*0.07`，`localT=clamp((rT-delay)/0.72,0,1)`，`scaleY(1-easeInOutQuart(localT))`）、`split`（`splitP=easeInOutExpo(rT)`，top `-100*splitP%`，bottom `+100*splitP%`，seam `opacity=max(0,1-rT*3)`）。
+3. **counter-scale 主舞台归位**（高级感关键）：`stageP=easeOutExpo(rT)`，`scale=1.14-0.14*stageP`，`translateY=50*(1-stageP)px`。
+4. Hero 标题逐行错峰：eyebrow `translateY(120*(1-easeOutExpo(clamp((rT-0.25)/0.55,0,1))))%`；每行 `delay=0.32+idx*0.1`，`yVal=115*(1-easeOutExpo(lineT))`，`rotVal=2.5*(1-easeOutExpo(lineT))deg`；sub `subT=clamp((rT-0.52)/0.48,0,1)`。
+
+**新时长分配（合计 8000ms，不得更短）**：`count=6200`、`hold=220`、`reveal=1580`。
+
+**风格映射（key 不变，只换呈现）**：
+
+| key | 呈现 | 设置页标签 |
+|---|---|---|
+| `names` | 流体拉幕 curve + 词轮播 | 流体拉幕 |
+| `orbital` | 中轴光闸 split + 同心环 | 中轴光闸 |
+| `scan` | 五列百叶 shutter + 光带 | 百叶扫描 |
+| `minimal` | 仅 `W·` + 淡入淡出 | 极简 |
+
+同时删除设置页 `.motion-settings` 里的解释小字（`名称轮播：英文 AI 名称逐字切换；…`）。
+
+**保留**：衬线斜体英文 AI 名、等宽大写 stage 标签、衬线大计数器 + `tabular-nums`、非线性进度条、全英文、Esc 跳过、`prefers-reduced-motion` 走 minimal（1200ms）、`body.is-booting` 期间隐藏登录卡。
+
+### 34.2 批次 26：账号池页 + 节点选择弹窗
+
+**账号卡片从约 150px 压到 90-100px**，删掉 `dl.mini-metrics` 的 `请求`/`Token`/`延迟 / 速率` 三项（批注 25/26/42）。
+
+结构：
+
+```text
+第一行  账号昵称(var(--display),17px)      ……      余额(var(--mono),tabular-nums)
+第二行  脱敏ID                             ……      状态标签(可用/冷却/禁用)
+第三行  [出口]  [禁用/启用]                ← 并排，出口在左
+```
+
+- `出口` 按钮只有两个字，不加「选择节点」不加 `↗`；已绑定时显示 `出口 · 节点名`。
+- 幽灵按钮（透明底 + 1px 边框），不用 accent 实底。
+- 删除 `.hint` 说明、彩色左边框条。
+
+**节点选择弹窗 `#nodeVeil`**：宽度 `min(100%,560px)`（原 900px），顶部 `出口` + 关闭，下面一行订阅筛选 select + 刷新按钮，节点列表 `repeat(auto-fill,minmax(140px,1fr))`、`gap:8px`，每个节点是一个 `<button>`，内容只有 `名称  延迟`（同一行，名称 `var(--font)` 13px，延迟 `var(--mono)` 12px `tabular-nums`，未测速 `—`），高度约 44px，**点击即绑定并关闭弹窗**。
+
+删除：`p#nodeStatus`、说明 `p.hint`、`.node-card` 的 `aspect-ratio:2/1`、趋势图、`绑定此节点` 按钮、分页。
+
+节点名剥离 `sub-xxxx/` 前缀：`egress.js` 里有 `displayNodeName()`，但 `egress.js` 属于批次 24，**批次 26 在自己的 `accounts.js` 里写等价 `stripNodePrefix()`**。
+
+### 34.3 批次 22：全站小字清理 + 三档响应式 + 性能预算
+
+**前置**：19 / 20 / 21 / 24 / 26 全部合入 main 后才能开工（要扫全站）。
+
+**`.hint` 清点（当前 17 处静态 + 11 处 JS 动态）**：
+
+| 归属 | 静态 | 动态 |
+|---|---|---|
+| taskscenter | 1 | `tasks.js` 2 |
+| egress | 9 | `egress.js` 2 |
+| packages | 1 | `packages.js` 3 |
+| models | 1 | `models.js` 2 |
+| config | 2 | — |
+| logs | 3 | `logs.js` 1 |
+| usage | — | `usage.js` 1 |
+
+**清扫规则**（用户原话：「我很讨厌这种小字设计，全页面都是，但是不要一棒子打死 主要是很讨厌这种解释设计」）：
+
+- 承载**说明/解释**的 `.hint` → **删除整个元素**。
+- 承载**数据**的 `.hint`（如 `id="egressNodeCount"` 的 `共 N 个节点`）→ 保留语义，但移除 `hint` class，改用 `var(--fs-body)` 的正常字号。
+- 禁止把说明文字搬到 `title` 属性里蒙混过关。
+- `.hint` 这个 class 在全站最终**不应再出现于说明性元素**；CSS 里保留定义（部分数据元素可能仍在用），但注释标明「仅承载数据」。
+
+**三档响应式**（1600 / 1280 / 390）：
+
+- 每档 `document.documentElement.scrollWidth === document.documentElement.clientWidth`。
+- 1600：`account-grid` 3 列、`overview-grid` 2fr/1fr、`egress-node-grid` ≥ 6 列。
+- 1280：`nav padding-inline` 收窄、`session-badge` 隐藏、`overview-stats-body` 缩到 200px。
+- 390：全部单列、导航竖排、`scrollWidth` 不溢出。
+
+**性能预算**（`§13.5` 已定，本批实测）：
+
+| 指标 | 门槛 |
+|---|---|
+| `performance.timing` 首屏 DOMContentLoaded | ≤ 1200ms（本地） |
+| 页面常驻 `backdrop-filter` 元素数 | ≤ 12 |
+| 空闲 10s 内 `requestAnimationFrame` 回调数 | 0（无持续动画） |
+| 空闲 10s 内网络请求数 | 0 |
+| JS 堆（`performance.memory.usedJSHeapSize`） | ≤ 60MB |
+
+**液态玻璃与流动背景必须在客户端渲染**：
+
+- 背景流动只用 CSS 动画（`transform` / `opacity`，不触发 layout）。
+- 禁止 `box-shadow` 动画、禁止 `filter: blur()` 动画（会触发重绘）。
+- 禁止 canvas 常驻渲染循环；如需 canvas，必须 `IntersectionObserver` 停帧 + `visibilitychange` 暂停。
+- 服务端零参与：不得为视觉效果新增任何 HTTP 端点或 SSE。
+
+### 34.4 合并纪律（重申，全部批次适用）
+
+```text
+1. git fetch <worktree> <branch>
+2. git log --oneline main..FETCH_HEAD        # 看有几个 commit
+3. git diff --stat main FETCH_HEAD           # 检查是否越界
+4. 若越界：git diff <commit>^ <commit> -- <files> | git apply
+5. styles.css 一律按 /* ===== NN xxx ===== */ 段拼接，任务书里的段号是唯一权威
+6. 合并后：go build ./... && node --test internal/panel/*_test.mjs
+```
+
+**禁止 `git merge` 整分支**。这是批次 16 / 17 把前一批修复整体回滚的根因（§32.1.2）。
