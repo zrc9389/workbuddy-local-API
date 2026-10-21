@@ -82,6 +82,12 @@ type Panel struct {
 	started time.Time
 	logs    *Ring
 
+	// modelsMu 保护 modelsCache 与刷新冷却；面板模型目录按 realm（cn/global）分键。
+	// 与 /v1/models 一致为每域单快照（首个可用账号），不引入账号级差异。
+	modelsMu          sync.Mutex
+	modelsCache       map[string]*panelModelsSnapshot
+	modelsRefreshedAt time.Time
+
 	bootstrapMu sync.Mutex
 	bootstraps  map[string]bootstrapSession
 
@@ -94,6 +100,102 @@ type Panel struct {
 // loginTTL 授权 URL 的最长有效期：超时的 state 直接回收，
 // 防止"开了添加账号弹窗就走开"的会话永久滞留。
 const loginTTL = 15 * time.Minute
+
+// 面板模型目录缓存：成功 10 分钟；上游失败负缓存 60 秒（期间不再打上游）。
+// 手动刷新冷却 5 分钟，避免面板连点放大上游请求。
+const (
+	panelModelsTTL          = 10 * time.Minute
+	panelModelsFailCooldown = 60 * time.Second
+	panelModelsRefreshCool  = 5 * time.Minute
+)
+
+// panelModelsSnapshot 单域（cn/global）模型目录快照。失败时保留旧 infos，
+// 并记 lastFail/lastErr 进入负缓存：冷却期内不再打上游。
+type panelModelsSnapshot struct {
+	infos    []upstream.ModelInfo
+	fetched  time.Time
+	lastFail time.Time
+	lastErr  string
+	// wait 非 nil 表示该域有一次拉取在途：并发请求等待它结束，避免同时打上游。
+	wait chan struct{}
+}
+
+// panelModelsResult 单域读取结果：infos 是否来自缓存、缓存年龄与错误。
+type panelModelsResult struct {
+	infos     []upstream.ModelInfo
+	fromCache bool
+	stale     bool
+	age       time.Duration
+	err       error
+}
+
+// modelsDomain 按域读取/刷新模型目录（调用方已确认该域有可用账号）。
+// 命中 TTL 直接返回；失败负缓存期内不打上游。成功 10 分钟 TTL，失败 60 秒负缓存；
+// 失败时保留旧条目，由调用方按旧快照继续展示。
+func (p *Panel) modelsDomain(realm string, force bool, fetch func() ([]upstream.ModelInfo, error)) panelModelsResult {
+	var snap *panelModelsSnapshot
+	for {
+		p.modelsMu.Lock()
+		snap = p.modelsCache[realm]
+		if snap == nil {
+			snap = &panelModelsSnapshot{}
+			p.modelsCache[realm] = snap
+		}
+		if !force {
+			if len(snap.infos) > 0 && time.Since(snap.fetched) < panelModelsTTL {
+				p.modelsMu.Unlock()
+				return panelModelsResult{infos: snap.infos, fromCache: true, age: time.Since(snap.fetched)}
+			}
+			if !snap.lastFail.IsZero() && time.Since(snap.lastFail) < panelModelsFailCooldown {
+				res := panelModelsResult{infos: snap.infos, fromCache: true, stale: len(snap.infos) > 0, age: cacheAge(snap.fetched), err: fmt.Errorf("%s", snap.lastErr)}
+				p.modelsMu.Unlock()
+				return res
+			}
+		}
+		if snap.wait == nil {
+			snap.wait = make(chan struct{})
+			p.modelsMu.Unlock()
+			break
+		}
+		// 旧快照已过成功 TTL：不再阻塞等别人拉，直接按旧列表返回（标 stale）。
+		if len(snap.infos) > 0 {
+			p.modelsMu.Unlock()
+			return panelModelsResult{infos: snap.infos, fromCache: true, stale: true, age: cacheAge(snap.fetched)}
+		}
+		// 该域已有拉取在途：等它结束后重新判定（命中缓存/负缓存，或紧接着自己拉）。
+		wait := snap.wait
+		p.modelsMu.Unlock()
+		<-wait
+	}
+
+	infos, err := fetch()
+	now := time.Now()
+	p.modelsMu.Lock()
+	defer p.modelsMu.Unlock()
+	close(snap.wait)
+	snap.wait = nil
+	if err != nil || len(infos) == 0 {
+		if err == nil {
+			err = fmt.Errorf("上游未返回可用模型")
+		}
+		snap.lastFail = now
+		snap.lastErr = err.Error()
+		return panelModelsResult{infos: snap.infos, fromCache: len(snap.infos) > 0, stale: len(snap.infos) > 0, age: cacheAge(snap.fetched), err: err}
+	}
+	snap.infos = infos
+	snap.fetched = now
+	snap.lastFail = time.Time{}
+	snap.lastErr = ""
+	return panelModelsResult{infos: infos}
+}
+
+// cacheAge 缓存年龄：从未成功拉取时返回 0，避免 time.Since(零值) 得到荒谬大数。
+func cacheAge(fetched time.Time) time.Duration {
+	if fetched.IsZero() {
+		return 0
+	}
+	return time.Since(fetched)
+}
 
 // loginSession 进行中的 OAuth 会话：创建时刻 + realm（cn/global，用于落盘与端点切换）。
 type loginSession struct {
@@ -131,12 +233,13 @@ func New(cfg Config) *Panel {
 		cfg.RedisMode = "noop"
 	}
 	p := &Panel{
-		cfg:        cfg,
-		mux:        http.NewServeMux(),
-		started:    time.Now(),
-		logs:       NewRing(500),
-		logins:     map[string]loginSession{},
-		bootstraps: map[string]bootstrapSession{},
+		cfg:         cfg,
+		mux:         http.NewServeMux(),
+		started:     time.Now(),
+		logs:        NewRing(500),
+		modelsCache: map[string]*panelModelsSnapshot{},
+		logins:      map[string]loginSession{},
+		bootstraps:  map[string]bootstrapSession{},
 	}
 	p.routes()
 	return p
@@ -265,6 +368,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/request_metrics", p.requestMetrics)
 	p.mux.HandleFunc("GET /panel/api/request_logs", p.requestLogs)
 	p.mux.HandleFunc("GET /panel/api/models", p.models)
+	p.mux.HandleFunc("POST /panel/api/models/refresh", p.modelsRefresh)
 	p.mux.HandleFunc("POST /panel/api/login/start", p.loginStart)
 	p.mux.HandleFunc("GET /panel/api/login/poll", p.loginPoll)
 	p.mux.HandleFunc("GET /panel/api/login/regions", p.loginRegions)
@@ -471,27 +575,64 @@ func (p *Panel) findRequestLog(id string) (*telemetry.Event, error) {
 	return nil, nil
 }
 
-// models 实时查询上游模型列表与 reasoning 实际档位（直连上游，不读路由层 1h 缓存）：
-// 回答"该模型到底支持哪几档思考"。顺带刷新 client 的 effort 降级能力缓存。
+// models 查询上游模型列表与 reasoning 实际档位：10 分钟内读本面板缓存，过期才直连
+// 上游（失败 60 秒负缓存）。回答"该模型到底支持哪几档思考"，同时刷新 client 的
+// effort 降级能力缓存。
 // 与 /v1/models 同口径的双域输出：CN 域模型加 "cn:" 前缀、global 域加 "global:" 前缀
 // （gateway 路由协议，前端显示的 id 就是调用时要填的完整 model 值）。
 // 各域独立探测、独立容错：某域无可用账号则整域跳过；两域全空时才报错
-// （有错误明细回 502，一个账号都没有回 503）。
+// （有错误明细回 502，一个账号都没有回 503）。响应带 cached / cache_age_seconds，
+// 旧列表兜底时另带 stale:true。
 func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
+	p.serveModels(w, false)
+}
+
+// modelsRefresh 手动刷新模型目录（POST）。5 分钟冷却内直接返回 ok:false，
+// 且不触发任何上游请求；冷却外强制重拉并按同一缓存结构写回。
+func (p *Panel) modelsRefresh(w http.ResponseWriter, r *http.Request) {
+	p.modelsMu.Lock()
+	if !p.modelsRefreshedAt.IsZero() {
+		if remaining := panelModelsRefreshCool - time.Since(p.modelsRefreshedAt); remaining > 0 {
+			secs := int((remaining + time.Second - 1) / time.Second)
+			p.modelsMu.Unlock()
+			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "cooldown_seconds": secs})
+			return
+		}
+	}
+	p.modelsRefreshedAt = time.Now()
+	p.modelsMu.Unlock()
+	p.serveModels(w, true)
+}
+
+// serveModels 读取（force=false）或强制刷新（force=true）两域模型目录。
+// 缓存按 realm 分键、每域单快照，与 /v1/models 的全局缓存口径一致；
+// 失败负缓存期内不打上游，已有旧列表继续返回（不清空）。
+func (p *Panel) serveModels(w http.ResponseWriter, force bool) {
 	out := make([]map[string]any, 0)
 	var fetchErrs []string
+	allCached := true
+	anyStale := false
+	ageSeconds := 0
 
 	// CN 域：有可用 CN 账号才查（此前无条件 Pool.Pick()+FetchModels——选中 global
 	// 账号时打 CN 端点必然失败，混合池表现为偶发 502，纯 global 池必炸）。
 	if uids := p.cfg.Pool.AvailableUIDsForRealm("cn"); len(uids) > 0 {
 		if acct := p.cfg.Pool.AuthByUID(uids[0]); acct != nil {
-			infos, err := p.cfg.Upstream.FetchModels(acct)
-			if err != nil {
-				fetchErrs = append(fetchErrs, "cn: "+err.Error())
-			} else {
-				for _, mi := range infos {
-					out = append(out, panelModelEntry("cn", mi, mi.Efforts, mi.DefaultEffort, p.cfg.Upstream.HTTP))
-				}
+			res := p.modelsDomain("cn", force, func() ([]upstream.ModelInfo, error) {
+				return p.cfg.Upstream.FetchModels(acct)
+			})
+			if res.err != nil {
+				fetchErrs = append(fetchErrs, "cn: "+res.err.Error())
+			}
+			if !res.fromCache {
+				allCached = false
+			}
+			anyStale = anyStale || res.stale
+			if res.age > time.Duration(ageSeconds)*time.Second {
+				ageSeconds = int(res.age / time.Second)
+			}
+			for _, mi := range res.infos {
+				out = append(out, panelModelEntry("cn", mi, mi.Efforts, mi.DefaultEffort, p.cfg.Upstream.HTTP))
 			}
 		}
 	}
@@ -501,14 +642,26 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 	if p.cfg.Upstream.GlobalEnabled {
 		if uids := p.cfg.Pool.AvailableUIDsForRealm("global"); len(uids) > 0 {
 			if acct := p.cfg.Pool.AuthByUID(uids[0]); acct != nil {
-				infos := p.cfg.Upstream.FetchGlobalModelInfos(acct)
-				if len(infos) == 0 {
-					fetchErrs = append(fetchErrs, "global: 上游未返回可用模型")
-				} else {
-					efforts, defaults := p.cfg.Upstream.GlobalEffortSnapshot()
-					for _, mi := range infos {
-						out = append(out, panelModelEntry("global", mi, efforts[mi.ID], defaults[mi.ID], p.cfg.Upstream.HTTP))
+				res := p.modelsDomain("global", force, func() ([]upstream.ModelInfo, error) {
+					infos := p.cfg.Upstream.FetchGlobalModelInfos(acct)
+					if len(infos) == 0 {
+						return nil, fmt.Errorf("上游未返回可用模型")
 					}
+					return infos, nil
+				})
+				if res.err != nil {
+					fetchErrs = append(fetchErrs, "global: "+res.err.Error())
+				}
+				if !res.fromCache {
+					allCached = false
+				}
+				anyStale = anyStale || res.stale
+				if res.age > time.Duration(ageSeconds)*time.Second {
+					ageSeconds = int(res.age / time.Second)
+				}
+				efforts, defaults := p.cfg.Upstream.GlobalEffortSnapshot()
+				for _, mi := range res.infos {
+					out = append(out, panelModelEntry("global", mi, efforts[mi.ID], defaults[mi.ID], p.cfg.Upstream.HTTP))
 				}
 			}
 		}
@@ -522,7 +675,16 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "没有可用账号：请先在面板添加账号再查询")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "models": out})
+	body := map[string]any{
+		"ok":                true,
+		"models":            out,
+		"cached":            allCached,
+		"cache_age_seconds": ageSeconds,
+	}
+	if anyStale {
+		body["stale"] = true
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // panelModelEntry 构造单个模型条目（两域共用）：id 带 realm 前缀（调用值即显示值），
