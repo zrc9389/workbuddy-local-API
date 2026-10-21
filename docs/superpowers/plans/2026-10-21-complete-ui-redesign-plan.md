@@ -1,13 +1,13 @@
 # WorkBuddy Local 全站 UI 重构开发文档
 
-状态：规划完成，尚未实施；本轮未修改产品代码、未部署、未运行浏览器验收。
+状态：批次 -1 至 7B 已实施并合并到 `main@0f3a8c2`；批次 9（死 CSS 与小字清理）进行中；三档浏览器验收、渲染性能实测、VM 部署未完成。逐批证据见 §30。
 
-> **开工前置（硬门禁，不可跳过）**：本目录当前不是 Git 仓库。任何子智能体在写下第一行业务代码前，必须先完成第 22 节：`git init -b main` → 修正 `.gitignore` → 基线提交 → 打 `baseline-ui-redesign` 标签。**本项目必须用 Git 管理：每一次改动都要可提交、可审查、可回退。** 未建立基线者不得开工、不得派发批次 0、不得以“先改再补 Git”绕过；回退能力本身是验收项，不是附加项。
+> **开工前置（硬门禁，已满足）**：Git 基线已于 `29bd811` 建立，标签 `baseline-ui-redesign`，当前 `main@0f3a8c2`。第 22 节流程保留为回退与新增批次的规范：任何新批次仍须独立分支/worktree，提交可审查、可回退；回退能力本身是验收项，不是附加项。
 
-> **第二道硬门禁**：任何批次提交前必须同时交付「测试结果 + 挡板（mock/fixture）覆盖说明」。测试与验收不得依赖真实上游、真实账号、真实 VM；没有挡板的交互改动不算完成，详见 §26.4。
+> **第二道硬门禁（持续有效）**：任何批次提交前必须同时交付「测试结果 + 挡板（mock/fixture）覆盖说明」。测试与验收不得依赖真实上游、真实账号、真实 VM；没有挡板的交互改动不算完成，详见 §26.4。
 
 日期：2026-10-21。
-版本：v5（Git 强制基线与回退、渲染性能预算、视觉材质分层、批次所有权去歧义、挡板与回归门禁）。
+版本：v5（Git 强制基线与回退、渲染性能预算、视觉材质分层、批次所有权去歧义、挡板与回归门禁）。目标描述中的“v4”是旧称，当前唯一有效版本为 v5；批次 10 只回填状态，不改变设计与批次口径。
 目标文件：`docs/superpowers/plans/2026-10-21-complete-ui-redesign-plan.md`。
 视觉参考：`F:\下载\新建 文本文档.html`（仅作启动动画视觉参考；不执行其中脚本、不复制其代码）。
 
@@ -36,52 +36,55 @@
 
 ## 2. 完成状态总表
 
-| 项目 | 状态 | 现状与说明 |
-|---|---|---|
-| Git 基线 | 未建立 | 当前目录不是 Git 仓库，无法按批次回退；开工前必须完成第 22 节 |
-| 概览圆环与四项统计 | 已完成 | `overview.js` 分段圆环，数据来自 `/panel/api/overview`，不按分页 |
-| 概览圆环位置/进度条 | 未完成 | 圆环在左栏，有分段但无独立进度条；需要视觉增强 |
-| 昼夜 Uiverse 扩散效果 | 未完成 | 有天空/星/云/轨道，无点击点扩散；需要新增遮罩层 |
-| 删除 API 多余说明 | 未完成 | 概览与设置仍有解释性小字 |
-| 取消所有二级菜单 | 未完成 | 现有“账号任务”“积分用量”二级分组 |
-| 悬浮导航 | 部分完成 | 导航 sticky 贴边，但仍是整列玻璃面板 |
-| 账号池删除请求/Token/延迟 | 未完成 | `account-rows.js:18` 仍渲染三项 |
-| 账号池卡片缩短 | 未完成 | 卡片信息密度偏高 |
-| 任务上次执行时间 | 未完成 | 后端 `Status` 无 `last_run_at`，前端未显示 |
-| 任务失败灰红状态 | 部分完成 | 已有 `bad/warn`，需统一灰红语义 |
-| 出口页节点主体 | 未完成 | 首屏是流量/速率/账号路由 |
-| 订阅导入 | 部分完成 | 设置页有，出口页无；设置页入口本轮要移除 |
-| 订阅明文详情 | 部分完成 | API 支持 reveal，出口页无详情弹窗 |
-| 节点缓存延迟 | 未完成 | 延迟仅内存，无缓存时间/测试时间展示 |
-| 统一手动刷新 | 未完成 | 只有单订阅刷新，无统一入口 |
-| 48 小时策略 | 未完成 | 有 `last_refresh_at`，无过期展示 |
-| 积分用量缓存预加载 | 未完成 | 每次进入 GET `usage?hours=0` |
-| 到期 2928 天 | 未完成 | 未做 30 天展示封顶；根因为上游远期包 |
-| 未取得余额含义 | 部分完成 | 已计入 `unavailable`，解释不足 |
-| 模型卡片简化 | 未完成 | 字段多、按钮多 |
-| 模型禁用统一/排序 | 部分完成 | 有禁用按钮，无统一视觉；禁用后不排序 |
-| 模型拉取缓存 | 未完成 | 面板每次直连上游 |
-| 错误记录只保留错误 | 已完成 | `logs.js` 只渲染错误，`reqlog` 仅错误、24 小时 |
-| 错误记录简洁/按需详情 | 部分完成 | 详情按需，列表仍可压缩 |
-| 设置页移除重复 API/订阅 | 未完成 | 设置页仍有订阅管理、本机 API |
-| 启动动画重做 | 部分完成 | 四种风格已有，需按附件视觉重做 |
-| 登录页无用文案 | 未完成 | 仍有“首次使用初始密码”等说明 |
-| 字体直接可见 | 未完成 | 只有本地字体栈，未加载目标字体 |
+> 判据：`main@0f3a8c2` 的真实代码 + 本次实际执行结果，不采信批次自我描述。状态取值：已完成 / 部分完成 / 未完成 / 约束。逐批 commit 与命令见 §30。
 
-| 液态玻璃层级 | 未完成 | 只有半透明 + blur，缺边缘线/内高光/外阴影三层；`styles.css` 各处 blur 值不统一 |
-| 常驻流动背景 | 部分完成 | 现有 `.atmosphere/.fluid-one/.fluid-two/.grain` 两个光斑漂移，无生命周期与降级 |
-| 渲染性能预算 | 未定义 | 无帧率上限、合成层数量、blur 面积、主线程长任务门槛 |
-| 隐藏页暂停 | 部分完成 | `lifecycle.js` 管请求，`theme.js` 管 `data-paused`，二者无统一契约 |
-| 移动端视觉降级 | 未完成 | 现仅把 `.fluid` 宽度改 `100vw`，反而增加低端机合成负担 |
-| CSS/Canvas/SVG 选型 | 未定义 | 无“何时用 CSS、何时允许 Canvas、何时允许 SVG”的边界 |
-| 挡板（mock/fixture） | 部分完成 | 已有 `frontend_helpers_test.mjs` 的 `mockAPI`，但无统一挡板契约与门禁 |
-| 桌面/手机响应式 | 部分完成 | 有断点，仍需全页验证 |
-| Meta/反代内核不改 | 约束 | 明确不改 |
+| 项目 | 状态 | 现状、commit 与剩余内容 |
+|---|---|---|
+| Git 基线 | 已完成 | `29bd811`，标签 `baseline-ui-redesign`，370 文件入库，文档未被 ignore（`git check-ignore -q` 退出码 1） |
+| 概览圆环与四项统计 | 已完成 | `overview.js` 分段圆环，数据 `GET /panel/api/overview`，不按分页 |
+| 概览圆环位置/进度条 | 已完成 | `ceca7c5`：圆环在左，右侧四行各带细进度条（`ovBarTotal/Healthy/Cooling/Disabled`），数据行错峰展开 |
+| 昼夜 Uiverse 扩散效果 | 已完成 | `ceca7c5`：`playThemeWash()` + `.theme-wash`，从日月位置 `clip-path: circle()` 470ms 扩散；减少动画时直接切换 |
+| 删除 API 多余说明 | 部分完成 | 概览“账号池状态与本机接口”、账号池图例小字已删；`index.html:147` 积分用量 `usNote` 仍保留，归批次 9 |
+| 取消所有二级菜单 | 已完成 | `ceca7c5`：九项一级导航平铺，无 `nav-group/nav-label/nav-sub` |
+| 悬浮导航 | 部分完成 | 已换成 `.glass-nav` 液态玻璃悬浮条（`styles.css:119-138`）；宽屏仍是整高侧栏，不是悬浮胶囊，视觉验收待定 |
+| 账号池删除请求/Token/延迟 | 已完成 | `f1c8fca`：`account-rows.js` 只渲染余额/当前出口/出口/启用禁用/删除 |
+| 账号池卡片缩短 | 已完成 | `f1c8fca`：`.account-grid .account-card` `max-height:132px`，`padding:10px 14px` |
+| 任务上次执行时间 | 已完成 | `28bc85f` 后端 `last_run_at/last_finished_at/last_result`；`f1c8fca` 前端显示“上次执行 … · 结果 …” |
+| 任务失败灰红状态 | 已完成 | `f1c8fca`：`.failure-count` 默认灰，`[data-state="failed"]` 才红 |
+| 出口页节点主体 | 已完成 | `9d7022a`：首屏为订阅概览 + 节点网格；流量/速率卡已移出首屏 |
+| 订阅导入 | 已完成 | `9d7022a`：导入表单在出口页，设置页入口已删（`3ee482e`） |
+| 订阅明文详情 | 已完成 | `9d7022a`：详情弹窗 `reveal=1` 读明文，关闭即清空，不落存储 |
+| 节点缓存延迟 | 部分完成 | 节点延迟来自 `node.delay_ms` 缓存值，不自动测速；但无“测试时间/缓存年龄”字段，48h 只对订阅快照生效 |
+| 统一手动刷新 | 已完成 | `9d7022a/0a74e82`：“刷新节点”串行 `refreshSubscriptionsOnce()` + 重读节点，不测速；顶部“刷新”只刷余额 |
+| 48 小时策略 | 已完成 | `0a74e82` `subscriptionCacheState()`：`CACHE_TTL_MS=48h`，过期只标记“缓存已过期”，不清空 |
+| 积分用量缓存预加载 | 部分完成 | `3ee482e` 60s memo + in-flight 去重；但仍是进入页面才加载，没有登录时预取，归后续批次 |
+| 到期 2928 天 | 已完成 | `ac9857b`：`MAX_EXPIRY_DAYS=30`，`Math.min(30,days)` 显示“30 天内”；根因（上游远期包）保持只读 |
+| 未取得余额含义 | 已完成 | 计入 `unavailable`，不按 0；`pkStats` 第三项标注“未取得余额” |
+| 模型卡片简化 | 已完成 | `ac9857b`：只留名称/ID/上下文/倍率/输出 Token/能力；“上下文展示”按钮已删 |
+| 模型禁用统一/排序 | 已完成 | `model-policy.js` 右上 `role="switch"`；`sortModelsByPolicy()` 禁用置底 |
+| 模型拉取缓存 | 已完成 | `7b99f4a`：10min 正缓存 + 60s 失败冷却；`POST /panel/api/models/refresh` 5min 冷却 |
+| 错误记录只保留错误 | 已完成 | `3ee482e`：`logs.js:141` 过滤 `outcome!=='success'`；`reqlog` 保留 24h |
+| 错误记录简洁/按需详情 | 部分完成 | 列表已压缩、详情按需；`index.html:171` 仍保留“运行记录”块与 `reqSummary/reqNote/logNote` 小字，归批次 9 |
+| 设置页移除重复 API/订阅 | 已完成 | `3ee482e`：只剩“管理密码”“启动动画” |
+| 启动动画重做 | 已完成 | `399af97`：8s 目标 / 12s 硬上限，四风格（names/orbital/scan/minimal），液体拉幕/百叶/光闸/noise/进度条 |
+| 登录页无用文案 | 已完成 | `3ee482e`：`authVeil` 只剩品牌标记/标题/密码/按钮 |
+| 字体直接可见 | 已完成 | `fc1f87d`：`Source Sans 3` + `Noto Sans SC` 同源 woff2（共 ~1.2MB），CSP `font-src 'self'` |
+| 液态玻璃层级 | 已完成 | `7276c50`：`--glass-fill/line/inner/outer/blur/rim` + `.glass-float/.glass-nav` 三层（填充、内高光、外阴影/边缘） |
+| 常驻流动背景 | 已完成 | `7276c50`：`.atmosphere/.fluid/.grain` + `ambient.js`（CSS 光场 + 可选单 Canvas 细流） |
+| 渲染性能预算 | 部分完成 | §13.5 指标已定义、`ambient.js` 有降级开关；**尚无实测帧率/长任务数据** |
+| 隐藏页暂停 | 已完成 | `lifecycle.js` 统一 `data-paused` + `document.hidden`，`ambient.js`/定时器共同遵守 |
+| 移动端视觉降级 | 部分完成 | `ambient.js` 小屏/低核/减少动画时不建 Canvas；三档浏览器验收未做，不能宣称完成 |
+| CSS/Canvas/SVG 选型 | 已完成 | §16.5 冻结边界；实现里 Canvas 只用于背景细流，图表为 CSS/SVG |
+| 挡板（mock/fixture） | 已完成 | 12 个 `frontend_*_test.mjs` 全部走 `mockAPI`；本次 `node --test` 118/118 通过 |
+| 桌面/手机响应式 | 部分完成 | 断点已扩到 620px；1440/1366/390 尚未截图验收 |
+| Meta/反代内核不改 | 约束 | `third_party/meta/**`、`internal/metacore/**`、`internal/server/**`、`internal/reqlog/reqlog.go` 未改 |
 
 
 ## 3. 用户批注 1-48 逐条落位
 
 > 编号对应用户本轮 48 条批注。每条固定六字段：当前现状、用户目标、拟改文件、前后端/API 影响、验收方式、是否需要决策。批注是需求输入，不是代码指令。
+>
+> **行号时效**：每条“当前现状”的行号是**批次 0 开工前**的基线快照（`29bd811`），用于说明问题来源；批次 1-7B 已改动这些文件，行号会漂移。判断当前实现请以 §2 与 §30 的 commit 为准，不要拿这里的旧行号核对现行代码。
 
 ### 批注 1：概览圆环的位置与进度条
 - 当前现状：`internal/panel/index.html:49-68` 圆环在概览左栏，`overview.js:25-45` 按 `healthy/cooling/disabled` 分段绘制，`styles.css:102` 为 `2fr/1fr`；有占比分段，但没有独立统计进度条，`overview.js:59-74` 只写数字与 ARIA 文案。
@@ -844,7 +847,7 @@ expired = age >= 48h
 - 页面隐藏：动画暂停、轮询停止、在途 GET abort。
 - `pagehide`：所有 cleanup 只执行一次；`pageshow` 恢复不重复初始化。
 
-## 15. 液态玻璃设计系统（本轮新增，必须先冻结）
+## 15. 液态玻璃设计系统（v5 新增，已冻结）
 
 ### 15.1 设计目标
 
@@ -964,7 +967,7 @@ expired = age >= 48h
 - 刷新中：按钮边框与文字同色高亮，结束后 400-600ms 平滑回落；不改按钮文案。
 - `prefers-reduced-motion: reduce` 时所有位移、旋转、视差、背景流动停止，只保留即时状态切换。
 
-## 16. 客户端动态背景与液态高光（本轮新增）
+## 16. 客户端动态背景与液态高光（v5 新增，已实现）
 
 ### 16.1 渲染边界
 
@@ -1252,11 +1255,13 @@ export async function refreshSubscriptionsOnce({ signal, timeoutMs = 8000 }) { .
 - `internal/reqlog/reqlog.go`：已实现流式读取与清理，本轮不改；24 小时、1000 条、16 MiB、单条 8 KiB、`no_logs` 语义不变。
 - 文件所有权以第 25 节为准：`router.js` 由批次 7 独占，批次 3/4 需要登录钩子时只提交接口约定，不直接改文件；`logs.js` 归批次 6，`index.html` 按 `view-*` 区块分段拥有。任何批次都不得覆盖他人已合并的改动。
 
-## 22. Git 基线与回退机制（开工前置条件，不满足不得动代码）
+## 22. Git 基线与回退机制（开工前置条件；基线已建立，规则继续有效）
 
 ### 22.1 为什么必须先建 Git
 
-当前源码目录**不是 Git 仓库**（已核实：`git status` 返回 `fatal: not a git repository`）。在无版本控制的情况下并行派发 8 个批次，无法回答三个问题：改坏了哪个文件、能否回退到可用版本、谁覆盖了谁。因此本轮把 Git 初始化列为批次 0 的硬门禁。
+开工前源码目录**不是 Git 仓库**（当时 `git status` 返回 `fatal: not a git repository`）。在无版本控制的情况下并行派发 8 个批次，无法回答三个问题：改坏了哪个文件、能否回退到可用版本、谁覆盖了谁。因此把 Git 初始化列为批次 -1 的硬门禁。
+
+该门禁现已满足：基线 `29bd811`、标签 `baseline-ui-redesign`、当前 `main@0f3a8c2`。本节保留为回退规范与新增批次的准入要求，不再是阻塞项。
 
 ### 22.2 初始化步骤（由主助手或指定批次执行一次）
 
@@ -1459,7 +1464,7 @@ git add -A -n
 
 ## 26. Go / Node / 浏览器验收矩阵
 
-> 本轮只出规划，未执行下表中的产品测试；`internal/reqlog` 的既有测试已存在，本文不重复宣称全量通过。执行记录以各批次回报为准。
+> 下表是验收矩阵，不是历史声明。批次 10 已在 `main@0f3a8c2` 派生 worktree 实跑全量：`go build ./...`、`go test ./...`、12 个 `frontend_*_test.mjs`（118/118）均通过，详见 §30.2。浏览器三档与性能实测仍未执行。
 
 ### 26.1 Go
 
@@ -1554,7 +1559,7 @@ for f in internal/panel/*_test.mjs; do node --test "$f" || exit 1; done
 - 不把 2928 天改成 0；统一封顶 30 天展示；不伪造未知余额。
 - 不放宽 CSP 到 `*`/`unsafe-eval`；远程字体必须白名单或静态打包。
 - 不把附件 HTML 的脚本/事件当产品代码执行。
-- 不在未建立 Git 基线的情况下修改产品代码；无 Git 即阻塞。
+- 不在未建立 Git 基线的情况下修改产品代码；基线已建立（`29bd811` / `baseline-ui-redesign`），新增批次仍须独立分支/worktree。
 - 不在 E 范围改 `router.js`、`index.html`、`logs.js`（由其他批次 owner）；文件冲突时只报告建议，不覆盖。
 
 ### 27.2 已定项（实施时不得再改口径）
@@ -1580,7 +1585,7 @@ for f in internal/panel/*_test.mjs; do node --test "$f" || exit 1; done
 5. 启动动画默认风格：由实施时选视觉完成度最高的一种（候选 `names`/`orbital`/`scan`/`minimal`），其余作为设置选项。
 6. 订阅详情不显示复制按钮。
 
-## 28. 新增需求矩阵（本轮补充，必须与批注 1-48 同批验收）
+## 28. 新增需求矩阵（v5 补充，必须与批注 1-48 同批验收）
 
 | 编号 | 需求 | 当前事实 | 目标 | 主要文件 | 验收 |
 |---|---|---|---|---|---|
@@ -1610,34 +1615,108 @@ for f in internal/panel/*_test.mjs; do node --test "$f" || exit 1; done
 
 ### 29.2 实施状态（以真实代码为准）
 
-- 已完成（现状可核实）：错误记录只保留错误且 24 小时、错误详情按需、账号统计不分页、节点筛选只 GET、打开弹窗不测速、关闭停止轮询、零余额隐藏、积分完整数字、上游/实测区分。
-- 部分完成：订阅导入（设置页有、出口页无）、订阅详情 API（有 reveal、无页面）、节点延迟（有内存值、无缓存时间）、模型禁用（有按钮、无统一视觉/排序）、启动动画（有四种风格、未按新视觉重做）、响应式（有断点、未三档验收）。
-- 未完成：二级菜单取消、账号卡删三字段/缩短、任务上次执行时间、出口节点主体、统一刷新、48 小时展示、登录时订阅刷新、用量预加载、2928 天封顶、模型缓存、设置收敛、登录文案、字体实际加载、液态玻璃、客户端动态背景。
-- 未修改：Meta/Mihomo 内核、`third_party/meta`、`internal/metacore` 第三方实现、`internal/server` 反代核心、`internal/reqlog` 保留策略。
+- 已完成（`main@0f3a8c2` 逐项核对，详见 §2 与 §30）：
+  - 批次 -1：Git 基线 `29bd811` + 标签 `baseline-ui-redesign`。
+  - 批次 0：设计 token、三层玻璃、`ambient.js`、`lifecycle.js` 暂停契约、CSS 分区锚点（`7276c50`）。
+  - 批次 2A：维护任务上次执行/完成时间与结果（`28bc85f`）。
+  - 批次 5A：模型 10min 缓存 + 60s 负缓存 + `POST /panel/api/models/refresh` 5min 冷却（`7b99f4a`）。
+  - 批次 2：账号卡删请求/Token/延迟、≤132px、出口按钮同排、任务上次执行时间、失败灰红（`f1c8fca`）。
+  - 批次 1：九项一级导航、悬浮玻璃条、仅文字+2px 左线选中、圆环在左+细进度条、昼夜扩散（`ceca7c5`）。
+  - 批次 5：到期 30 天封顶、零余额隐藏、模型卡简化、档位排序 `off→low→medium→high→xhigh→max→ultra`、禁用置底、手动刷新（`ac9857b`）。
+  - 批次 3：出口页节点网格首屏、订阅概览/导入/详情（关闭即清空明文）、串行刷新不测速（`9d7022a`）。
+  - 批次 6：设置只剩密码/动画、删订阅+API+外观块、登录遮罩小字删除、用量 60s memo、错误只留错误（`3ee482e`）。
+  - 批次 8A：订阅逻辑清空、CSS 死规则清理、跨批测试漂移修正（`1737782`）。
+  - 批次 7A：同源 woff2 字体 + CSP `font-src 'self'`（`fc1f87d`）。
+  - 批次 4：登录后自动刷新订阅一次（与动画共用 12s 截止）、`subscriptionCacheState()` 48h、生命周期加固（`0a74e82`）。
+  - 批次 7B：启动动画重做（8s/12s、四风格、流体拉幕/百叶/光闸/noise/进度条）（`399af97`）。
+- 部分完成：
+  - 解释性小字清理：概览/账号池已删，积分用量 `usNote` 与错误页 `reqSummary/reqNote/logNote`、`运行记录` 面板仍在（批次 9 处理中，分支 `ui/batch-9-clean` 目前与 `main` 无差异）。
+  - 节点缓存延迟：只用 `node.delay_ms` 缓存值，无测试时间/缓存年龄展示。
+  - 积分用量预加载：60s memo 与 in-flight 去重已有，但登录时未预取。
+  - 悬浮导航：宽屏仍是整高侧栏玻璃，不是悬浮胶囊。
+  - 响应式：断点覆盖到 620px，1440/1366/390 未做截图验收。
+  - 渲染性能预算：§13.5 指标已定义、降级逻辑已写，但无实测数据（帧率、单帧长任务、合成层数量）。
+- 未完成：
+  - 批次 9：死 CSS（`.subscription-manager/.subscription-*`、`.metric-card`、`.egress-top` 残留）与剩余解释性小字清理。
+  - 浏览器视觉验收：1440/1366/390 三档截图与交互走查。
+  - 渲染性能实测：按 §13.5 采集数据并与门槛比对。
+  - VM 部署：`192.168.189.128:22` 通，`:7863` 不通（实测 `ConnectAsync` = False），panel 进程未监听，需先修复服务再核对 commit。
+- 未修改：Meta/Mihomo 内核、`third_party/meta`、`internal/metacore`、`internal/server` 反代核心、`internal/reqlog` 保留策略。
 
 ### 29.3 开工门禁
 
-- Git 基线未建立：**阻塞**，不得派发批次 0；本项目必须建立 Git 用于管理与回退（§22）。
-- `.gitignore` 未修正：阻塞，敏感文件可能误入基线。
-- 挡板契约未落地：阻塞，交互改动不得以“真实环境跑通了”作为完成依据（§26.4）。
-- 本报告已定稿；按第 23 节批次书派发，每批验收通过再进下一批。
+- Git 基线：**已满足**。`29bd811` + 标签 `baseline-ui-redesign`；当前 `main@0f3a8c2`。
+- `.gitignore`：**已修正并验证**。白名单放行 `docs/**/*.md`（`git check-ignore -q` 退出码 1），敏感/产物排除保持。
+- 挡板契约：**已落地**。12 个 `frontend_*_test.mjs` 使用 `mockAPI`，本次全量 118/118 通过。
+- 后续批次仍需独立分支/worktree、逐批验收；不得直接改 `main`。
 
 ### 29.3.1 环境实测（2026-10-21 本轮）
 
 | 项 | 结果 | 含义 |
 |---|---|---|
-| `127.0.0.1:17863` | 拒绝连接 | 旧的本地端口没有监听；当前工作副本不是从该端口访问 |
-| `127.0.0.1:7863` | 可建连但连接被重置（HTTP 000） | Windows `portproxy` 存在：`127.0.0.1:7863 -> 192.168.189.128:7863` |
-| `192.168.189.128:22` | 通 | VM 在线，SSH 可用 |
-| `192.168.189.128:7863` | 不通 | VM 上面板进程未监听或已退出；**不是隧道问题** |
+| `127.0.0.1:17863` | HTTP 200，LEN=18665 | 本地 demo 面板在跑（`-demo`，`WB2A_LISTEN=127.0.0.1:17863`），用于验收 |
+| `127.0.0.1:7863` | 可建连但连接被重置 | Windows `portproxy`：`127.0.0.1:7863 -> 192.168.189.128:7863` |
+| `192.168.189.128:22` | 通（TcpClient=True） | VM 在线，SSH 可用 |
+| `192.168.189.128:7863` | 不通（TcpClient=False） | VM 上面板进程未监听或已退出；**不是隧道问题** |
 
-结论：部署验证前必须先让 VM 的 panel 进程重新监听 7863，并确认版本号与本地 commit 对应。本轮没有执行部署、没有重启 VM 服务，也不在规划阶段修它。
+结论：部署验证前必须先让 VM 的 panel 进程重新监听 7863，并确认版本号与本地 commit 对应。**本轮未执行部署**，该风险单独跟踪。
 
 ### 29.4 本轮交付物
 
 - 本文件是唯一总规划；`2026-10-21-egress-redesign-plan.md` 是出口专项，内容已被本文件第 17.4/22/23 节吸收，实施时以本文件为准，专项文件只作补充阅读。
 - v5 新增：§13.5 渲染性能预算、§16.5 渲染技术边界、§26.4 挡板与回归门禁、第 23/25 节批次与所有权去歧义、Git 回退为硬门禁。
-- 本轮没有产品代码改动、没有部署、没有声称浏览器验收通过。
-- 下一步：先完成第 22 节 Git 基线；再由主助手按第 23 节批次书派发子智能体；每批完成后由主助手审查代码、测试与截图，再进入下一批。
+- 批次 10（本文）：只回填状态与执行记录，不改产品代码。
+- 本轮回归（`main@0f3a8c2` 派生 worktree 实测）：`go build ./...` 退出 0；`go test ./...` 全部 `ok`；`node --test internal/panel/*_test.mjs` 118 tests / 118 pass / 0 fail。
+- 下一步：批次 9 清死 CSS/小字 → 三档浏览器视觉验收 → §13.5 性能实测 → VM 服务修复与部署核对。
+
+## 30. 批次执行记录
+
+> 来源：`git log --oneline -30` 与逐条 `git show --stat`；提交时间均为 2026-10-21（+0800）。验收结果为本轮在 `main@0f3a8c2` 派生 worktree 中实际执行，不引用历史口头结论。
+
+### 30.1 汇总表
+
+| 批次 | 内容摘要 | commit | 验收方式（命令） | 结果 |
+|---|---|---|---|---|
+| -1 | Git 基线、`.gitignore` 白名单 | `29bd811` | `git log --oneline -1`；`git tag --list`；`git check-ignore -q <doc>` | 通过：基线存在、标签存在、文档未被忽略（退出码 1）、370 文件入库 |
+| 0 | 设计 token、三层玻璃、`ambient.js`、`lifecycle.js` | `7276c50` | `git show --stat 7276c50`；`go build ./...` | 通过：4 文件 470 增；构建 0 |
+| 2A | 维护任务 `last_run_at/last_finished_at/last_result` | `28bc85f` | `go test ./internal/maintenance/... ./internal/panel/...` | 通过：新增 `timing_test.go`、`maintenance_test.go`，全包 ok |
+| 5A | 模型缓存 + 手动刷新接口 | `7b99f4a` | `go test ./internal/panel/...` | 通过：新增 `panel_models_cache_test.go`，全包 ok |
+| 2 | 账号卡精简、任务时间、失败灰红 | `f1c8fca` | `node --test internal/panel/frontend_modules_test.mjs internal/panel/frontend_pool_test.mjs` | 通过：全量 118/118 |
+| 1 | 一级导航、圆环在左+进度条、昼夜扩散 | `ceca7c5` | `node --test internal/panel/frontend_overview_test.mjs` | 通过：新增 86 行断言，全量 118/118 |
+| 5 | 到期 30 天封顶、模型卡简化/排序/禁用置底 | `ac9857b` | `node --test internal/panel/frontend_modules_test.mjs` | 通过：新增 62 行断言，全量 118/118 |
+| 3 | 出口页节点网格、订阅概览/导入/详情 | `9d7022a` | `node --test internal/panel/frontend_egress_filter_batch_e_test.mjs` | 通过：新增 165 行测试，全量 118/118 |
+| 6 | 设置收敛、登录文案、用量 memo、错误只留错误 | `3ee482e` | `node --test internal/panel/frontend_logs_errors_test.mjs internal/panel/frontend_v02_test.mjs` | 通过：全量 118/118 |
+| 8A | 跨批测试漂移修正、订阅死代码清理 | `1737782` | `node --test internal/panel/*_test.mjs` | 通过：118/118；`config.js` 删 94 行 |
+| 7A | 同源 woff2 字体、CSP `font-src 'self'` | `fc1f87d` | `go test ./internal/panel/...` | 通过：新增 `fonts_test.go`，`security_test.go` 断言 CSP |
+| 4 | 登录后订阅刷新一次、48h 缓存状态、生命周期 | `0a74e82` | `node --test internal/panel/frontend_lifecycle_batch_e_test.mjs` | 通过：新增 230 行测试，全量 118/118 |
+| 7B | 启动动画重做（8s/12s、四风格） | `399af97` | `node --test internal/panel/frontend_startup_test.mjs internal/panel/frontend_animation_settings_test.mjs` | 通过：新增/改写 186 行测试，全量 118/118 |
+| 10 | 本文状态回填与执行记录 | 本条提交 | `git diff --stat`；`git cat-file -t <hash>` | 见 §30.3 |
+
+### 30.2 全量回归（本轮实跑）
+
+```text
+go build ./...                         -> exit 0
+go test ./...                          -> 全部 ok（含 internal/scheduler 15.6s、internal/server 11.4s）
+node --test internal/panel/*_test.mjs  -> tests 118 / pass 118 / fail 0（12 个测试文件）
+```
+
+补充实测：
+
+```text
+GET http://127.0.0.1:17863/panel/      -> HTTP 200, LEN=18665
+192.168.189.128:22                     -> True  (SSH 可用)
+192.168.189.128:7863                   -> False (panel 未监听)
+```
+
+### 30.3 未完成项跟踪
+
+| 项 | 状态 | 剩余内容 | 建议归属 |
+|---|---|---|---|
+| 批次 9：死 CSS 与小字清理 | 进行中 | `styles.css` 删除 `.subscription-manager/.subscription-list/.subscription-row/.subscription-copy/.subscription-actions/.subscription-url`、`.metric-card`、`.egress-top` 残留；删 `index.html:147` `usNote`、`index.html:171` `reqSummary/reqNote/logNote` 与“运行记录”面板 | 分支 `ui/batch-9-clean`（当前与 `main` 无差异） |
+| 浏览器视觉验收 | 未完成 | 1440/1366/390 三档：登录页无小字、九项导航、圆环+进度条、昼夜扩散、出口节点网格、订阅详情、设置两块、动画四风格、字体生效、无横向滚动 | 批次 8/验收 |
+| 渲染性能实测 | 未完成 | §13.5 帧率、单帧长任务、合成层数量、blur 面积；隐藏页暂停实测 | 批次 8/验收 |
+| VM 部署 | 未完成 | 修复 VM panel 进程监听 `:7863`，部署 `main@0f3a8c2`，核对版本号与 commit | 部署批次 |
+
+> 批次 10 只改本文件；未触碰任何代码、测试或部署配置。
 
 文档结束。
