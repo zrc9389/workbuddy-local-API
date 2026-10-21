@@ -97,13 +97,49 @@
     <!-- ===== /view:taskscenter ===== -->
     <!-- ===== view:egress ===== -->
     <section class="view" id="view-egress" aria-label="出口" hidden>
-      <header class="view-heading"><div><h2>账号出口</h2><p class="hint">按账号独立绑定，不修改系统代理或 TUN。</p></div><span id="metaState" class="tag muted">尚未读取</span></header>
+      <header class="view-heading"><h2>账号出口</h2><span id="metaState" class="tag muted">尚未读取</span></header>
       <p class="error-notice" id="egressError" role="alert" hidden></p><p id="metaError" class="hint"></p>
-      <div class="egress-top">
-        <article class="metric-card"><h3>流量总计</h3><div class="metric-values"><div><span>↓ 下载</span><strong id="trafficDownload">—</strong></div><div><span>↑ 上传</span><strong id="trafficUpload">—</strong></div></div><p class="hint">内核累计值；重启可能归零。</p></article>
-        <article class="metric-card"><h3>实时速率</h3><div class="metric-values"><div><span>↓ 下载</span><strong id="rateDownload">—</strong></div><div><span>↑ 上传</span><strong id="rateUpload">—</strong></div></div><p id="metaConnections" class="hint">连接数未知</p><p id="metaSample" class="hint">暂无有效采样</p></article>
+      <section class="egress-overview" aria-label="订阅概览">
+        <p id="egressOverviewText" class="egress-overview-text" role="status">正在读取订阅…</p>
+        <div class="egress-overview-actions">
+          <button id="btnEgressImport" type="button">导入订阅</button>
+          <button id="btnSubscriptionDetails" type="button">订阅详情</button>
+          <button id="btnRefreshNodes" type="button">刷新节点</button>
+        </div>
+      </section>
+      <p id="egressRefreshHint" class="egress-refresh-hint" role="status"></p>
+      <form id="egressSubscriptionForm" class="egress-import" hidden>
+        <label for="egressSubscriptionURL">订阅地址</label>
+        <input id="egressSubscriptionURL" type="url" autocomplete="off" spellcheck="false" placeholder="https://…" required>
+        <label for="egressSubscriptionName">名称（可选）</label>
+        <input id="egressSubscriptionName" type="text" maxlength="64" autocomplete="off" spellcheck="false" placeholder="例如：主力节点">
+        <div class="egress-import-actions"><button id="btnEgressSubscriptionSave" class="primary" type="submit">导入</button><button id="btnEgressImportCancel" type="button">取消</button></div>
+        <p id="egressSubscriptionNote" class="hint" role="status"></p>
+      </form>
+      <p id="nodeAccount" class="mono hint"></p>
+      <div class="egress-toolbar">
+        <label for="nodeSubscriptionFilter">订阅</label>
+        <select id="nodeSubscriptionFilter"><option value="">全部订阅</option></select>
+        <span id="egressNodeCount" class="hint"></span>
       </div>
-      <div class="section-heading"><h3>账号路由</h3><p class="hint">每个账号使用一个独立出口。</p></div><div id="egressAccounts" class="route-grid"></div><div id="egressPages"></div>
+      <div id="egressAccountBar" class="egress-account-bar" hidden>
+        <label for="egressAccountSelect">绑定到账号</label>
+        <select id="egressAccountSelect"><option value="">选择账号</option></select>
+        <span id="egressAccountHint" class="hint"></span>
+      </div>
+      <p id="egressNodeStatus" class="hint" role="status"></p>
+      <p id="egressNodeError" class="error-text" role="alert"></p>
+      <div id="egressNodeGrid" class="egress-node-grid" aria-live="polite"></div>
+      <div id="egressNodePager"></div>
+      <details class="egress-metrics">
+        <summary>流量 / 速率</summary>
+        <div class="egress-metric-line"><span>↓ <strong id="trafficDownload">—</strong></span><span>↑ <strong id="trafficUpload">—</strong></span><span>↓ <strong id="rateDownload">—</strong></span><span>↑ <strong id="rateUpload">—</strong></span><span id="metaConnections" class="hint">连接数未知</span><span id="metaSample" class="hint">暂无有效采样</span></div>
+      </details>
+      <details class="egress-bindings">
+        <summary>绑定管理</summary>
+        <div id="egressAccounts" class="route-grid"></div><div id="egressPages"></div>
+      </details>
+      <div class="veil" id="subscriptionVeil" inert><section class="modal subscription-detail-modal" role="dialog" aria-modal="true" aria-labelledby="subscriptionDetailTitle"><div class="card-heading"><h2 id="subscriptionDetailTitle">订阅详情</h2><button id="btnCloseSubscriptions" type="button" class="ghost" data-modal-close aria-label="关闭订阅详情">关闭 ×</button></div><p id="subscriptionDetailNote" class="error-text" role="alert"></p><div id="subscriptionDetailList" class="subscription-detail-list"></div><div id="subscriptionReveal" class="egress-reveal"><span id="subscriptionRevealLabel" class="hint"></span><code id="subscriptionRevealURL" class="mono"></code></div></section></div>
     </section>
     <!-- ===== /view:egress ===== -->
     <!-- ===== view:usage ===== -->
@@ -141,8 +177,9 @@
 </div>
 <!-- ===== login: auth veil ===== -->
 <div class="veil on" id="authVeil"><section class="modal auth-card" role="dialog" aria-modal="true" aria-labelledby="authTitle"><h2 id="authTitle">你的本机工作台。</h2><p class="hint">使用管理密码进入。账号凭据仅由本机后端管理。</p><form id="loginForm"><label for="loginPassword">管理密码</label><input id="loginPassword" type="password" autocomplete="current-password" required autofocus><p id="authError" class="error-notice" role="alert" hidden></p><button id="btnLogin" type="submit" class="primary">进入工作台</button></form><p class="hint">首次使用初始密码 123456；登录后请在设置中修改。</p></section></div>
-<!-- ===== overlays: node / add-account / request-detail / task-failure ===== -->
-<div class="veil" id="nodeVeil" inert><section class="modal node-modal" role="dialog" aria-modal="true" aria-labelledby="nodeTitle" tabindex="-1"><div class="card-heading"><div><h2 id="nodeTitle">选择账号出口</h2></div><button id="btnCloseNodes" type="button" class="ghost" data-modal-close aria-label="关闭节点选择">关闭 ×</button></div><p id="nodeAccount" class="mono hint"></p><label class="node-filter" for="nodeSubscriptionFilter">订阅筛选</label><select id="nodeSubscriptionFilter"><option value="">全部订阅</option></select><p id="nodeStatus" class="hint" role="status"></p><p id="nodeError" class="error-text" role="alert"></p><div id="nodeList" class="node-grid"></div><div id="nodePages"></div><p class="hint">延迟显示在节点名称后。绑定按账号独立生效；关闭弹窗只停止前端等待，后端有界测试自行结束。</p></section></div>
+<!-- ===== overlays: node / model-context / add-account / request-detail / task-failure ===== -->
+<div class="veil" id="nodeVeil" inert><section class="modal node-modal" role="dialog" aria-modal="true" aria-labelledby="nodeTitle" tabindex="-1"><div class="card-heading"><div><h2 id="nodeTitle">选择账号出口</h2></div><button id="btnCloseNodes" type="button" class="ghost" data-modal-close aria-label="关闭节点选择">关闭 ×</button></div><p id="nodeStatus" class="hint" role="status"></p><p id="nodeError" class="error-text" role="alert"></p><div id="nodeList" class="node-grid"></div><div id="nodePages"></div></section></div>
+
 <div class="veil" id="addVeil" inert><section class="modal" role="dialog" aria-modal="true" aria-labelledby="addTitle"><div class="card-heading"><div><h2 id="addTitle">添加账号</h2></div><button id="btnCloseAdd" type="button" class="ghost" data-modal-close>关闭 ×</button></div><div id="addTabs" class="tabs" aria-label="添加方式"><button class="tab on" type="button" data-tab="login">浏览器授权</button><button class="tab" type="button" data-tab="import">导入 Cockpit 文件</button></div><div id="addTabLogin"><div id="addPick"><fieldset><legend>账号区域</legend><label class="radio"><input type="radio" name="addRealm" value="cn" checked>国内版</label><label class="radio"><input type="radio" name="addRealm" value="global">国际版</label></fieldset></div><p id="addLoad" class="hint" hidden>正在创建授权会话…</p><div id="addReady" hidden><p class="hint">请在浏览器完成授权；此页面仅轮询本机授权结果。</p><p id="addUrl" class="mono auth-url"></p></div><p id="addDone" class="success-text" hidden></p><p id="addErr" class="error-text" role="alert" hidden></p><div class="form-actions"><button id="btnStartLogin" type="button" class="primary">开始授权</button><button id="btnCopyUrl" type="button" hidden>复制链接</button><button id="btnOpenUrl" type="button" hidden>在浏览器打开</button></div></div><div id="addTabImport" hidden><label for="importFile">选择 Cockpit 导出文件</label><input id="importFile" type="file" accept=".json,application/json"><p id="importDone" class="success-text" hidden></p><p id="importErr" class="error-text" role="alert" hidden></p></div></section></div>
 <div class="veil" id="reqDetailVeil" inert><section class="modal req-detail-modal" role="dialog" aria-modal="true" aria-labelledby="reqDetailTitle"><div class="card-heading"><div><h2 id="reqDetailTitle">错误详情</h2><p class="hint">仅展示本机错误归档中的记录字段。</p></div><button id="btnCloseReqDetail" type="button" class="ghost" data-modal-close>关闭 ×</button></div><div id="reqDetailBody" class="req-detail-body"></div></section></div>
 <div class="veil" id="taskFailureVeil" inert><section class="modal" role="dialog" aria-modal="true" aria-labelledby="taskFailureTitle"><div class="card-heading"><h2 id="taskFailureTitle">失败详情</h2><button id="btnCloseTaskFailures" type="button" class="ghost" data-modal-close>关闭 ×</button></div><div id="taskFailureBody" class="job-accounts"></div></section></div>
