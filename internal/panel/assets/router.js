@@ -18,6 +18,7 @@ import { bindAnimationSettings, applyAnimationPreference, styleFromPreferences }
 const titles = {overview:'概览', accounts:'账号池', taskscenter:'账号任务', egress:'账号出口', usage:'积分用量', packages:'积分构成', models:'模型查看', logs:'错误记录', config:'系统设置'};
 let view = 'overview', timer, loading = false, startup = null, startupSession = null, startupGeneration = 0;
 let animationSettingsDestroy = null, animationSettingsAttempted = false;
+let startupRefreshAbort = null, pagehideFired = false;
 
 function ensureAnimationSettings() {
   if (animationSettingsAttempted) return;
@@ -58,11 +59,28 @@ function withinStartupBudget(promise, deadline) {
 }
 export function destroyStartup() {
   startupGeneration++;
+  releaseStartupRefresh();
   startup?.animation?.destroy();
   startup = null;
   startupSession = null;
 }
-addEventListener('pagehide', () => { destroyStartup(); teardownAnimationSettings(); });
+// The overlay is the only place a login refresh is allowed to run. Releasing it
+// aborts any in-flight POST instead of waiting for a late upstream response.
+function releaseStartupRefresh() {
+  startupRefreshAbort?.abort();
+  startupRefreshAbort = null;
+}
+function handlePageHide() {
+  if (pagehideFired) return;
+  pagehideFired = true;
+  destroyStartup();
+  teardownAnimationSettings();
+}
+addEventListener('pagehide', handlePageHide);
+// BFCache restores skip module re-execution, so the flag must be cleared or a
+// later pagehide would be ignored. Nothing is initialized again here; the
+// lifecycle module reloads the document only for persisted restores.
+addEventListener('pageshow', () => { pagehideFired = false; });
 async function loadView() {
   if (!session.authenticated || document.hidden) return;
   if (view === 'overview') await loadOverviewView();
@@ -118,7 +136,9 @@ document.addEventListener('panel:authenticated', async () => {
   if (startup || startupSession === authToken) return;
   startupSession = authToken;
   ensureAnimationSettings();
-  const animation = startStartupAnimation();
+  // The overlay's own teardown is the authoritative moment to abort the login
+  // refresh, so no late POST can outlive the animation.
+  const animation = startStartupAnimation({ onFinish: releaseStartupRefresh });
   startup = {animation};
   const generation = startupGeneration;
   const stale = () => generation !== startupGeneration || !session.authenticated;
@@ -131,11 +151,27 @@ document.addEventListener('panel:authenticated', async () => {
     animation.setStyle(style);
     return style;
   }).catch(() => null);
+  // Login refreshes enabled subscriptions exactly once. It shares the startup
+  // abort signal and hard deadline, so the animation never waits for a late
+  // upstream response; failures surface as an in-memory event, not a dialog.
+  const refreshController = new AbortController();
+  startupRefreshAbort = refreshController;
+  // The cutoff fires exactly with the animation hard limit, so a late POST can
+  // never outlive the overlay even if the refresh ignores its own budget.
+  const refreshCutoff = setTimeout(() => refreshController.abort(), Math.max(0, hardDeadline - Date.now()));
+  const refreshWork = import('./egress.js')
+    .then(m => m.refreshSubscriptionsOnce?.({signal: refreshController.signal, timeoutMs: 4000}))
+    .catch(() => null)
+    .finally(() => {
+      clearTimeout(refreshCutoff);
+      if (startupRefreshAbort === refreshController) startupRefreshAbort = null;
+    });
   const work = Promise.allSettled([
     loadCapabilities(),
     bootstrapAccounts(hardDeadline),
     preferencesPromise,
     animationStylePromise,
+    refreshWork,
   ]);
   const result = await withinStartupBudget(work, deadline);
   if (stale()) { destroyStartup(); return; }
@@ -151,6 +187,9 @@ document.addEventListener('panel:authenticated', async () => {
   if (stale()) { destroyStartup(); return; }
   if (!timer) timer = visibleInterval(refreshVisible,5000);
   if (values) {
+    // The animation has played its full target; never keep refreshing behind
+    // the user's back once the overlay is gone.
+    releaseStartupRefresh();
     animation.destroy();
     startup = null;
     return;
@@ -161,6 +200,7 @@ document.addEventListener('panel:authenticated', async () => {
     if (preferences?.theme) setTheme(preferences.theme);
     const style = values?.[3]?.status === 'fulfilled' ? values[3].value : null;
     if (style) applyAnimationPreference(style);
+    releaseStartupRefresh();
     startup?.animation?.destroy();
     startup = null;
   }).catch(() => {
