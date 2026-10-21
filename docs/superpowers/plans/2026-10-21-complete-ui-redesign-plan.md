@@ -1720,3 +1720,268 @@ GET http://127.0.0.1:17863/panel/      -> HTTP 200, LEN=18665
 > 批次 10 只改本文件；未触碰任何代码、测试或部署配置。
 
 文档结束。
+
+---
+
+## 31. 设计系统重构 v6（2026-10-21 追加，用户目视验收后重做）
+
+### 31.1 为什么重做
+
+v5 的 token 与字体已实现并通过回归，但用户目视验收结论为「配色土、字体没改、动画没高级感」。实证如下，不采信自我描述：
+
+| 现象 | 实测证据 | 结论 |
+|---|---|---|
+| 字体没改 | 浏览器 `document.fonts.check('16px "Source Sans 3"')` 返回 true；`getComputedStyle(body).fontFamily` 含 Source Sans 3 | 字体确实加载并生效，但选的是无衬线，观感接近系统默认，用户感知不到变化 |
+| 没有衬线体 | `styles.css` 全文 0 处 `serif`；`--display` 与 `--font` 取值完全相同 | 需要新增衬线族并让标题/数字/强调词走衬线 |
+| 配色土 | `--bg-base:#121014`（偏紫灰）、`--accent:#d98a68`（偏粉、明度高） | 与参考基准 `#131311` / `#D97757` 色相与饱和度双重偏差 |
+| 动画没高级感 | 参考质感来自「衬线斜体词轮播 + Georgia 超大计数器 + 等宽全大写小标签 + 非线性进度」四件套 | 当前四风格只做了背景特效（拉幕/百叶/光闸/光带），文字层仍是无衬线常规字重 |
+
+### 31.2 参考基准（源文件 `F:\下载\新建 文本文档.html`，只读，不得修改）
+
+原值冻结，v6 一律以本表为准：
+
+```css
+--bg-dark:   #131311;   /* 暖黑，不是纯黑也不是紫黑 */
+--bg-light:  #F4F1EA;   /* 米白 */
+--text-light:#FAF8F5;
+--text-dark: #141413;
+--accent:    #D97757;   /* 陶土橙，全站唯一强调色 */
+--muted:     #8C8881;
+--border-light: rgba(20,20,19,.10);
+--border-dark:  rgba(250,248,245,.12);
+--ease-out-expo:     cubic-bezier(.16,1,.3,1);
+--ease-in-out-quart: cubic-bezier(.76,0,.24,1);
+```
+
+字体角色分工（参考文件原样）：
+
+| 角色 | 字体栈 | 用法 |
+|---|---|---|
+| 标题 / 强调词 / 大数字 | `Georgia, "Noto Serif SC", "Songti SC", serif` | `font-weight:400`、负字距、强调词 `font-style:italic` |
+| 正文 | `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif` | 常规 |
+| 小标签 / 元数据 | `ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace` | `.78rem`、`letter-spacing:.08em`、`text-transform:uppercase` |
+
+非线性进度映射（参考文件原样，v6 必须复刻）：
+
+```text
+t < .35        -> (t/.35) * .42          快冲 42%
+.35 <= t < .65 -> .42 + ((t-.35)/.3)*.18  放缓到 60%
+t >= .65       -> .60 + easeOutExpo((t-.65)/.35)*.40  冲顶 100%
+```
+
+### 31.3 新 token（v6 唯一真源，覆盖 `styles.css` 00 段）
+
+暗色（默认）：
+
+```css
+:root{
+  color-scheme: dark;
+
+  /* 底：暖黑三层，禁止出现紫调 */
+  --bg-base:#131311;
+  --bg-deep:#0d0d0c;
+  --bg-lift:#1a1a18;
+  --bg:var(--bg-base);
+
+  /* 光场：极低饱和暖光，只做背景 */
+  --glow-warm:rgba(217,119,87,.16);
+  --glow-cool:rgba(150,150,140,.07);
+
+  /* 液态玻璃四层 */
+  --glass-fill:rgba(30,30,28,.48);
+  --glass-fill-strong:rgba(38,38,35,.62);
+  --glass-line:rgba(250,248,245,.13);
+  --glass-line-soft:rgba(250,248,245,.06);
+  --glass-inner:inset 0 1px 0 rgba(250,248,245,.11);
+  --glass-outer:0 24px 64px rgba(0,0,0,.42);
+  --glass-blur:20px;
+  --glass-saturate:130%;
+  --glass-rim:rgba(250,248,245,.20);
+  --glass-radius:22px;
+
+  /* 文字 */
+  --ink:#FAF8F5;
+  --ink-2:#C6C2BA;
+  --ink-3:#8C8881;
+
+  /* 强调：陶土橙唯一 */
+  --accent:#D97757;
+  --accent-soft:rgba(217,119,87,.13);
+  --accent-fill:#C4643F;
+  --on-accent:#FAF8F5;
+
+  /* 语义：低饱和，禁止红黄绿交通灯 */
+  --ok:#8FA98C;
+  --warn:#C0A36B;
+  --bad:#B8736B;
+  --fluoro-red:#E06A5E;
+
+  /* 兼容层：变量名不变，只换值 */
+  --surface:rgba(32,32,29,.72);
+  --surface-soft:rgba(40,40,36,.52);
+  --input:rgba(18,18,17,.58);
+  --line:rgba(250,248,245,.12);
+  --shadow:0 18px 60px rgba(0,0,0,.34);
+  --radius:20px;
+  --small-radius:12px;
+
+  /* 字体：display 走衬线，body 走无衬线（由批次 11 提供文件） */
+  --display:'Source Serif 4','Noto Serif SC',Georgia,'Songti SC',serif;
+  --font:'Source Sans 3','Noto Sans SC','Microsoft YaHei UI','Segoe UI',sans-serif;
+  --mono:'JetBrains Mono','Cascadia Code','Consolas',ui-monospace,monospace;
+
+  /* 动效曲线：与参考一致 */
+  --ease-out-expo:cubic-bezier(.16,1,.3,1);
+  --ease-in-out-quart:cubic-bezier(.76,0,.24,1);
+}
+```
+
+亮色：
+
+```css
+:root[data-theme="light"]{
+  color-scheme: light;
+  --bg-base:#F4F1EA;
+  --bg-deep:#EAE6DD;
+  --bg-lift:#FAF8F5;
+  --glow-warm:rgba(217,119,87,.10);
+  --glow-cool:rgba(120,130,140,.07);
+  --glass-fill:rgba(255,253,248,.56);
+  --glass-fill-strong:rgba(255,254,250,.74);
+  --glass-line:rgba(20,20,19,.10);
+  --glass-line-soft:rgba(20,20,19,.05);
+  --glass-inner:inset 0 1px 0 rgba(255,255,255,.78);
+  --glass-outer:0 20px 50px rgba(60,50,40,.09);
+  --glass-rim:rgba(255,255,255,.62);
+  --ink:#141413;
+  --ink-2:#4A4843;
+  --ink-3:#8C8881;
+  --accent:#C4643F;
+  --accent-soft:rgba(196,100,63,.11);
+  --accent-fill:#B25433;
+  --on-accent:#FAF8F5;
+  --ok:#4F7A52;
+  --warn:#8A6B2A;
+  --bad:#A04B3F;
+  --fluoro-red:#C9453A;
+  --surface:rgba(255,253,247,.82);
+  --surface-soft:rgba(252,249,242,.68);
+  --input:rgba(240,236,227,.74);
+  --line:rgba(20,20,19,.13);
+  --shadow:0 18px 60px rgba(60,50,40,.08);
+}
+```
+
+### 31.4 字体栈与字阶
+
+必须先由批次 11 构建并入库（同源 woff2、SIL OFL、CSP 只允许 `font-src 'self'`）：
+
+| 文件 | 用途 | 权重 | 预算 |
+|---|---|---|---|
+| `source-serif-4-400.woff2` | 英文标题/大数字 | 400 | ≤ 60 KB |
+| `source-serif-4-600.woff2` | 英文标题强调 | 600 | ≤ 60 KB |
+| `source-serif-4-400-italic.woff2` | 动画强调词斜体 | 400 italic | ≤ 60 KB |
+| `noto-serif-sc-400.woff2` | 中文衬线标题 | 400 | ≤ 620 KB |
+| `noto-serif-sc-500.woff2` | 中文衬线强调 | 500 | ≤ 620 KB |
+
+保留现有 `source-sans-3-*` 与 `noto-sans-sc-*` 作正文。字体总量上限 **2.8 MB**，超限必须报告并给出裁剪方案。
+
+字阶（v6 统一，替换散落的 `font-size`）：
+
+```css
+--fs-hero:  clamp(34px, 5.2vw, 62px);   /* 页面主标题，衬线 400 */
+--fs-h2:    clamp(24px, 2.4vw, 32px);   /* 区块标题，衬线 500 */
+--fs-h3:    17px;                        /* 卡片标题，衬线 500 */
+--fs-body:  14px;                        /* 正文，无衬线 400 */
+--fs-label: 11px;                        /* 小标签，等宽，letter-spacing .08em，大写 */
+--fs-num:   clamp(26px, 3vw, 40px);      /* 关键数字，衬线 400，tabular-nums */
+```
+
+### 31.5 液态玻璃四层规范（替换现有单层半透明）
+
+```css
+.glass-surface{
+  position:relative;
+  background:linear-gradient(180deg,var(--glass-fill-strong),var(--glass-fill));
+  border:1px solid var(--glass-line);
+  box-shadow:var(--glass-inner),var(--glass-outer);
+  backdrop-filter:blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter:blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border-radius:var(--glass-radius);
+}
+/* 第 1 层：大面积柔光（左上冷白 + 右下暖橙） */
+.glass-surface::before{
+  content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:
+    radial-gradient(120% 62% at 16% -4%,rgba(255,255,255,.14),transparent 56%),
+    radial-gradient(90% 46% at 86% 104%,rgba(217,119,87,.09),transparent 62%);
+}
+/* 第 2 层：1px 顶缘镜面高光（必须用 mask 只留边框） */
+.glass-surface::after{
+  content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  border:1px solid transparent;
+  background:linear-gradient(180deg,var(--glass-rim),transparent 30%) border-box;
+  -webkit-mask:linear-gradient(#000 0 0) padding-box,linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude;
+}
+```
+
+约束：
+
+- 只有直接承载内容的容器挂 `backdrop-filter`；嵌套标签不重复模糊。
+- 高光透明度上限 `.16`；正文不得落在高光带。
+- 移动端（`max-width:700px`）`--glass-blur` 降到 `10px`，非主面板改纯色半透明。
+- `@supports not (backdrop-filter:blur(1px))` 分支必须回退到 `--bg-lift` 实色。
+
+### 31.6 启动动画文字层（参考文件四件套，必须复刻）
+
+结构（在现有 `startup-animation.js` 上改，不新建文件）：
+
+1. 顶部元数据：左 `● INITIALIZING`，右 `STAGE 0N // <PHASE>`；等宽、`0.78rem`、`letter-spacing:.08em`、大写、`--ink-3` 色。
+2. 中央词轮播：`overflow:hidden` 的 mask 内，`font-family:var(--display)`、`font-weight:400`、`font-style:italic`、`clamp(2rem,4.5vw,3.8rem)`、`--ink`；切换用 `translateY(±100%) + opacity`，每 1000ms，退场 360ms。
+3. 底部进度条：高 `1px`、宽 `clamp(140px,22vw,280px)`、底 `--glass-line`、填充 `--accent`、`transform:scaleX()` 由 `requestAnimationFrame` 驱动（**必须走 31.2 的非线性映射**，不是线性）。
+4. 底部计数器：`font-family:var(--display)`、`clamp(4.5rem,14vw,12rem)`、`font-weight:400`、`letter-spacing:-.04em`、`font-variant-numeric:tabular-nums`；单位 `%` 用 `--mono`、`--accent`、`vertical-align:super`。
+
+四风格保留，仅换材质与文字层：
+
+| 风格 | 背景 | 文字层差异 |
+|---|---|---|
+| `names` | SVG 流体拉幕 + 五列百叶（40ms 错峰）+ 中轴光闸 | 词轮播 + 计数器 + 进度条全开 |
+| `orbital` | 同心环 188px + 18 粒子 | 词轮播 + 计数器，弱化进度条 |
+| `scan` | 百叶 + 水平光带 3.4s 循环 | 标语点亮，保留计数器 |
+| `minimal` | 无背景特效 | 仅 `W·` 标记 + 480ms 淡入，不挂计数器 |
+
+时长不变：`TARGET_MS=8000`、`HARD_LIMIT_MS=12000`、预览 `3200/4200`。`prefers-reduced-motion` 下不创建任何动画节点。
+
+### 31.7 批次切分与 CSS 区段所有权（防冲突硬约束）
+
+`styles.css` 是唯一冲突热点，因此**按区段所有权并行**；只要各区段不重叠，git 三方合并可自动处理。任何批次不得越界。
+
+| 批次 | 内容 | 独占文件/区段 | 依赖 |
+|---|---|---|---|
+| 11 | 字体工程（衬线族构建 + 入库） | `internal/panel/assets/fonts/**`（新增 5 个 woff2）、`styles.css` **仅 13 段**、`fonts_test.go` 字体清单 | 无 |
+| 12 | token 与液态玻璃 | `styles.css` **仅 00/01/02 段** | 11（字体文件可后到，回退安全） |
+| 13 | 启动动画文字层 | `startup-animation.js`、`styles.css` **仅 14 段**、`frontend_startup_test.mjs`、`frontend_animation_settings_test.mjs` | 12（依赖新 token 变量名，但变量名不变，可并行） |
+| 14 | 页面版式与字阶落地 | `styles.css` **仅 03-11 段**、`index.html`（仅结构性 class 增删，不改 id） | 12 |
+
+禁止事项：
+
+- 不得重命名任何现有 CSS 变量（`--surface`、`--line`、`--radius`、`--font`、`--display` 等名字保持）。只允许改值与新增。
+- 不得改任何 `.go` 业务代码（`fonts_test.go` 的字体清单除外）。
+- 不得触碰 `third_party/meta/**`、`internal/metacore/**`、`internal/server/**`、`internal/reqlog/**`、Mihomo 二进制。
+- 不得删除或弱化现有测试断言；只允许因新设计而**加强或改值**，并在回报中逐条说明。
+
+### 31.8 验收门禁（批次 11-14 全绿才算完成）
+
+```text
+go build ./...
+go test ./...
+node --test internal/panel/*.mjs
+```
+
+外加浏览器实测（1440 / 1366 / 390 三档）：
+
+- `getComputedStyle(document.querySelector('h2')).fontFamily` 必须命中 `Source Serif 4`。
+- `document.fonts.check('16px "Source Serif 4"')` 与 `'16px "Noto Serif SC"'` 均为 true。
+- 页面 `--accent` 计算值等于 `rgb(217, 119, 87)`（暗色）。
+- 无横向滚动条（`document.documentElement.scrollWidth <= innerWidth`）。
