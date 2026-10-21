@@ -392,3 +392,60 @@ test('logging out destroys the overlay and lets a stale bootstrap finish safely'
   await flush();
   assert.equal(document.getElementById('wbStartup'), null);
 });
+
+test('skipping the intro still enters the workspace and loads the overview', async () => {
+  const router = await import('./assets/router.js');
+  router.destroyStartup();
+  client.lockSession();
+  const calls = mockAPI(url => {
+    if (url.endsWith('/capabilities')) return { logs: true };
+    if (url.endsWith('/preferences')) return { theme: 'dark', credit_guard_low: 100 };
+    if (url === '/panel/api/session/bootstrap') return { running: true };
+    if (url.endsWith('/bootstrap/status')) return { running: false, completed: true };
+    if (url.endsWith('meta/subscriptions')) return { subscriptions: [] };
+    if (url.endsWith('meta/nodes')) return { nodes: [], bindings: [] };
+    if (url.endsWith('/overview')) return { total: 0, accounts: [] };
+    return {};
+  });
+  client.acceptSession({ authenticated: true, csrf_token: 'skip' });
+  await dom.emit('panel:authenticated');
+  await flush();
+  await flush();
+  const overlay = (dom.root.children || []).find(el => el.id === 'wbStartup');
+  assert.ok(overlay, 'overlay is mounted before the skip');
+  assert.equal(calls.some(call => call.url === '/panel/api/overview'), false);
+  await overlay.fire('click', {});
+  await flush();
+  await flush();
+  assert.ok(calls.some(call => call.url === '/panel/api/overview'), 'skip must still enter the workspace');
+  await sleep(420);
+  router.destroyStartup();
+  client.lockSession();
+});
+test('fast data never unmounts the router startup overlay before the 8000ms target', async () => {
+  const router = await import('./assets/router.js');
+  router.destroyStartup();
+  client.lockSession();
+  mockAPI(url => {
+    if (url.endsWith('/capabilities')) return { logs: true };
+    if (url.endsWith('/preferences')) return { theme: 'dark', credit_guard_low: 100 };
+    if (url === '/panel/api/session/bootstrap') return { running: true };
+    if (url.endsWith('/bootstrap/status')) return { running: false, completed: true };
+    if (url.endsWith('meta/subscriptions')) return { subscriptions: [] };
+    if (url.endsWith('meta/nodes')) return { nodes: [], bindings: [] };
+    if (url.endsWith('/overview')) return { total: 0, accounts: [] };
+    return {};
+  });
+  client.acceptSession({ authenticated: true, csrf_token: 'dwell' });
+  const overlay = () => (dom.root.children || []).find(el => el.id === 'wbStartup') || null;
+  const startedAt = Date.now();
+  await dom.emit('panel:authenticated');
+  await flush();
+  await flush();
+  assert.ok(overlay(), 'router mounts the overlay before any data returns');
+  assert.ok(Date.now() - startedAt < 1000, 'all startup data settles well inside the dwell budget');
+  assert.ok(overlay(), 'settled data must not destroy the overlay early');
+  router.destroyStartup();
+  assert.equal(overlay(), null, 'destroyStartup still tears the overlay down on logout/pagehide');
+  client.lockSession();
+});
