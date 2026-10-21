@@ -1985,3 +1985,136 @@ node --test internal/panel/*.mjs
 - `document.fonts.check('16px "Source Serif 4"')` 与 `'16px "Noto Serif SC"'` 均为 true。
 - 页面 `--accent` 计算值等于 `rgb(217, 119, 87)`（暗色）。
 - 无横向滚动条（`document.documentElement.scrollWidth <= innerWidth`）。
+
+---
+
+## 32. 批次 15 之后的真实状态与剩余规划（2026-10-22 02:00 追加）
+
+> 本节是对 §30/§31 的**事实更正与继续执行计划**。凡与前面冲突，以本节为准。
+
+### 32.1 本次实测发现的两类严重问题
+
+#### 32.1.1 启动动画在 56ms 被销毁（真实缺陷，非"没做"）
+
+用 headless Chrome + CDP `Page.addScriptToEvaluateOnNewDocument` 打点，原始输出：
+
+```text
+["8 ready","47 session event","47 AUTH event","56 rm wb-startup-word is-active","56 rm wbStartup"]
+```
+
+链路：
+
+1. 47ms：`initAuth()` 的 `refreshSession()` 发现 cookie 已存在，派发 `panel:session` 与 `panel:authenticated`。
+2. 动画 DOM 正常创建（40+ 次 appendChild，含 `wbStartup` 根节点、`wb-startup-shutter`、`wb-startup-word`）。
+3. 9ms 后（56ms）根节点被 `remove()`。
+
+根因在 `internal/panel/assets/router.js:169-196`：
+
+```js
+const work = Promise.allSettled([loadCapabilities(), bootstrapAccounts(hardDeadline), preferencesPromise, animationStylePromise, refreshWork]);
+const result = await withinStartupBudget(work, deadline);
+...
+if (values) { releaseStartupRefresh(); animation.destroy(); startup = null; return; }
+```
+
+`withinStartupBudget` 是 `Promise.race([work, 到 deadline 的 timer])`。当所有 promise 立刻 settle（登录页状态下各接口 400、或缓存命中），`result.timed_out` 为 undefined，`values` 为真值，于是走"数据已就绪 → 立即销毁动画"的快路径。
+
+**这直接违背用户明确要求："我给的动画要设定一个最短的时间，也就是必须跑完那一个完整动画"。**
+
+修复要点（批次 17）：
+
+- 数据就绪后必须补等 `deadline - Date.now()`（`TARGET_MS = 8000`）。
+- 删除 189-196 的快路径分支，所有情况统一走 `setPhase('syncing') → go() → 360ms 退场`。
+- `startupSession === authToken` 用 csrf_token 去重的语义也要换掉（同一会话内二次派发被静默跳过）。
+- 登录页在动画期间隐藏（`body.is-booting`），解决"割裂"。
+
+#### 32.1.2 批次 16 把批次 15 的导航修复整体回滚（流程事故）
+
+批次 16 从 `e59043d` 分出，批次 15 从同一基线并行，批次 15 先合入 `main`。直接 merge 批次 16 会把 `.shell` / `.nav` / 滚动条规则改回旧值，测试断言也被改回 `padding: 16px 20px`、`nav padding: 26px 16px`。
+
+这是用户反复看到"导航又坏了 / 又出现白色拖动条"的直接原因。
+
+处置（已完成）：
+
+- 只从批次 16 取 `egress.js` / `index.html` / `frontend_egress_filter_batch_e_test.mjs`。
+- `styles.css` **只按段拼接 06 egress 段**，01/03/11 段保留批次 15 的修复。
+- `frontend_v02_test.mjs` 的 `text-overflow/white-space` 禁令收窄为"06 段之外的全文"，而不是整文件。
+- 合并提交 `73a4297`。
+- 验证：`node --test` 124/124 通过，`go build ./...` exit 0。
+
+**流程规则（新增，必须遵守）：**
+
+1. 每个批次开工前先 `git fetch` 主仓库，基于**当时最新 main** 建 worktree。
+2. 回报中必须写明基线 commit。
+3. 主助手合并时**不允许 `git merge` 整个分支**，必须检查 `git diff --stat` 是否触碰了其它批次的所有权范围。
+4. `styles.css` 一律按段（00-14）拼接，不整文件覆盖。
+
+### 32.2 已合入 main 的批次（真实记录）
+
+| 批次 | 内容 | commit |
+|---|---|---|
+| 15 | 导航贴边、杀白色滚动条、行高 41px | `40b212a` → `d1c9638`（去 CRLF 重提） |
+| 16 | 出口页节点延迟、详情区、多订阅来源 | `3e2d911` → `73a4297`（仅 egress 段） |
+
+### 32.3 剩余批次与拆分（防冲突）
+
+| 批次 | 内容 | 独占范围 | 状态 |
+|---|---|---|---|
+| 17 | 启动动画最小时长 + 登录页时序 + 事件去重 | `router.js`、`auth.js`、`startup-animation.js`、`styles.css` 14 段、`index.html` 的 `body`/`#authVeil` 属性 | 进行中 |
+| 18 | 视觉根基：流动背景 + 玻璃四层 + 提示条去黄 + 字阶 + 登录页两栏 | `styles.css` 00/01/02 段、`index.html` 的 `#authVeil` 内部 | 进行中 |
+| 19 | 概览页：圆环左置 + 图例进度条 + 昼夜扩散重做 | `overview.js`、`index.html` 概览段、`styles.css` 04 段 | 待开工 |
+| 20 | 模型页精简 + 禁用交互 + 拉取 | `models.js`、`model-policy.js`、`styles.css` 08 段 | 待开工 |
+| 21 | 错误记录收敛为"仅错误 + 点开弹窗" | `logs.js`、`index.html` 日志段、`styles.css` 09 段 | 待开工 |
+| 22 | 全站小字清理 + 三档响应式验收 + 性能预算 | 各页 `.hint` 清理、`styles.css` 11 段 | 待开工 |
+| 23 | VM 部署与回滚演练 | `deployment/`、systemd unit | 待开工 |
+
+### 32.4 依赖顺序
+
+```text
+17 ─┬─> 19 ─┐
+    │       ├─> 22 ─> 23
+18 ─┴─> 20 ─┤
+       21 ──┘
+```
+
+- 17 与 18 可并行（文件不重叠：17 只碰 14 段与 JS，18 只碰 00/01/02 段）。
+- 19/20/21 必须在 18 合入后开工（依赖新 token 与新玻璃实现）。
+- 22 必须在 19/20/21 全部合入后开工（要扫全站 `.hint`）。
+- 23 最后。
+
+### 32.5 每批次的验收门禁（统一）
+
+```text
+go build ./...                        -> exit 0
+node --test internal/panel/*_test.mjs -> 全绿（当前基线 124/124）
+```
+
+加真实浏览器实测（禁止用内嵌浏览器，其 DOM 被 mock）：
+
+- 启动动画：DOM 停留 ≥ 7900ms，`rm wbStartup` 只在 ≥8000ms 后。
+- 玻璃：`getComputedStyle(card).backdropFilter` 含 `blur`。
+- 提示条：`getComputedStyle(#demoNotice).backgroundColor === 'rgba(0, 0, 0, 0)'`。
+- 导航：`.nav a.on` 无 `background`，有 2px 左侧竖线。
+- 响应式：1600 / 1280 / 390 三档 `scrollWidth === clientWidth`。
+
+`go test ./...` 在沙箱下会因本地 socket / 临时文件重命名失败，属环境限制；必须在回报中标注失败用例名与报错原文，不得改测试跳过。
+
+### 32.6 Git 纪律（重申）
+
+- 基线标签 `baseline-ui-redesign`（`29bd811`）保留，任何批次出问题可 `git reset --hard` 回去。
+- 每批次一个分支 + 一个 commit；主助手合并时按段拼接。
+- 提交前必须：`git diff --numstat` 检查是否只有预期文件；确认没有 CRLF 整文件重写。
+- 不得提交临时脚本（`*.cjs`、`*.mjs` 探针）到仓库根目录。
+
+### 32.7 用户已确认、不得再改口径的项
+
+1. 圆环放左侧，图例在右；图例每行要有进度条。
+2. 桌面用悬浮导航栏，全局液态玻璃。
+3. 出口页：节点是"小方框"，名称后直接跟延迟；点击即绑定，不要"绑定节点"按钮。
+4. 订阅链接支持多条，明文只在弹窗里看。
+5. 节点延迟统一用上次缓存，48h 或手动刷新。
+6. 到期分布最长只显示 30 天，超过的屏蔽。
+7. 错误记录只留错误，不要运行记录，不要汇总统计。
+8. 全站禁止解释性小字（`.hint` 只允许承载数据，不承载说明）。
+9. 动画文字必须用衬线斜体英文 AI 名 + 等宽大写标签 + 衬线大计数器 + 非线性进度。
+10. 字体全部同源 woff2，不引远程。
