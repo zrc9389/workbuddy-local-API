@@ -15,6 +15,17 @@ test('account cards have bounded pagination, explicit state precedence/reasons, 
  assert.match(rows.accountCard({uid:'a',credits_total:-1}),/不限量/);assert.doesNotMatch(rows.accountCard({uid:'<unsafe>',nickname:'<script>'}),/<script>|data-u="<unsafe>"/);
 });
 
+test('account cards keep only nickname, state, balance, egress and actions in one compact row',async()=>{
+ const rows=await import('./assets/account-rows.js');
+ const card=rows.accountCard({uid:'4f2c9a1e-7b3d-4c55-9a10-1234567890ab',nickname:'主号',balance_known:true,credits:12,credits_total:20,egress_node:'HK-01',token_usage:{request_count:88,total_tokens:123456,last_latency_ms:420,last_tokens_per_second:31.5}});
+ assert.doesNotMatch(card,/请求|Token|延迟|速率|mini-metrics/);
+ const visible=card.replace(/<[^>]*>/g,' ');
+ assert.doesNotMatch(visible,/4f2c9a1e-7b3d-4c55-9a10-1234567890ab/);assert.doesNotMatch(card,/class="account-uid"/);assert.match(visible,/主号/);assert.match(visible,/12 \/ 20/);assert.match(visible,/HK-01/);assert.match(card,/class="account-suffix mono">#7890ab</);
+ const actions=card.slice(card.indexOf('class="card-actions"'),card.indexOf('</div></div></article>'));
+ assert.match(actions,/class="egress-current"[^>]*>HK-01</);assert.match(actions,/data-a="egress"[^>]*>出口<\/button><button data-a="toggle"/);assert.doesNotMatch(actions,/出口 ·|↗|选择节点/);
+ assert.match(card,/data-state="ok"/);
+});
+
 test('manual enable/disable uses exact boolean endpoint and deletion confirms; unknown actions do nothing',async()=>{
  const table=await import('./assets/account-table.js'),actions=await import('./assets/account-actions.js');client.acceptSession({authenticated:true,csrf_token:'token'});let refreshes=0;
  let account={uid:'uid/one',manual_disabled:true,system_blocked:true};table.renderAccounts([account]);
@@ -34,9 +45,20 @@ test('four-job page keeps account outcomes collapsed and reveals only failures o
  let posts=0;const calls=mockAPI((url,opts)=>{if(opts.method==='POST'){posts++;status={...status,running:true};return {status:409,body:{error:'already running'}};}return status;});
  await tasks.loadTasks();assert.equal(($('maintenanceJobs').innerHTML.match(/class="job-card"/g)||[]).length,4);assert.doesNotMatch($('maintenanceJobs').innerHTML,/&lt;upstream error&gt;/);assert.match($('maintenanceJobs').innerHTML,/已完成/);assert.match($('maintenanceJobs').innerHTML,/查看 1 项失败/);assert.match($('maintenanceJobs').innerHTML,/has-failures/);
  await $('maintenanceJobs').fire('click',{target:{closest:()=>({dataset:{failures:'token'}})}});assert.match($('taskFailureBody').innerHTML,/&lt;upstream error&gt;/);assert.doesNotMatch($('taskFailureBody').innerHTML,/<upstream error>/);
- await dom.click('btnRunAll');assert.equal(posts,1);assert.equal($('btnRunAll').disabled,true);await dom.click('btnRunAll');assert.equal(posts,1);assert.equal(calls.find(c=>c.opts.method==='POST').url,'/panel/api/maintenance/run');assert.equal(calls.find(c=>c.opts.method==='POST').opts.body,'{}');assert.ok(calls.every(c=>/maintenance\/(run|status)$/.test(c.url)));
+ await dom.click('btnRunAll');assert.equal(posts,1);assert.equal($('btnRunAll').disabled,true);assert.equal($('btnRunAll').textContent,'全部执行');assert.equal($('btnRunAll').getAttribute('aria-busy'),'true');assert.equal($('btnRunAll').classList.contains('refreshing'),true);await dom.click('btnRunAll');assert.equal(posts,1);assert.equal(calls.find(c=>c.opts.method==='POST').url,'/panel/api/maintenance/run');assert.equal(calls.find(c=>c.opts.method==='POST').opts.body,'{}');assert.ok(calls.every(c=>/maintenance\/(run|status)$/.test(c.url)));
  status={...status,running:false};await tasks.loadTasks();assert.equal($('btnRunAll').disabled,false);
  const markup=tasks.maintenanceMarkup({steps:[{name:'travel',state:'cancelled',accounts:pool.map(a=>({uid:a.uid,state:'skipped',message:'skip'}))}]});assert.doesNotMatch(markup,/class="job-account"/);assert.match(markup,/已取消/);assert.match(markup,/跳过 1003/);
+});
+
+test('task cards show last run time/result, neutral zero failures and no run id banner',async()=>{
+ const tasks=await import('./assets/tasks.js');client.acceptSession({authenticated:true,csrf_token:'token'});
+ const fresh=tasks.maintenanceMarkup({running:false,steps:[]});assert.match(fresh,/尚无执行记录/);assert.doesNotMatch(fresh,/维持账号凭据有效/);assert.match(fresh,/class="failure-count" data-state="clear">失败 0/);
+ let status={run_id:'maintenance-1750000000000000000',running:false,last_run_at:'2026-10-21T08:30:00Z',last_finished_at:'2026-10-21T08:31:10Z',last_result:'partial',last_failed:2,steps:[{name:'token',state:'failed',completed:3,failed:2,accounts:[]}]};
+ mockAPI(()=>status);await tasks.loadTasks();
+ const html=$('maintenanceJobs').innerHTML;
+ assert.match(html,/上次执行：2026-10-21T08:30:00Z/);assert.match(html,/结果：partial/);assert.match($('maintenanceSummary').textContent,/上次执行：2026-10-21T08:30:00Z/);assert.doesNotMatch($('maintenanceSummary').textContent,/maintenance-|后端执行中/);
+ assert.match(html,/class="failure-count" data-state="failed">失败 2/);assert.match(html,/class="failure-count" data-state="clear">失败 0/);assert.doesNotMatch(html,/job-account/);
+ assert.equal($('btnRunAll').textContent,'全部执行');assert.equal($('btnRunAll').classList.contains('refreshing'),false);
 });
 
 test('Meta view is read-only; opening reads cached nodes/tests without POST and only the explicit test action starts a job',async()=>{

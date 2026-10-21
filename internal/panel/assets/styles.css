@@ -281,6 +281,13 @@ main { min-width: 0; }
 .account-card { display: flex; flex-direction: column; position: relative; border-color: color-mix(in srgb,var(--ok) 55%,transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb,var(--ok) 8%,transparent),0 0 16px color-mix(in srgb,var(--ok) 3%,transparent); }
 .account-card.state-bad { border-color: var(--fluoro-red); box-shadow: inset 0 0 0 1px color-mix(in srgb,var(--fluoro-red) 18%,transparent),0 0 17px color-mix(in srgb,var(--fluoro-red) 17%,transparent); }
 .account-card.state-warn { border-color: var(--warn); box-shadow: inset 0 0 0 1px color-mix(in srgb,var(--warn) 10%,transparent),0 0 16px color-mix(in srgb,var(--warn) 7%,transparent); }
+/* 紧凑账号卡：只留昵称/状态/余额/当前出口/操作，目标高度 ≤132px */
+.account-grid .account-card { padding: 10px 14px; border-radius: 16px; gap: 0; max-height: 132px; }
+.account-grid { gap: 13px; }
+.account-title { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.account-title h3 { font-size: 16px; line-height: 1.3; }
+.account-suffix { color: var(--ink-3); font-size: 10px; flex: 0 0 auto; }
+.account-grid .card-heading { flex-wrap: nowrap; align-items: center; }
 .card-heading { display: flex; justify-content: space-between; align-items: start; gap: 12px; flex-wrap: wrap; }
 .card-heading > div { min-width: 0; }
 .tag { display: inline-flex; gap: 5px; align-items: center; padding: 3px 8px; font-size: 10px; font-weight: 500; line-height: 1.6; border-radius: 7px; border: 1px solid currentColor; color: var(--ink-3); align-self: start; max-width: 100%; }
@@ -289,19 +296,26 @@ main { min-width: 0; }
 .state-reasons { padding-left: 16px; color: var(--ink-2); font-size: 11px; margin-bottom: 20px; }
 .account-balance { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; padding: 14px 0; border-block: 1px solid var(--line); }
 .account-balance span { font-size: 12px; color: var(--ink-3); }.account-balance strong { font: 500 20px var(--display); }
+.account-grid .account-balance { padding: 4px 0; margin-top: 6px; }
+.account-grid .account-balance strong { font-size: 18px; line-height: 1.25; }
 .mini-metrics { display: grid; grid-template-columns: repeat(2,minmax(0, 1fr)); gap: 13px; margin: 17px 0; }
 .mini-metrics > div:last-child { grid-column: 1 / -1; }
 dt { color: var(--ink-3); font-size: 11px; }dd { margin: 2px 0 0; font-size: 12px; }
 .card-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 17px; }
 .action-pair { display: flex; gap: 6px; flex-wrap: wrap; }.action-pair button { padding: 7px 11px; font-size: 11px; }
 .egress-badge { color: var(--accent); font-size: 11px; padding: 7px 10px; background: color-mix(in srgb,var(--accent) 6%,transparent); text-align: left; }
+.account-grid .card-actions { flex-wrap: nowrap; gap: 8px; padding-top: 6px; }
+.account-grid .action-pair { flex-wrap: nowrap; gap: 5px; flex: 0 0 auto; }
+.account-grid .action-pair button,.account-grid .egress-badge { min-height: 30px; padding: 4px 9px; font-size: 11px; }
+.egress-current { min-width: 0; flex: 1 1 auto; color: var(--ink-2); font-size: 11px; }
 .rate-limits { display: grid; gap: 6px; font-size: 10px; margin: 6px 0; }.rate-limit { display: grid; padding: 8px; border-radius: 8px; color: var(--warn); background: color-mix(in srgb,var(--warn) 5%,transparent); }
 .pager { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 14px; margin: 22px 0 6px; color: var(--ink-3); font-size: 11px; }.pager button { min-width: 40px; font-size: 15px; padding: 4px 10px; }
 .empty { padding: 35px 22px; text-align: center; color: var(--ink-3); grid-column: 1 / -1; }.empty strong { display: block; font: 500 18px var(--display); color: var(--ink-2); margin-bottom: 8px; }
 .job-grid,.settings-grid,.usage-details { display: grid; grid-template-columns: repeat(2,minmax(0, 1fr)); gap: 20px; }
 .job-card .hint,.surface > .hint { margin-top: 8px; }
 .progress { height: 5px; border-radius: 4px; background: var(--input); margin-top: 22px; }.progress i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .3s; }.progress.has-failures i { background: var(--bad); }
-.job-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; margin-top: 13px; color: var(--ink-3); font-size: 12px; }.failure-count { color: var(--bad); }.failure-link { border: 0; padding: 2px 0; color: var(--bad); background: transparent; text-decoration: underline; text-underline-offset: 3px; }.failure-link:hover:not(:disabled) { background: transparent; transform: none; }
+.job-last { margin-top: 5px; font-size: 11px; color: var(--ink-3); }
+.job-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; margin-top: 13px; color: var(--ink-3); font-size: 12px; }.failure-count { color: var(--ink-3); }.failure-count[data-state="failed"] { color: var(--bad); }.failure-link { border: 0; padding: 2px 0; color: var(--bad); background: transparent; text-decoration: underline; text-underline-offset: 3px; }.failure-link:hover:not(:disabled) { background: transparent; transform: none; }
 .job-accounts { margin-top: 18px; }.job-account { display: flex; justify-content: space-between; align-items: start; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }.job-account > div { min-width: 0; }.job-account strong { font-size: 11px; }.job-account p { font-size: 11px; color: var(--ink-3); margin-top: 4px; }
 
 /* ===== 06 egress ===== */

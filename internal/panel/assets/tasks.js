@@ -1,11 +1,15 @@
 import { $, esc, toast } from './common.js';
 import { api } from './api.js';
 import { showModal, hideModal } from './modals.js';
-const JOBS = [['token','令牌保活','维持账号凭据有效'],['checkin','每日签到','同步可领取的签到结果'],['activity','活跃上报','提交账号活跃状态'],['travel','旅行巡检','执行旅行任务检查']];
+const JOBS = [['token','令牌保活'],['checkin','每日签到'],['activity','活跃上报'],['travel','旅行巡检']];
 const labels = {pending:'等待',running:'执行中',done:'已完成',failed:'失败',cancelled:'已取消',skipped:'已跳过'};
 let snapshot = {running:false,steps:[]}, starting = false;
+function lastRunText(data) {
+  if (!data.last_run_at) return '上次执行：尚无执行记录';
+  return '上次执行：' + data.last_run_at + ' · 结果：' + (data.last_result || 'pending');
+}
 export function maintenanceMarkup(data) {
-  return JOBS.map(([name, title, hint], index) => {
+  return JOBS.map(([name, title], index) => {
     const step = (data.steps || []).find(item => item.name === name), state = step?.state || 'pending';
     const accounts = step?.accounts || [], failed = accounts.filter(account => account.state === 'failed');
     const total = step?.total ?? accounts.length;
@@ -15,13 +19,15 @@ export function maintenanceMarkup(data) {
     const settled = completed + failedCount + skipped;
     const percent = total ? Math.min(100, settled / total * 100) : state === 'done' ? 100 : 0;
     const failureButton = failedCount ? '<button class="failure-link" type="button" data-failures="' + esc(name) + '" aria-controls="taskFailureVeil">查看 ' + failedCount + ' 项失败</button>' : '';
-    return '<article class="job-card"><div class="card-heading"><div><span class="eyebrow">0' + (index + 1) + ' / MAINTENANCE</span><h3>' + title + '</h3></div><span class="tag ' + (state === 'done' ? 'ok' : state === 'failed' ? 'bad' : 'warn') + '">' + (labels[state] || esc(state)) + '</span></div><p class="hint">' + hint + '</p><div class="progress ' + (failedCount ? 'has-failures' : '') + '" role="progressbar" aria-label="' + title + '进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.round(percent) + '"><i style="width:' + percent + '%"></i></div><div class="job-summary"><span>完成 ' + completed + ' / ' + total + '</span><span class="failure-count">失败 ' + failedCount + '</span>' + (skipped ? '<span>跳过 ' + skipped + '</span>' : '') + failureButton + '</div></article>';
+    return '<article class="job-card" data-state="' + esc(state) + '"><div class="card-heading"><div><span class="eyebrow">0' + (index + 1) + ' / MAINTENANCE</span><h3>' + title + '</h3></div><span class="tag ' + (state === 'done' ? 'ok' : state === 'failed' ? 'bad' : 'warn') + '">' + (labels[state] || esc(state)) + '</span></div><p class="job-last hint">' + esc(lastRunText(data)) + '</p><div class="progress ' + (failedCount ? 'has-failures' : '') + '" role="progressbar" aria-label="' + title + '进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.round(percent) + '"><i style="width:' + percent + '%"></i></div><div class="job-summary"><span>完成 ' + completed + ' / ' + total + '</span><span class="failure-count" data-state="' + (failedCount ? 'failed' : 'clear') + '">失败 ' + failedCount + '</span>' + (skipped ? '<span>跳过 ' + skipped + '</span>' : '') + failureButton + '</div></article>';
   }).join('');
 }
 function render() {
   $('btnRunAll').disabled = starting || snapshot.running === true;
-  $('btnRunAll').textContent = starting ? '正在启动…' : snapshot.running ? '执行中…' : '全部执行 · Run All';
-  $('maintenanceSummary').textContent = snapshot.run_id ? '运行 ' + snapshot.run_id + (snapshot.running ? ' · 后端执行中' : ' · 本轮已结束') : '四项维护统一执行；不提供独立开关或自动任务入口。';
+  $('btnRunAll').textContent = '全部执行';
+  $('btnRunAll').classList.toggle('refreshing', starting || snapshot.running === true);
+  $('btnRunAll').setAttribute('aria-busy', String(starting || snapshot.running === true));
+  $('maintenanceSummary').textContent = lastRunText(snapshot);
   $('maintenanceJobs').innerHTML = maintenanceMarkup(snapshot);
 }
 export async function loadTasks() {
@@ -47,5 +53,5 @@ $('maintenanceJobs').addEventListener('click', event => {
   renderFailures(button.dataset.failures);
   showModal('taskFailureVeil');
 });
-$('btnCloseTaskFailures').onclick = () => hideModal('taskFailureVeil');
+$('btnCloseTaskFailures').onclick = () => { hideModal('taskFailureVeil'); $('taskFailureBody').innerHTML = ''; };
 document.addEventListener('panel:session', event => { if (!event.detail.authenticated) { snapshot = {running:false,steps:[]}; render(); } });
