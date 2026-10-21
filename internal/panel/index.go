@@ -12,6 +12,7 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"strings"
 )
 
 //go:embed index.html
@@ -31,11 +32,12 @@ var assetFS embed.FS
 //     允许内联样式不会导致脚本执行；仍禁止外部样式域与 @import 外链。
 //   - connect-src 'self'        前端 fetch 只能打本服务
 //   - img-src 'self' data:      图标/内联图
+//   - font-src 'self'           同源静态字体（assets/fonts/*.woff2），不放行任何外域
 //   - form-action 'none'        页面无表单提交目标（配置页是 JS 提交）
 //   - frame-ancestors 'none'    禁止被任何站点 iframe 嵌套（点击劫持）
 //   - base-uri 'none'          禁止注入 <base> 改写相对路径
 const csp = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-	"connect-src 'self'; img-src 'self' data:; form-action 'none'; " +
+	"connect-src 'self'; img-src 'self' data:; font-src 'self'; form-action 'none'; " +
 	"frame-ancestors 'none'; base-uri 'none'"
 
 // setSecurityHeaders 写入面板统一安全响应头（页面与 API 都要，API 也含 JSON 数据）。
@@ -65,6 +67,11 @@ func (p *Panel) appScript(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Panel) assets(w http.ResponseWriter, r *http.Request) {
+	if hasDotDotSegment(r.URL.Path) {
+		setSecurityHeaders(w)
+		http.Error(w, "invalid asset path", http.StatusBadRequest)
+		return
+	}
 	sub, err := fs.Sub(assetFS, "assets")
 	if err != nil {
 		http.Error(w, "assets unavailable", 500)
@@ -72,4 +79,15 @@ func (p *Panel) assets(w http.ResponseWriter, r *http.Request) {
 	}
 	setSecurityHeaders(w)
 	http.StripPrefix("/panel/assets/", http.FileServer(http.FS(sub))).ServeHTTP(w, r)
+}
+
+// hasDotDotSegment 拒绝含 ".." 段的路径，避免依赖 ServeMux 的重定向清洗。
+// URL.Path 已做百分号解码（%2e%2e / ..%2f 都会还原成 ..），因此这里只需查解码值。
+func hasDotDotSegment(path string) bool {
+	for _, seg := range strings.Split(path, "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
 }

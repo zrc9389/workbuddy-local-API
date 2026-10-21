@@ -89,9 +89,12 @@ test('batch D2 exposes four startup animation choices with local font fallbacks'
  assert.ok(html.indexOf('id="animationStyle"') < html.indexOf('id="animationPreview"'), 'preview follows select');
  assert.ok(html.indexOf('id="view-config"') < html.indexOf('id="animationStyle"'), 'control lives in settings');
  assert.doesNotMatch(html, /<form id="animationForm"/, 'selection saves directly; no nested form under CSP form-action none');
- assert.match(css, /--font:[^;]*'Inter Tight'[^;]*'PingFang SC'[^;]*sans-serif/);
- assert.match(css, /--display:[^;]*'Inter Tight'[^;]*'Noto Sans CJK SC'[^;]*sans-serif/);
- assert.doesNotMatch(css, /@import|@font-face|fonts\.googleapis|fonts\.gstatic/);
+ assert.match(css, /--font:[^;]*'Source Sans 3'[^;]*'Noto Sans SC'[^;]*sans-serif/);
+ assert.match(css, /--display:[^;]*'Source Sans 3'[^;]*'Noto Sans SC'[^;]*sans-serif/);
+ assert.match(css, /@font-face/);
+ assert.match(css, /\/panel\/assets\/fonts\/[^"')]+\.woff2/);
+ assert.doesNotMatch(css, /@import|fonts\.googleapis|fonts\.gstatic/);
+ assert.doesNotMatch(css, /url\(\s*['"]?https?:\/\//);
  assert.match(css, /\.motion-settings select\s*\{[^}]*appearance:\s*none/);
  assert.match(css, /\.motion-settings > label\s*\{[^}]*margin-top:\s*16px/);
  assert.match(css, /@media \(max-width:700px\)[\s\S]*?\.motion-settings \.form-actions button\s*\{[^}]*width:\s*100%/);

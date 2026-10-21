@@ -407,6 +407,12 @@ func (p *Panel) routes() {
 // 与 401 错误响应全都带上（API 也可能在浏览器里被直接打开）。
 func (p *Panel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
+	// 静态资源路径含 ".." 时直接拒绝：ServeMux 会先做 307 清洗重定向，
+	// 到达 assets handler 前已失去原文，这里提前返回 400。
+	if strings.HasPrefix(r.URL.Path, "/panel/assets/") && hasDotDotSegment(r.URL.Path) {
+		http.Error(w, "invalid asset path", http.StatusBadRequest)
+		return
+	}
 	p.mux.ServeHTTP(w, r)
 }
 
