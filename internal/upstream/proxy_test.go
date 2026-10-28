@@ -71,3 +71,27 @@ func TestProxyCacheBoundedAndInvalidated(t *testing.T) {
 		t.Fatal("unbounded cache", n)
 	}
 }
+
+func TestAccountLeaseRechecksProxyAfterAdmission(t *testing.T) {
+	var direct, proxied atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { direct.Add(1); w.Write([]byte("direct")) }))
+	defer target.Close()
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { proxied.Add(1); w.Write([]byte("proxy")) }))
+	defer proxy.Close()
+	a := &auth.Auth{UID: "lease-switch"}
+	c := New()
+	c.AccountLease = func(context.Context, *auth.Auth) (func(), error) {
+		a.ProxyURL = proxy.URL
+		return func() {}, nil
+	}
+	req, _ := http.NewRequest(http.MethodGet, target.URL, nil)
+	resp, err := c.DoAccount(req, a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(body) != "proxy" || proxied.Load() != 1 || direct.Load() != 0 {
+		t.Fatalf("lease-time proxy not honored: body=%q proxied=%d direct=%d", body, proxied.Load(), direct.Load())
+	}
+}

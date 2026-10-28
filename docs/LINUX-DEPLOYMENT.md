@@ -5,7 +5,7 @@
 ## 1. 安全边界与首次使用
 
 - 网关只监听 `127.0.0.1:7863`，`start.sh` 也固定该回环地址；不支持把模板改成 `0.0.0.0`、`[::]` 或裸公网反向代理。Mihomo 控制端和每账号代理入口也由程序约束在回环。
-- 管理界面使用密码 + 会话。**初始密码为 `123456`，第一次登录后必须在设置里修改**，修改后重新登录。不把密码/令牌写入 service、Compose、环境变量或命令行。
+- 管理界面使用密码 + 会话。首次启动时在本机面板设置管理密码。不把密码/令牌写入 service、Compose、环境变量或命令行。
 - 本地聊天 API **不需要 API key**。管理密码不保护聊天 API，回环也不是多租户隔离：同机用户、host-network 容器和获得隧道权限的人可能消耗额度。只部署在受信任主机，限制 SSH 账号与转发权限。
 - 不开放服务器 7863 入站端口；客户端通过 SSH 本地隧道访问（第 5 节），不用 `ssh -g`、公网反向转发或通配地址绑定。
 - 密码哈希在 `/var/lib/workbuddy-local/password.json`，不是明文密码文件。配置、账号、订阅、代理凭证、历史、spool 与日志均按敏感文件处理，不放进公开工单或发行包；不用真实账号做冒烟测试。
@@ -137,7 +137,7 @@ ssh -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
   -L 127.0.0.1:17863:127.0.0.1:7863 operator@server.example
 ```
 
-保持隧道存活，浏览器打开 `http://127.0.0.1:17863/panel/`，123456 登录后**立即改密**。OpenAI-compatible base URL 为 `http://127.0.0.1:17863/v1`；本地 API 无需 Authorization/API key。客户端如强制要求非空 key，只填本地占位值，它不提供安全保护。不要替换成裸公网地址。
+保持隧道存活，浏览器打开 `http://127.0.0.1:17863/panel/`，使用首次启动时设置的管理密码登录。OpenAI-compatible base URL 为 `http://127.0.0.1:17863/v1`；本地 API 无需 Authorization/API key。客户端如强制要求非空 key，只填本地占位值，它不提供安全保护。不要替换成裸公网地址。
 
 ```sh
 curl --noproxy '*' --fail --silent --show-error http://127.0.0.1:17863/auth/session
@@ -254,7 +254,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o wb2
 - 忘记密码先正常停掉**同数据目录实例**，用相同服务用户/配置离线重置，再启动并立即改密。不删除 password.json、不改到新数据目录假装修复：
 
 ```sh
-# 明确需要重置才人工运行；已停机，此命令重置为 123456 并退出。
+# 明确需要重置才人工运行；已停机，此命令会生成新的管理密码设置流程并退出。
 sudo -u workbuddy-local sh -c \
   'umask 077; cd /opt/workbuddy-local && exec ./wb2api -config /etc/workbuddy-local/config.json -reset-password'
 ```

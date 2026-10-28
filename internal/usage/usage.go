@@ -6,9 +6,7 @@
 //   - 本包按 (时间片, realm, uid, model, rate) 分桶累计，因此可以出「今天各模型各用了多少」
 //     「这一小时 prompt 涨得多快」这类问题，且能长期保留。
 //
-// 保留策略（分片粒度自动降级，总量因此有界）：
-//   - 近 hourlyKeep 小时内：小时桶（细粒度，看尖峰）
-//   - 更早：折叠为日桶，**永久保留**（看长期趋势）
+// 保留策略：小时/日分桶数据均在事件时间超过 24 小时后删除。
 //
 // 落盘：data/usage.json，原子替换 + 防抖刷新（默认 30s），重启不丢。
 // 桶数上界 ≈ 账号数 × 模型数 × (hourlyKeep + 已过天数)，实测单桶约 90 字节。
@@ -26,8 +24,8 @@ import (
 	"time"
 )
 
-// hourlyKeep 小时桶的保留时长；超出后折叠为日桶。
-const hourlyKeep = 90 * 24 * time.Hour
+// DefaultRetentionWindow 是 usage 数据的默认滚动保留时长。
+const DefaultRetentionWindow = 24 * time.Hour
 
 // flushInterval 防抖落盘间隔。
 const flushInterval = 30 * time.Second
@@ -49,25 +47,26 @@ const fileVersion = 4
 // bucket 一个 (时间片, realm, uid, model, rate) 的累计量。
 // JSON 字段名刻意取短，因为桶数量会随时间增长。
 type bucket struct {
-	Scope string  `json:"s"`            // "h:2006-01-02T15" 或 "d:2006-01-02"
-	Realm string  `json:"r"`            // cn / global
-	UID   string  `json:"u"`            // 账号 uid
-	Model string  `json:"m"`            // 上游裸模型名
-	Rate  string  `json:"x,omitempty"`  // 请求时生效积分倍率（规范化数值；旧桶为空）
-	Req   int64   `json:"q"`            // 请求数（含失败）
-	Err   int64   `json:"e"`            // 失败数
-	PT    int64   `json:"p"`            // prompt tokens
-	CT    int64   `json:"c"`            // completion tokens
-	TT    int64   `json:"t"`            // total tokens（上游给什么用什么的合计）
-	LatMs int64   `json:"l"`            // 延迟累计（ms）
-	LatN  int64   `json:"ln"`           // 延迟样本数
-	TPS   float64 `json:"v"`            // 吐字速率累计
-	TPSN  int64   `json:"vn"`           // 速率样本数
-	CR    float64 `json:"cr,omitempty"` // usage.credit 累计（仅明确存在的观测）
-	CRN   int64   `json:"cn,omitempty"` // usage.credit 样本数（区分缺字段与真实 0）
-	CRT   int64   `json:"ct,omitempty"` // 同时具备 credit 与 token 的 Token 合计
-	CH    int64   `json:"ch,omitempty"` // 前缀缓存命中 token 累计（上游回该维度才累计）
-	CM    int64   `json:"cm,omitempty"` // 前缀缓存未命中 token 累计
+	Scope    string    `json:"s"` // "h:2006-01-02T15" 或 "d:2006-01-02"
+	LastSeen time.Time `json:"last_seen,omitempty"`
+	Realm    string    `json:"r"`            // cn / global
+	UID      string    `json:"u"`            // 账号 uid
+	Model    string    `json:"m"`            // 上游裸模型名
+	Rate     string    `json:"x,omitempty"`  // 请求时生效积分倍率（规范化数值；旧桶为空）
+	Req      int64     `json:"q"`            // 请求数（含失败）
+	Err      int64     `json:"e"`            // 失败数
+	PT       int64     `json:"p"`            // prompt tokens
+	CT       int64     `json:"c"`            // completion tokens
+	TT       int64     `json:"t"`            // total tokens（上游给什么用什么的合计）
+	LatMs    int64     `json:"l"`            // 延迟累计（ms）
+	LatN     int64     `json:"ln"`           // 延迟样本数
+	TPS      float64   `json:"v"`            // 吐字速率累计
+	TPSN     int64     `json:"vn"`           // 速率样本数
+	CR       float64   `json:"cr,omitempty"` // usage.credit 累计（仅明确存在的观测）
+	CRN      int64     `json:"cn,omitempty"` // usage.credit 样本数（区分缺字段与真实 0）
+	CRT      int64     `json:"ct,omitempty"` // 同时具备 credit 与 token 的 Token 合计
+	CH       int64     `json:"ch,omitempty"` // 前缀缓存命中 token 累计（上游回该维度才累计）
+	CM       int64     `json:"cm,omitempty"` // 前缀缓存未命中 token 累计
 }
 
 // file 落盘结构。
@@ -79,25 +78,108 @@ type file struct {
 
 // Recorder 并发安全的用量记录器。
 type Recorder struct {
-	mu      sync.Mutex
-	path    string
-	buckets map[string]*bucket // key: scope|realm|uid|model|rate
-	dirty   bool
-	started time.Time
+	mu        sync.Mutex
+	path      string
+	buckets   map[string]*bucket // key: scope|realm|uid|model|rate
+	dirty     bool
+	started   time.Time
+	retention time.Duration
 
 	stopOnce sync.Once
 	stop     chan struct{}
 	done     chan struct{}
 }
 
+// DeleteAccount removes all usage buckets for uid and persists the new snapshot.
+// The caller can abort a broader account deletion when persistence fails; a zero
+// path (in-memory recorder) is treated as successful. Unknown bucket scopes are
+// retained unless their UID matches exactly.
+func (r *Recorder) DeleteAccount(uid string) (int, error) {
+	if r == nil || uid == "" {
+		return 0, nil
+	}
+	r.mu.Lock()
+	removed := 0
+	deleted := make(map[string]bucket)
+	for key, b := range r.buckets {
+		if b.UID == uid {
+			deleted[key] = *b
+			delete(r.buckets, key)
+			removed++
+		}
+	}
+	if removed > 0 {
+		r.dirty = true
+	}
+	path := r.path
+	snap := file{Version: fileVersion, Saved: time.Now().Format(time.RFC3339), Buckets: make([]bucket, 0, len(r.buckets))}
+	if removed > 0 && path != "" {
+		for _, b := range r.buckets {
+			snap.Buckets = append(snap.Buckets, *b)
+		}
+	}
+	if removed == 0 || path == "" {
+		r.mu.Unlock()
+		return removed, nil
+	}
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		r.restoreDeletedLocked(deleted)
+		r.mu.Unlock()
+		return removed, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		r.restoreDeletedLocked(deleted)
+		r.mu.Unlock()
+		return removed, err
+	}
+	tmp := path + ".delete.tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		r.restoreDeletedLocked(deleted)
+		r.mu.Unlock()
+		return removed, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		r.restoreDeletedLocked(deleted)
+		r.mu.Unlock()
+		return removed, err
+	}
+	r.dirty = false
+	r.mu.Unlock()
+	return removed, nil
+}
+
+func (r *Recorder) restoreDeletedLocked(deleted map[string]bucket) {
+	if len(deleted) == 0 {
+		return
+	}
+	for key, b := range deleted {
+		if _, exists := r.buckets[key]; !exists {
+			cp := b
+			r.buckets[key] = &cp
+		}
+	}
+	r.dirty = true
+}
+
 // New 创建记录器。path 为空时禁用落盘（纯内存，测试用）。
 func New(path string) *Recorder {
+	return NewWithRetention(path, DefaultRetentionWindow)
+}
+
+// NewWithRetention 构建使用指定滚动窗口的记录器；非正窗口回落默认值。
+func NewWithRetention(path string, retention time.Duration) *Recorder {
+	if retention <= 0 {
+		retention = DefaultRetentionWindow
+	}
 	r := &Recorder{
-		path:    path,
-		buckets: make(map[string]*bucket),
-		started: time.Now(),
-		stop:    make(chan struct{}),
-		done:    make(chan struct{}),
+		path:      path,
+		buckets:   make(map[string]*bucket),
+		started:   time.Now(),
+		retention: retention,
+		stop:      make(chan struct{}),
+		done:      make(chan struct{}),
 	}
 	if path != "" {
 		if err := r.load(); err != nil {
@@ -107,7 +189,7 @@ func New(path string) *Recorder {
 	return r
 }
 
-// Start 启动后台防抖落盘与折叠。Stop 前一直运行。
+// Start 启动后台防抖落盘。滚动清理由服务的 RetentionManager 驱动。
 func (r *Recorder) Start() {
 	go func() {
 		defer close(r.done)
@@ -119,12 +201,6 @@ func (r *Recorder) Start() {
 				r.flush(true)
 				return
 			case <-t.C:
-				r.mu.Lock()
-				n := len(r.buckets)
-				r.mu.Unlock()
-				if n > maxBuckets {
-					r.Rollup(time.Now())
-				}
 				r.flush(false)
 			}
 		}
@@ -149,13 +225,13 @@ type Delta struct {
 	HasCredit        bool
 	ModelRate        string
 	// CacheHitTokens / CacheMissTokens 前缀缓存命中/未命中观测（issue #92）。
-	HasCacheTokens   bool
-	CacheHitTokens   int64
-	CacheMissTokens  int64
-	LatencyMs        int64
-	HasLatency       bool
-	TokensPerSecond  float64
-	HasTPS           bool
+	HasCacheTokens  bool
+	CacheHitTokens  int64
+	CacheMissTokens int64
+	LatencyMs       int64
+	HasLatency      bool
+	TokensPerSecond float64
+	HasTPS          bool
 }
 
 // Add 记录一次请求尝试。
@@ -182,6 +258,9 @@ func (r *Recorder) Add(now time.Time, realm, uid, model string, d Delta, ok bool
 	if b == nil {
 		b = &bucket{Scope: scope, Realm: realm, UID: uid, Model: model, Rate: d.ModelRate}
 		r.buckets[key] = b
+	}
+	if now.After(b.LastSeen) {
+		b.LastSeen = now.UTC()
 	}
 	b.Req++
 	if !ok {
@@ -225,62 +304,28 @@ func (r *Recorder) Add(now time.Time, realm, uid, model string, d Delta, ok bool
 	r.dirty = true
 }
 
-// Rollup 把超出 hourlyKeep 的小时桶折叠为日桶（按本地日历日）。
-// 幂等：同一小时反复折叠不会重复计数（先累加再删源桶）。
+// Rollup 是历史 API 名称；现在按统一 24 小时窗口删除过期小时/日桶。
+// 无法解析的 scope 会保留，避免对未知旧格式进行破坏性清理。
 func (r *Recorder) Rollup(now time.Time) {
 	if r == nil {
 		return
 	}
-	cutoff := now.Add(-hourlyKeep)
+	cutoff := now.Add(-r.retention)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	type move struct{ from, to string }
-	var moves []move
+	removed := 0
 	for k, b := range r.buckets {
-		if !strings.HasPrefix(b.Scope, "h:") {
-			continue
+		ts, ok := bucketExpiryTime(b)
+		if ok && !ts.After(cutoff) {
+			delete(r.buckets, k)
+			removed++
 		}
-		ts, err := time.ParseInLocation(hourLayout, strings.TrimPrefix(b.Scope, "h:"), time.Local)
-		if err != nil || !ts.Before(cutoff) {
-			continue
-		}
-		day := "d:" + ts.Format(dayLayout)
-		moves = append(moves, move{from: k, to: day + "|" + b.Realm + "|" + b.UID + "|" + b.Model + "|" + b.Rate})
 	}
-	for _, m := range moves {
-		src := r.buckets[m.from]
-		if src == nil {
-			continue
-		}
-		dst := r.buckets[m.to]
-		if dst == nil {
-			cp := *src
-			cp.Scope = strings.SplitN(m.to, "|", 2)[0]
-			dst = &cp
-			r.buckets[m.to] = dst
-		} else {
-			dst.Req += src.Req
-			dst.Err += src.Err
-			dst.PT += src.PT
-			dst.CT += src.CT
-			dst.TT += src.TT
-			dst.LatMs += src.LatMs
-			dst.LatN += src.LatN
-			dst.TPS += src.TPS
-			dst.TPSN += src.TPSN
-			dst.CR += src.CR
-			dst.CRN += src.CRN
-			dst.CRT += src.CRT
-			dst.CH += src.CH
-			dst.CM += src.CM
-		}
-		delete(r.buckets, m.from)
-	}
-	if len(moves) > 0 {
+	if removed > 0 {
 		r.dirty = true
-		log.Printf("[usage] 折叠 %d 个小时桶为日桶（保留 %v 细粒度）", len(moves), hourlyKeep)
+		log.Printf("[usage] 删除 %d 个过期用量桶（保留 %v）", removed, r.retention)
 	}
 }
 
@@ -300,49 +345,57 @@ func (r *Recorder) load() error {
 	}
 	for i := range f.Buckets {
 		b := f.Buckets[i]
+		if ts, ok := bucketExpiryTime(&b); ok && !ts.After(time.Now().Add(-r.retention)) {
+			r.dirty = true
+			continue
+		}
 		r.buckets[b.Scope+"|"+b.Realm+"|"+b.UID+"|"+b.Model+"|"+b.Rate] = &b
 	}
 	log.Printf("[usage] 已恢复 %d 个用量桶（%s）", len(r.buckets), r.path)
+	if r.dirty {
+		r.flush(true)
+	}
 	return nil
 }
 
-func (r *Recorder) flush(force bool) {
+func (r *Recorder) flush(force bool) error {
 	if r == nil || r.path == "" {
-		return
+		return nil
 	}
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if !r.dirty && !force {
-		r.mu.Unlock()
-		return
+		return nil
 	}
 	snap := file{Version: fileVersion, Saved: time.Now().Format(time.RFC3339), Buckets: make([]bucket, 0, len(r.buckets))}
 	for _, b := range r.buckets {
 		snap.Buckets = append(snap.Buckets, *b)
 	}
-	r.dirty = false
-	r.mu.Unlock()
 
 	raw, err := json.Marshal(snap)
 	if err != nil {
 		log.Printf("[usage] 序列化失败: %v", err)
-		return
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(r.path), 0o755); err != nil {
 		log.Printf("[usage] 建目录失败: %v", err)
-		return
+		return err
 	}
 	tmp := r.path + ".tmp"
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		log.Printf("[usage] 写临时文件失败: %v", err)
-		return
+		return err
 	}
 	if err := os.Rename(tmp, r.path); err != nil {
 		log.Printf("[usage] 原子替换失败: %v", err)
+		return err
 	}
+	r.dirty = false
+	return nil
 }
 
 // Save 立即落盘（面板「刷新」或关闭前调用）。
-func (r *Recorder) Save() { r.flush(true) }
+func (r *Recorder) Save() error { return r.flush(true) }
 
 // ---------------------------------------------------------------- 聚合 ----
 
@@ -521,6 +574,22 @@ func bucketTime(scope string) (time.Time, bool) {
 	}
 	ts, err := time.ParseInLocation(dayLayout, strings.TrimPrefix(scope, "d:"), time.Local)
 	return ts, err == nil
+}
+
+func bucketExpiryTime(b *bucket) (time.Time, bool) {
+	if !b.LastSeen.IsZero() {
+		return b.LastSeen, true
+	}
+	ts, ok := bucketTime(b.Scope)
+	if !ok {
+		return time.Time{}, false
+	}
+	// 旧格式只有时间片起点；按时间片末端作为最后可能事件时间，
+	// 宁可多保留一个时间片，也不能提前删除记录。
+	if strings.HasPrefix(b.Scope, "h:") {
+		return ts.Add(time.Hour), true
+	}
+	return ts.AddDate(0, 0, 1), true
 }
 
 // Snapshot 聚合**所选窗口内**的桶，产出面板一次拉取的全部用量视图数据。

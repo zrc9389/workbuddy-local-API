@@ -50,36 +50,110 @@ func TestAddAndTotals(t *testing.T) {
 	}
 }
 
-// Rollup 把超出 hourlyKeep 的小时桶折叠为日桶，且幂等：重复折叠不重复计数。
-// 窗口口径：24h 窗口不含 100 天前的日桶；hours=0（全部历史）才含日点。
-func TestRollupIdempotent(t *testing.T) {
+// 24 小时后同时删除小时桶和历史日桶，未知 scope 安全保留。
+func TestRollupPrunesExpiredAndKeepsUnknown(t *testing.T) {
 	r := New("")
-	old := time.Now().AddDate(0, 0, -100) // 100 天前，超出 90 天小时保留
-	r.Add(old, "cn", "u", "m", Delta{PromptTokens: 7, HasPromptTokens: true}, true)
+	old := time.Now().Add(-25 * time.Hour)
 	r.Add(old, "cn", "u", "m", Delta{PromptTokens: 7, HasPromptTokens: true}, true)
 	r.Add(time.Now(), "cn", "u", "m", Delta{PromptTokens: 1, HasPromptTokens: true}, true)
+	unknown := &bucket{Scope: "legacy:opaque", Realm: "cn", UID: "u", Model: "m", Req: 3}
+	r.buckets["legacy:opaque|cn|u|m|"] = unknown
 
 	r.Rollup(time.Now())
-	after := r.Snapshot(24, nil)
-	if after.Totals.Requests != 1 || after.Totals.PromptTokens != 1 {
-		t.Fatalf("24h 窗口 totals = %d/%d, want 1/1（窗口外日桶不进聚合）", after.Totals.Requests, after.Totals.PromptTokens)
+	if len(r.buckets) != 2 {
+		t.Fatalf("桶数=%d，过期桶应删且未知桶应留", len(r.buckets))
 	}
-	if len(after.Series) != 1 || after.Series[0].Scope != "hour" {
-		t.Fatalf("series = %+v, want 仅当前小时 1 个点", after.Series)
-	}
-
-	all := r.Snapshot(0, nil)
-	if all.Totals.Requests != 3 || all.Totals.PromptTokens != 15 {
-		t.Fatalf("全部历史 totals = %d/%d, want 3/15", all.Totals.Requests, all.Totals.PromptTokens)
-	}
-	if len(all.Series) != 2 || all.Series[0].Scope != "day" || all.Series[1].Scope != "hour" {
-		t.Fatalf("series = %+v, want 日点在前 + 小时点在后", all.Series)
-	}
-
 	r.Rollup(time.Now())
-	again := r.Snapshot(0, nil)
-	if again.Totals.Requests != 3 || again.Totals.PromptTokens != 15 {
-		t.Fatalf("二次折叠后 totals = %d/%d, want 3/15（幂等被破坏）", again.Totals.Requests, again.Totals.PromptTokens)
+	if got := r.buckets["legacy:opaque|cn|u|m|"]; got == nil || got.Req != 3 {
+		t.Fatal("未知格式记录未安全保留")
+	}
+}
+
+func TestLoadPrunesExpiredPersistedBuckets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	legacy := `{"version":4,"buckets":[{"s":"h:2020-01-01T10","r":"cn","u":"old","m":"m","q":2},{"s":"opaque","r":"cn","u":"keep","m":"m","q":1}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := New(path)
+	if len(r.buckets) != 1 || r.buckets["opaque|cn|keep|m|"] == nil {
+		t.Fatalf("loaded buckets=%v", r.buckets)
+	}
+	r.Save()
+	r2 := New(path)
+	if len(r2.buckets) != 1 {
+		t.Fatalf("persisted buckets=%d want 1", len(r2.buckets))
+	}
+}
+
+func TestRollingRetentionUsesLastSeenBoundary(t *testing.T) {
+	base := time.Date(2026, 1, 2, 12, 55, 0, 0, time.UTC)
+	r := NewWithRetention("", 24*time.Hour)
+	r.Add(base, "cn", "u", "m", Delta{}, true)
+	r.Rollup(base.Add(24*time.Hour - time.Nanosecond))
+	if len(r.buckets) != 1 {
+		t.Fatal("record expired before the 24-hour boundary")
+	}
+	r.Rollup(base.Add(24 * time.Hour))
+	if len(r.buckets) != 0 {
+		t.Fatal("record at the 24-hour boundary was retained")
+	}
+}
+
+func TestSaveFailureKeepsDirtyForRetry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "blocked")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r := New(path)
+	r.Add(time.Now(), "cn", "u", "m", Delta{}, true)
+	if err := r.Save(); err == nil {
+		t.Fatal("expected save failure")
+	}
+	if !r.dirty {
+		t.Fatal("failed save cleared retry state")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if r.dirty {
+		t.Fatal("successful retry remained dirty")
+	}
+}
+
+func TestDeleteAccountPersistsAndRollsBackOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "usage.json")
+	r := New(path)
+	now := time.Now()
+	r.Add(now, "cn", "u-delete", "m", Delta{PromptTokens: 4, HasPromptTokens: true}, true)
+	r.Add(now, "cn", "u-keep", "m", Delta{PromptTokens: 8, HasPromptTokens: true}, true)
+	r.Save()
+	removed, err := r.DeleteAccount("u-delete")
+	if err != nil || removed != 1 {
+		t.Fatalf("removed=%d err=%v", removed, err)
+	}
+	r2 := New(path)
+	if len(r2.buckets) != 1 || r2.buckets["h:"+now.Format(hourLayout)+"|cn|u-keep|m|"] == nil {
+		t.Fatalf("persisted buckets=%v", r2.buckets)
+	}
+
+	blocked := filepath.Join(dir, "blocked.json")
+	if err := os.Mkdir(blocked, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r3 := New("")
+	r3.path = blocked
+	r3.Add(now, "cn", "u-delete", "m", Delta{}, true)
+	if _, err := r3.DeleteAccount("u-delete"); err == nil {
+		t.Fatal("expected persistence failure")
+	}
+	if len(r3.buckets) != 1 {
+		t.Fatalf("failed transaction lost in-memory usage: %v", r3.buckets)
 	}
 }
 
@@ -105,7 +179,7 @@ func TestFlushLoadRoundtrip(t *testing.T) {
 // 版本 1 文件没有积分字段：按零值恢复，旧 Token 数据保持可见且不产生伪比例。
 func TestLoadLegacyWithoutCredit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage.json")
-	legacy := `{"version":1,"saved":"2026-09-28T00:00:00+08:00","buckets":[{"s":"h:2026-09-28T10","r":"cn","u":"u1","m":"glm-5.2","q":1,"p":42,"t":42}]}`
+	legacy := `{"version":1,"saved":"2026-10-27T00:00:00+08:00","buckets":[{"s":"h:2026-10-27T19","r":"cn","u":"u1","m":"glm-5.2","q":1,"p":42,"t":42}]}`
 	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -119,19 +193,16 @@ func TestLoadLegacyWithoutCredit(t *testing.T) {
 	}
 }
 
-// 小时桶折叠为日桶时必须保留积分、样本数和匹配 Token，比例不能因 Rollup 漂移。
-func TestCreditSurvivesRollup(t *testing.T) {
+// 超过 24 小时的用量与积分统计一并删除。
+func TestCreditExpiresWithBucket(t *testing.T) {
 	r := New("")
 	old := time.Now().AddDate(0, 0, -100)
 	r.Add(old, "cn", "u", "m", Delta{PromptTokens: 100, HasPromptTokens: true, TotalTokens: 100, HasTotal: true, Credit: 1.25, HasCredit: true, ModelRate: "0.5"}, true)
 	r.Add(old.Add(2*time.Hour), "cn", "u", "m", Delta{PromptTokens: 300, HasPromptTokens: true, TotalTokens: 300, HasTotal: true, Credit: 3.75, HasCredit: true, ModelRate: "0.5"}, true)
 	r.Rollup(time.Now())
 	s := r.Snapshot(0, nil)
-	if s.Totals.Credits != 5 || s.Totals.CreditSamples != 2 || s.Totals.CreditTokens != 400 || s.Totals.CreditsPer1MTokens != 12500 {
-		t.Fatalf("rolled credit totals = %+v, want credits=5 tokens=400 ratio=12500", s.Totals)
-	}
-	if len(s.CreditByModel) != 1 || s.CreditByModel[0].Rate != "0.5" || s.CreditByModel[0].CreditsPer1MTokens != 12500 {
-		t.Fatalf("rolled credit_by_model = %+v, want one rate-preserving row", s.CreditByModel)
+	if s.Totals.Requests != 0 || s.Totals.Credits != 0 || len(s.CreditByModel) != 0 {
+		t.Fatalf("过期 usage/credit 未清除: %+v", s)
 	}
 }
 
@@ -307,7 +378,7 @@ func TestLifecycleFlush(t *testing.T) {
 // 与 totals 输出命中率；无缓存观测的桶不参与（rate 零值省略）。
 func TestCacheHitRateAccumulation(t *testing.T) {
 	r := New(t.TempDir() + "/usage.json")
-	base := time.Date(2026, 10, 1, 10, 0, 0, 0, time.Local)
+	base := time.Now().Add(-time.Minute)
 	r.Add(base, "cn", "u1", "glm-5.3", Delta{
 		PromptTokens: 1000, HasPromptTokens: true,
 		Credit: 1, HasCredit: true, TotalTokens: 1005, HasTotal: true,
@@ -341,7 +412,7 @@ func TestCacheHitRateAccumulation(t *testing.T) {
 func TestCacheTokensPersistRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	r := New(dir + "/usage.json")
-	base := time.Date(2026, 10, 1, 10, 0, 0, 0, time.Local)
+	base := time.Now().Add(-time.Minute)
 	r.Add(base, "cn", "u1", "m", Delta{
 		Credit: 1, HasCredit: true, TotalTokens: 100, HasTotal: true,
 		HasCacheTokens: true, CacheHitTokens: 75, CacheMissTokens: 25,

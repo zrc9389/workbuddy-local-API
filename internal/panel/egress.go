@@ -61,6 +61,13 @@ func (p *Panel) AccountSetProxy(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	if p.cfg.Meta != nil && p.cfg.Meta.IsBound(a.UID) {
+		// A Meta binding owns this account's local listener and route. Allowing
+		// an unrelated proxy mutation would leave the UI/configuration claiming
+		// one route while upstream traffic uses another (or direct access).
+		writeErr(w, http.StatusConflict, "unbind the Meta route before changing the account proxy")
+		return
+	}
 	select {
 	case accountMutationSlots <- struct{}{}:
 		defer func() { <-accountMutationSlots }()

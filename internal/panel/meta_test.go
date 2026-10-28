@@ -6,6 +6,7 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/metacore"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -22,6 +23,28 @@ func TestMetaUnavailableAndPayloadGuards(t *testing.T) {
 	p.MetaNodes(w, httptest.NewRequest("GET", "/", nil))
 	if w.Code != 503 {
 		t.Fatal(w.Code)
+	}
+}
+
+func TestMetaSubscriptionPreviewDoesNotRevealCredentials(t *testing.T) {
+	dir := t.TempDir()
+	state := `{"version":2,"providers":[{"id":"sub-test","file":"providers/test.txt","name":"test","enabled":true,"url":"https://example.com/private-token?password=subscription-secret"}],"bindings":[]}`
+	if err := os.WriteFile(filepath.Join(dir, "state.json"), []byte(state), 0600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := metacore.New(metacore.Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close(context.Background())
+	p := ioTestPanel(t)
+	p.cfg.Meta = m
+	for _, endpoint := range []string{"/panel/api/meta/subscriptions", "/panel/api/meta/subscriptions?id=sub-test&reveal=1"} {
+		w := httptest.NewRecorder()
+		p.MetaSubscriptions(w, httptest.NewRequest(http.MethodGet, endpoint, nil))
+		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "private-token") || strings.Contains(w.Body.String(), "subscription-secret") {
+			t.Fatalf("secret exposed: %d %s", w.Code, w.Body.String())
+		}
 	}
 }
 

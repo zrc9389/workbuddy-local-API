@@ -128,7 +128,7 @@ func TestConfigPerAccountIsolation(t *testing.T) {
 	}
 }
 func TestSubscriptionSSRFPolicy(t *testing.T) {
-	for _, raw := range []string{"http://example.com/a", "https://user:pass@example.com/a", "https://127.0.0.1/a", "https://[::1]/a", "https://169.254.169.254/a", "file:///a", "https://example.com:123/a"} {
+	for _, raw := range []string{"https://user:pass@example.com/a", "https://127.0.0.1/a", "https://[::1]/a", "https://169.254.169.254/a", "file:///a", "https://example.com:123/a", "http://example.com:443/a", "https://example.com:80/a"} {
 		if _, err := subscriptionURL(raw); err == nil {
 			t.Fatalf("accepted %s", raw)
 		}
@@ -136,6 +136,11 @@ func TestSubscriptionSSRFPolicy(t *testing.T) {
 	for _, ip := range []string{"127.0.0.1", "10.0.0.1", "::1", "::ffff:127.0.0.1", "192.0.2.3", "100.64.0.1", "198.18.1.1", "fc00::1"} {
 		if publicIP(netip.MustParseAddr(ip)) {
 			t.Fatal("accepted reserved", ip)
+		}
+	}
+	for _, raw := range []string{"http://example.com/a", "https://example.com/a", "http://example.com:80/a", "https://example.com:443/a"} {
+		if _, err := subscriptionURL(raw); err != nil {
+			t.Fatalf("accepted protocol URL %s: %v", raw, err)
 		}
 	}
 	if _, err := subscriptionURL("https://example.com/sub?token=do-not-echo"); err != nil {

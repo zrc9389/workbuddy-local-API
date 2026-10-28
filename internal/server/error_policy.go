@@ -1,8 +1,9 @@
-// Responsibilities split from the gateway handler; behavior preserved.
+﻿// Responsibilities split from the gateway handler; behavior preserved.
 package server
 
 import (
 	"context"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
@@ -259,19 +260,34 @@ func writeOpenAIErrorHint(w http.ResponseWriter, status int, code, msg, hint str
 // messages[].content[] {type:"image_url"}）。畸形/其他形态一律 false（hint 侧
 // 宁缺勿滥：判不出带图就不给「模型不支持图片」指向）。
 func hasImagePart(body []byte) bool {
-	var peek struct {
-		Messages []struct {
-			Content []struct {
-				Type string `json:"type"`
-			} `json:"content"`
-		} `json:"messages"`
-	}
-	if json.Unmarshal(body, &peek) != nil {
+	if len(body) == 0 || !bytes.Contains(body, []byte("image_url")) {
 		return false
 	}
-	for _, m := range peek.Messages {
-		for _, p := range m.Content {
-			if p.Type == "image_url" {
+	var obj map[string]any
+	if json.Unmarshal(body, &obj) != nil {
+		return false
+	}
+	msgs, ok := obj["messages"].([]any)
+	if !ok {
+		return false
+	}
+	for _, m := range msgs {
+		msg, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		// OpenAI 规范：content 既可以是普通字符串，也可以是多模态数组。
+		// 若为数组则检查内部是否包含 type="image_url" 的分片。
+		parts, ok := msg["content"].([]any)
+		if !ok {
+			continue
+		}
+		for _, p := range parts {
+			part, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, ok := part["type"].(string); ok && strings.EqualFold(strings.TrimSpace(t), "image_url") {
 				return true
 			}
 		}

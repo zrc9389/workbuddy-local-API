@@ -38,7 +38,7 @@ Linux amd64（x86_64）与arm64（aarch64），主程序`wb2api`及可选`wb2api
 - 本机没有适用C工具链，-race未执行；普通Go测试不等同竞态检测。
 
 ## 安全访问
-仍仅服务器127.0.0.1监听，管理默认123456需改。客户端通过SSH隧道，不允许直接公网反代免key聊天；管理密码不是聊天API鉴权。示例命令见LINUX-DEPLOYMENT.md。
+仍仅服务器 127.0.0.1 监听，管理密码由首次启动配置。客户端通过 SSH 隧道，不允许直接公网反代免 key 聊天；管理密码不是聊天 API 鉴权。示例命令见 LINUX-DEPLOYMENT.md。
 
 证据：docs/linux-evidence（测试与合成数据，不是真实账号）。
 

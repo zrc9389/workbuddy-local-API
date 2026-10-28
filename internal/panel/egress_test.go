@@ -1,7 +1,9 @@
 package panel
 
 import (
+	"context"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/metacore"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
 	"io"
 	"net/http"
@@ -68,5 +70,31 @@ func TestAccountEgressMocked(t *testing.T) {
 	p.AccountEgress(w, r)
 	if w.Code != 404 {
 		t.Fatal(w.Code)
+	}
+}
+
+func TestAccountProxyMutationBlockedWhileMetaBound(t *testing.T) {
+	p := ioTestPanel(t)
+	m, err := metacore.New(metacore.Options{Dir: t.TempDir(), Demo: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close(context.Background())
+	p.cfg.Meta = m
+	a := &auth.Auth{UID: "bound", FilePath: filepath.Join(p.cfg.AuthDir, "bound.json")}
+	p.cfg.Pool.Add(a)
+	nodes := m.Nodes().Nodes
+	if len(nodes) == 0 {
+		t.Fatal("demo nodes missing")
+	}
+	if _, err := m.Bind(context.Background(), a.UID, nodes[0].ID, func(string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/", strings.NewReader(`{"proxy":"http://localhost:8080"}`))
+	r.SetPathValue("uid", a.UID)
+	p.AccountSetProxy(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }

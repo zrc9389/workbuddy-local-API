@@ -465,3 +465,40 @@ func TestClampGPTMinMaxTokens(t *testing.T) {
 		})
 	}
 }
+
+
+func TestStripConversationID(t *testing.T) {
+	in := []byte(`{"model":"glm-5.2","conversation_id":"conv-old-1","conversationId":"conv-old-2","metadata":{"conversation_id":"conv-meta-1","other":"val"},"messages":[{"role":"user","content":"hello"}]}`)
+	out := StripConversationID(in)
+
+	var obj map[string]any
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("unmarshal error: %v", err)
+	}
+
+	if _, ok := obj["conversation_id"]; ok {
+		t.Errorf("top-level conversation_id must be stripped")
+	}
+	if _, ok := obj["conversationId"]; ok {
+		t.Errorf("top-level conversationId must be stripped")
+	}
+	if meta, ok := obj["metadata"].(map[string]any); ok {
+		if _, ok := meta["conversation_id"]; ok {
+			t.Errorf("metadata conversation_id must be stripped")
+		}
+		if meta["other"] != "val" {
+			t.Errorf("metadata other field must be preserved, got %v", meta["other"])
+		}
+	} else {
+		t.Errorf("metadata should be preserved")
+	}
+
+	// 验证空输入与无需修改的输入
+	if len(StripConversationID(nil)) != 0 {
+		t.Error("nil input should return empty")
+	}
+	clean := []byte(`{"model":"glm-5.2","messages":[]}`)
+	if string(StripConversationID(clean)) != string(clean) {
+		t.Errorf("clean input should remain identical")
+	}
+}

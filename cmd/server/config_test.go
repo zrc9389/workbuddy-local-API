@@ -53,7 +53,7 @@ func TestLoggingDefaults(t *testing.T) {
 	if err := c.normalize(); err != nil {
 		t.Fatal(err)
 	}
-	if !c.Logging.RequestArchiveEnabled || c.Logging.RequestRetentionDays != 7 || c.Logging.RequestArchiveMaxMB != 100 {
+	if !c.Logging.RequestArchiveEnabled || c.Logging.RequestRetentionDays != 1 || c.Logging.RequestArchiveMaxMB != 100 || c.Logging.RetentionWindow != "24h" || c.RetentionWindowDur != 24*time.Hour {
 		t.Fatalf("logging defaults = %+v", c.Logging)
 	}
 	// 来源记录（IP/UA）缺省开启：键缺席时必须保持 true，只有显式 false 才关闭。
@@ -78,7 +78,7 @@ func TestLoggingDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fallback.Logging.RequestRetentionDays != 7 || fallback.Logging.RequestArchiveMaxMB != 100 {
+	if fallback.Logging.RequestRetentionDays != 1 || fallback.Logging.RequestArchiveMaxMB != 100 {
 		t.Fatalf("logging fallback = %+v", fallback.Logging)
 	}
 }

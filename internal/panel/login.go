@@ -210,9 +210,20 @@ func (p *Panel) loginPoll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 凭证落盘（嵌套形，与 auths/ 目录既有格式一致）→ 热加载进池。
-	if err := os.MkdirAll(p.cfg.AuthDir, 0o755); err != nil {
+	if err := os.MkdirAll(p.cfg.AuthDir, 0o700); err != nil {
 		writeErr(w, http.StatusInternalServerError, "mkdir auth dir: "+err.Error())
 		return
+	}
+	// Existing deployments may have been created with a permissive mode. Tighten
+	// it before writing a new credential and fail closed if the path is not a dir.
+	if info, err := os.Stat(p.cfg.AuthDir); err != nil || !info.IsDir() {
+		writeErr(w, http.StatusInternalServerError, "auth dir unavailable")
+		return
+	} else if info.Mode().Perm()&0o077 != 0 {
+		if err := os.Chmod(p.cfg.AuthDir, 0o700); err != nil {
+			writeErr(w, http.StatusInternalServerError, "auth dir permissions: "+err.Error())
+			return
+		}
 	}
 	a := &auth.Auth{
 		AccessToken:  tok.AccessToken,

@@ -486,7 +486,68 @@ func ParseRateReset(body string) (time.Time, bool) {
 //     拦截形态。判在通用 4xx 兜底**之前**：此前该形态落 ErrClient → 只换号不罚 →
 //     连环 403。带业务信封的 403 已被上方各层捕获，走不到本层。
 //  11. 内容策略/参数错误/其他 4xx —— 通用兜底。
+// ErrorClassificationMetrics 错误分类可观测度量快照
+type ErrorClassificationMetrics struct {
+	Total          int64            `json:"total"`
+	ByKind         map[string]int64 `json:"by_kind"`
+	LastKind       string           `json:"last_kind"`
+	LastClassified time.Time        `json:"last_classified"`
+}
+
+var (
+	metricsMu              sync.RWMutex
+	classificationTotal    int64
+	classificationByKind   = make(map[ErrKind]int64)
+	lastClassifiedKind     ErrKind
+	lastClassificationTime time.Time
+)
+
+func recordClassification(k ErrKind) {
+	if k == ErrNone {
+		return
+	}
+	metricsMu.Lock()
+	defer metricsMu.Unlock()
+	classificationTotal++
+	classificationByKind[k]++
+	lastClassifiedKind = k
+	lastClassificationTime = time.Now()
+}
+
+// GetClassificationMetrics 导出当前错误分类可观测度量快照
+func GetClassificationMetrics() ErrorClassificationMetrics {
+	metricsMu.RLock()
+	defer metricsMu.RUnlock()
+	byKind := make(map[string]int64, len(classificationByKind))
+	for k, cnt := range classificationByKind {
+		byKind[k.String()] = cnt
+	}
+	return ErrorClassificationMetrics{
+		Total:          classificationTotal,
+		ByKind:         byKind,
+		LastKind:       lastClassifiedKind.String(),
+		LastClassified: lastClassificationTime,
+	}
+}
+
+// ResetClassificationMetrics 重置错误分类可观测指标（供测试使用）
+func ResetClassificationMetrics() {
+	metricsMu.Lock()
+	defer metricsMu.Unlock()
+	classificationTotal = 0
+	classificationByKind = make(map[ErrKind]int64)
+	lastClassifiedKind = ErrNone
+	lastClassificationTime = time.Time{}
+}
+
+// Classify 按 HTTP 状态码 + body 判定错误类别并记录可观测性指标。
 func Classify(status int, body string) ErrKind {
+	k := classifyRaw(status, body)
+	recordClassification(k)
+	return k
+}
+
+func classifyRaw(status int, body string) ErrKind {
 	// 11102「该后端无此模型」须最先判：它是「模型在后端不存在」的确定性答复，语义比
 	// 计费/限流都更具体——若不先判，msg 里的 "service info not found" 会被更宽的
 	// 4xx 兜底归为 ErrClient（只换号不避让），该坏号会留在池内反复被选中。
@@ -1016,35 +1077,63 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte, clientIP string, meta Cha
 // 全局脚本：首条消息非 system 时前置兜底 system（防 console 域上游 code 11-128；
 // #119 后 global 出站固定 /v2，该兜底保留——上游对 /v2 是否需要 system 无实测
 // 反证，删了无回滚路径）。
+// ChatStreamContext 保持既有 []byte API 100% 兼容；若大请求已合规自动直通流式发送
 func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byte, clientIP string, meta ChatMeta) (rc io.ReadCloser, status int, respBody []byte, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	prepared := c.prepareBody(body, a.Realm(), a.UID, meta.ConversationID)
+	realm := "cn"
+	uid := ""
+	if a != nil {
+		realm = a.Realm()
+		uid = a.UID
+	}
+	if len(body) > LargePayloadThreshold && IsPayloadUnmodified(body) {
+		return c.ChatStreamReaderContext(ctx, a, bytes.NewReader(body), int64(len(body)), clientIP, meta, true)
+	}
+	prepared := c.prepareBody(body, realm, uid, meta.ConversationID)
 	if c.globalOn(a) {
 		prepared = ensureConsoleSystem(prepared)
 	}
-	// reqCtx 的 cancel 在每个出口显式调用（Do 失败 / ≥400 / 成功分支移交 monitorBody），
-	// 循环本身各分支必 return——无循环尾兜底代码（此前外层 var cancel 从未赋值 +
-	// 尾部不可达 cancel() 是潜伏 nil-panic，已删；chatPaths 恒非空由构造保证）。
+	return c.ChatStreamReaderContext(ctx, a, bytes.NewReader(prepared), int64(len(prepared)), clientIP, meta, true)
+}
+
+// ChatStreamReaderContext 原生支持 io.Reader 请求体流式出站：
+// unmodified=true 时直接将 bodyReader 以指定 Content-Length POST 上游，堆内存零驻留；
+// 在跨路径重试时通过 io.Seeker 重置流偏移。
+func (c *Client) ChatStreamReaderContext(ctx context.Context, a *auth.Auth, bodyReader io.Reader, size int64, clientIP string, meta ChatMeta, unmodified bool) (rc io.ReadCloser, status int, respBody []byte, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	acctLabel := "-"
+	if a != nil {
+		acctLabel = logfmt.Label(a.UID, a.Nickname)
+	}
 	for _, path := range c.chatPaths(a) {
+		if s, ok := bodyReader.(io.Seeker); ok {
+			_, _ = s.Seek(0, io.SeekStart)
+		}
 		endpoint := c.chatBase(a) + path
-		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(prepared))
+		req, err := http.NewRequest(http.MethodPost, endpoint, bodyReader)
 		if err != nil {
 			return nil, 0, nil, err
+		}
+		if size > 0 {
+			req.ContentLength = size
 		}
 		c.ChatHeaders(req, a, clientIP, meta)
 		// 从调用方 ctx 派生：保留取消传播（父 ctx 取消 → 本 ctx 取消），
 		// 同时 monitorBody.Close 仍能独立 cancel 本分支（空闲掐流）。
 		reqCtx, cancel := context.WithCancel(ctx)
 		req = req.WithContext(reqCtx)
-		resp, err := c.chatClientFor(a).Do(req)
+		client := c.chatClientFor(a)
+		resp, err := client.Do(req)
 		if err != nil {
 			cancel()
-			log.Printf("ERR: [upstream] chat_stream acct=%s: transport error: %v", logfmt.Label(a.UID, a.Nickname), err)
-			// 传输层失败 → 清空共享连接池的空闲连接（连接层加固）：失败连接可能仍
-			// 留在空闲池里，下一个请求会继续捡到它——仅靠 IdleConnTimeout 等过期
-			// 不够，主动清池才断根。
+			log.Printf("ERR: [upstream] chat_stream acct=%s: transport error: %v", acctLabel, err)
+			// 传输层失败 → 清空账号专用代理连接池及共享连接池的空闲连接（连接层加固）：
+			// 失败连接可能仍留在空闲池里，下一个请求会继续捡到它——仅靠 IdleConnTimeout 等过期不够，主动清池才断根。
+			roundTripCloseIdle(client.Transport)
 			roundTripCloseIdle(c.chatHTTP().Transport)
 			return nil, 0, nil, err
 		}
@@ -1055,12 +1144,12 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 			// body 读失败（掐流/截断）→ 传输层错误：半截 raw 不交回调用方进 Classify，
 			// 否则 handler 侧 applyErrorPolicy 会按误判分类罚号。
 			if rerr != nil {
-				log.Printf("ERR: [upstream] chat_stream acct=%s: read body: %v", logfmt.Label(a.UID, a.Nickname), rerr)
+				log.Printf("ERR: [upstream] chat_stream acct=%s: read body: %v", acctLabel, rerr)
 				return nil, 0, nil, fmt.Errorf("read body: %w", rerr)
 			}
 			kind := Classify(resp.StatusCode, string(raw))
 			log.Printf("WARN: [upstream] chat_stream acct=%s: upstream %d %s body=%s",
-				logfmt.Label(a.UID, a.Nickname), resp.StatusCode, kind, truncate(string(raw), 200))
+				acctLabel, resp.StatusCode, kind, truncate(string(raw), 200))
 			// ≥400 直接返回（#119 后 global 单路径 /v2，chat 层无 fallback 链）。
 			// 分类一次、随 Kind 信封返回（含 Retry-After 头解析）：
 			// ErrNone 是防御分支（≥400 不应产生 None），返回原文让 handler 兜底。

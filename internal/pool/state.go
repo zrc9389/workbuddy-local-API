@@ -540,8 +540,25 @@ func (p *Pool) List() []Status {
 }
 func (p *Pool) statusOf(uid string, e *entry) Status {
 	now := time.Now()
+	isCooling := now.Before(e.until) || now.Before(e.breakerUntil)
+	isBlocked := e.isBlocked()
+	var state string
+	if isBlocked {
+		state = "BLOCKED"
+	} else if e.paused {
+		state = "PAUSED"
+	} else if e.disabled || e.manualDisabled {
+		state = "DISABLED"
+	} else if isCooling {
+		state = "COOLING"
+	} else {
+		state = "HEALTHY"
+	}
+
 	st := Status{
-		UID: uid,
+		State:   state,
+		Blocked: isBlocked,
+		UID:     uid,
 		// 限额台账（issue #36）：仅「带解析时间 6004 的模型级软冷却」仍在生效时非空，
 		// 每模型一行（modelCooldowns 内未到期的条目），多模型同时限流全部展示。
 		// 到期判据 = 该模型的独立冷却 until 未过；条件满足才输出，随到期自然消失，
@@ -676,4 +693,25 @@ func (p *Pool) rateLimitedModelsLocked(e *entry, now time.Time) []RateLimitedMod
 		return nil
 	}
 	return rows
+}
+
+// NoteUnauthorized 记录账号令牌失效 (UNAUTHORIZED / TOKEN_EXPIRED)，将其归入隔离待授权集合
+func (p *Pool) NoteUnauthorized(uid, reason string) {
+	if reason == "" {
+		reason = "UNAUTHORIZED: token expired, re-login required"
+	}
+	p.Disable(uid, reason)
+}
+
+// BlockedCount 统计隔离待授权账号真实数量
+func (p *Pool) BlockedCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	cnt := 0
+	for _, e := range p.byUID {
+		if e.isBlocked() {
+			cnt++
+		}
+	}
+	return cnt
 }

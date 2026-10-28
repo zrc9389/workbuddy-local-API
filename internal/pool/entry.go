@@ -2,6 +2,7 @@
 package pool
 
 import (
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -61,6 +62,10 @@ type TokenUsageDelta struct {
 
 // Status 单个账号对外暴露的状态（脱敏）。
 type Status struct {
+	// State 账号当前业务状态：HEALTHY / COOLING / BLOCKED / PAUSED / DISABLED
+	State string `json:"state"`
+	// Blocked 是否属于隔离待授权（令牌失效 UNAUTHORIZED / TOKEN_EXPIRED）
+	Blocked        bool   `json:"blocked,omitempty"`
 	ManualDisabled bool   `json:"manual_disabled"`
 	BalanceKnown   bool   `json:"balance_known"`
 	BalanceBlocked bool   `json:"balance_blocked"`
@@ -184,6 +189,7 @@ type modelCostEntry struct {
 	Samples   int
 }
 type entry struct {
+	deleting       bool
 	manualDisabled bool
 	balanceKnown   bool
 	guardLow       int64
@@ -283,7 +289,7 @@ func (e *entry) modelCostOf(model string, now time.Time) (modelCostEntry, bool) 
 // 连败降权与冷却/熔断同入本判定（取更长者不叠加：三个截止是并列的或门，
 // 只要任一未到期即不可选，天然「并存取更远者」——不需要显式比较长短）。
 func (e *entry) healthy(now time.Time) bool {
-	if e.manualDisabled || e.balanceBlocked() || e.disabled || e.paused {
+	if e.deleting || e.manualDisabled || e.balanceBlocked() || e.disabled || e.paused {
 		return false
 	}
 	if !e.until.IsZero() && now.Before(e.until) {
@@ -304,7 +310,7 @@ func (e *entry) healthy(now time.Time) bool {
 // healthyForModel 与 ServableNow 共用本谓词，保证 chat 选号与探活口径一致。
 // 调用方负责 now 与冷却有效性的判断（本方法只看形态，不看冷却是否已过期）。
 func (e *entry) modelExempt() bool {
-	if e.manualDisabled || e.balanceBlocked() || e.disabled || e.paused || !e.until.IsZero() || !e.degradeUntil.IsZero() || !e.breakerUntil.IsZero() {
+	if e.deleting || e.manualDisabled || e.balanceBlocked() || e.disabled || e.paused || !e.until.IsZero() || !e.degradeUntil.IsZero() || !e.breakerUntil.IsZero() {
 		return false
 	}
 	for _, mc := range e.modelCooldowns {
@@ -338,7 +344,7 @@ func (e *entry) modelCooled(now time.Time, reqModel string) bool {
 // 任意多个模型同时限流：被 B 限流的账号对 A 请求仍可选（A 不在 modelCooldowns 拦截
 // 且账号级 healthy 成立）。空 reqModel / 未记录模型 → 等价 healthy。
 func (e *entry) healthyForModel(now time.Time, reqModel string) bool {
-	if e.manualDisabled || e.balanceBlocked() || e.disabled || e.paused {
+	if e.deleting || e.manualDisabled || e.balanceBlocked() || e.disabled || e.paused {
 		return false
 	}
 	if e.modelCooled(now, reqModel) {
@@ -559,4 +565,21 @@ const (
 
 func (e *entry) balanceBlocked() bool {
 	return e.guardLow > 0 && e.balanceKnown && e.creditsTotal != -1 && e.credits < e.guardLow
+}
+
+// isBlocked 判断该账号是否处于隔离待授权集合 (令牌失效、UNAUTHORIZED、TOKEN_EXPIRED 等)
+func (e *entry) isBlocked() bool {
+	if !e.disabled && !e.manualDisabled {
+		return false
+	}
+	r := strings.ToLower(e.reason)
+	return strings.Contains(r, "unauthorized") ||
+		strings.Contains(r, "token_expired") ||
+		strings.Contains(r, "token expired") ||
+		strings.Contains(r, "session dead") ||
+		strings.Contains(r, "12153") ||
+		strings.Contains(r, "re-login") ||
+		strings.Contains(r, "auth_forbidden") ||
+		strings.Contains(r, "request illegal") ||
+		strings.Contains(r, "invalid token")
 }

@@ -1,4 +1,5 @@
 {
+  "update": {"github_owner": "", "github_repo": "", "channel": ""},
   "listen": "127.0.0.1:7863",
   "auth_dir": "./auths",
   "state_file": "./data/state.json",
@@ -11,9 +12,10 @@
   },
   "logging": {
     "request_archive_enabled": true,
-    "request_retention_days": 7,
+    "request_retention_days": 1,
     "request_archive_max_mb": 100,
     "request_client_info": true,
+    "retention_window": "24h",
     "enabled": true
   },
   "cooldown": {
@@ -41,13 +43,13 @@
     "blackcat_hours": [
       23
     ],
-    "checkin_enabled": false,
-    "growth_enabled": false,
-    "travel_enabled": false,
-    "activity_enabled": false,
-    "keepalive_enabled": false,
-    "blackcat_enabled": false,
-    "balance_refresh_enabled": false,
+    "checkin_enabled": true,
+    "growth_enabled": true,
+    "travel_enabled": true,
+    "activity_enabled": true,
+    "keepalive_enabled": true,
+    "blackcat_enabled": true,
+    "balance_refresh_enabled": true,
     "balance_refresh_minutes": 5,
     "include_disabled_in_tasks": false
   },

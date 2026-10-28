@@ -186,6 +186,15 @@ func (s *Store) Stage(ctx context.Context, src io.Reader, max int64) (*Job, erro
 	}
 	return j, nil
 }
+
+// CapacityRemaining returns the currently unreserved disk queue capacity. It
+// is used when the caller has no request-size limit, while the spool itself
+// remains bounded by its configured disk quota.
+func (s *Store) CapacityRemaining() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.opts.MaxBytes - s.bytes
+}
 func (j *Job) path() string { return filepath.Join(j.s.opts.Dir, j.r.ID+".body") }
 func (j *Job) abort() {
 	_ = os.Remove(filepath.Join(j.s.opts.Dir, j.r.ID+".json"))
@@ -266,6 +275,14 @@ func (j *Job) Complete(state string) error {
 	j.abort()
 	return nil
 }
+
+// Size returns the verified staged body size after Stage has completed.
+func (j *Job) Size() int64 {
+	j.s.mu.Lock()
+	defer j.s.mu.Unlock()
+	return j.r.Size
+}
+
 func (j *Job) ID() string { return j.r.ID }
 func (s *Store) Stats() Stats {
 	s.mu.Lock()

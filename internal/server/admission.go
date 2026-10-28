@@ -32,20 +32,25 @@ func (h *Handler) release(n int64) {
 }
 func (h *Handler) admit(w http.ResponseWriter, r *http.Request) (*http.Request, func(), bool) {
 	noop := func() {}
-	if r.ContentLength > h.cfg.MaxBodyBytes {
+	if h.cfg.MaxBodyBytes > 0 && r.ContentLength > h.cfg.MaxBodyBytes {
 		writeOpenAIError(w, 413, "request_body_too_large", h.bodyLimitMessage())
 		return r, noop, false
 	}
 	n := r.ContentLength
 	if n <= 0 {
 		n = h.cfg.MaxBodyBytes
+		if n <= 0 {
+			n = 64 << 10
+		}
 	}
 	if workingCost(n) > h.workLimit {
 		writeOpenAIError(w, 413, "working_budget_exceeded", "request too large for the configured memory working budget; content was not dispatched")
 		return r, noop, false
 	}
 	if !h.underPressure() && h.reserve(n) {
-		r.Body = http.MaxBytesReader(w, r.Body, h.cfg.MaxBodyBytes)
+		if h.cfg.MaxBodyBytes > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, h.cfg.MaxBodyBytes)
+		}
 		return r, func() { h.release(n) }, true
 	}
 	if h.cfg.Spool == nil {
@@ -54,7 +59,11 @@ func (h *Handler) admit(w http.ResponseWriter, r *http.Request) (*http.Request, 
 		return r, noop, false
 	}
 	// Disk path is used only when in-flight/memory admission is exhausted.
-	j, e := h.cfg.Spool.Stage(r.Context(), r.Body, h.cfg.MaxBodyBytes)
+	spoolLimit := h.cfg.MaxBodyBytes
+	if spoolLimit <= 0 {
+		spoolLimit = h.cfg.Spool.CapacityRemaining()
+	}
+	j, e := h.cfg.Spool.Stage(r.Context(), r.Body, spoolLimit)
 	if e != nil {
 		writeOpenAIError(w, 507, "spool_rejected", e.Error())
 		return r, noop, false
@@ -114,5 +123,10 @@ func workingCost(n int64) int64 {
 	if n < 65536 {
 		n = 65536
 	}
-	return n * 8
+	// Reserve for bounded request conversion and the independently limited response.
+	// Saturate on overflow so an oversized Content-Length cannot bypass admission.
+	if n > int64(^uint64(0)>>1)/4 {
+		return int64(^uint64(0) >> 1)
+	}
+	return n * 4
 }

@@ -22,6 +22,10 @@ func (p *Service) accountByUID(w http.ResponseWriter, uid string) *auth.Auth {
 		writeErr(w, http.StatusServiceUnavailable, err.Error())
 		return nil
 	}
+	if p.AccountDeletionStarted(uid) {
+		writeErr(w, http.StatusConflict, "account deletion in progress")
+		return nil
+	}
 	a := p.cfg.Pool.AuthByUID(uid)
 	if a == nil {
 		writeErr(w, http.StatusNotFound, "account not found")

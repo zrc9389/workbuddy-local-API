@@ -35,7 +35,7 @@ function withReducedMotion(run) {
 test('startup animation cycles English AI names and finishes at the hard limit', async () => {
   assert.deepEqual(animation.AI_NAMES, ['GPT', 'Claude', 'Gemini', 'Grok', 'DeepSeek', 'Qwen', 'Kimi', 'Llama']);
   assert.equal(animation.TARGET_MS, 8000);
-  assert.equal(animation.HARD_LIMIT_MS, 12000);
+  assert.equal(animation.HARD_LIMIT_MS, 20000);
   let finished = 0;
   const host = new dom.Element('startupHost');
   const player = animation.startStartupAnimation({ host, onFinish: () => finished++ });
@@ -59,7 +59,7 @@ test('startup animation cycles English AI names and finishes at the hard limit',
 test('finish plays the 360ms exit before unmounting the overlay', async () => {
   const host = new dom.Element('startupHost');
   let finished = 0;
-  const player = animation.startStartupAnimation({ host, targetMs: 8000, hardLimitMs: 12000, onFinish: () => finished++ });
+  const player = animation.startStartupAnimation({ host, targetMs: 8000, hardLimitMs: 20000, onFinish: () => finished++ });
   player.finish();
   assert.equal(player.finished(), true);
   assert.equal(finished, 1);
@@ -97,7 +97,7 @@ test('the hard limit tears down the overlay even when the target phase is still 
     onFinish: () => finished++,
   });
   assert.equal(player.finished(), false);
-  const hard = scheduled.find(entry => entry.ms === 12000);
+  const hard = scheduled.find(entry => entry.ms === 20000);
   assert.ok(hard);
   hard.fn();
   assert.equal(player.finished(), true);
@@ -111,7 +111,7 @@ test('each style builds its own decorative DOM and the animation never calls fet
   globalThis.fetch = () => { fetches++; throw new Error('startup must not call fetch'); };
   try {
     const host = new dom.Element('startupHost');
-    const names = animation.startStartupAnimation({ host, style: 'names', targetMs: 8000, hardLimitMs: 12000 });
+    const names = animation.startStartupAnimation({ host, style: 'names', targetMs: 8000, hardLimitMs: 20000 });
     const namesClasses = classesOf(names);
     assert.equal(namesClasses.filter(name => name === 'wb-startup-shutter').length, 5);
     assert.equal(namesClasses.filter(name => name === 'wb-startup-gate-half is-top' || name === 'wb-startup-gate-half is-bottom').length, 2);
@@ -121,21 +121,21 @@ test('each style builds its own decorative DOM and the animation never calls fet
     assert.ok(namesClasses.includes('wb-startup-curtain-path'));
     names.destroy();
 
-    const orbital = animation.startStartupAnimation({ host, style: 'orbital', targetMs: 8000, hardLimitMs: 12000 });
+    const orbital = animation.startStartupAnimation({ host, style: 'orbital', targetMs: 8000, hardLimitMs: 20000 });
     const orbitalClasses = classesOf(orbital);
     assert.equal(orbitalClasses.filter(name => name === 'wb-startup-shutter').length, 0);
     assert.ok(orbitalClasses.includes('wb-startup-orbit'));
     assert.equal(orbitalClasses.includes('wb-startup-gate-seam'), false);
     orbital.destroy();
 
-    const scan = animation.startStartupAnimation({ host, style: 'scan', targetMs: 8000, hardLimitMs: 12000 });
+    const scan = animation.startStartupAnimation({ host, style: 'scan', targetMs: 8000, hardLimitMs: 20000 });
     const scanClasses = classesOf(scan);
     assert.equal(scanClasses.filter(name => name === 'wb-startup-shutter').length, 5);
     assert.ok(scanClasses.includes('wb-startup-beam'));
     assert.equal(scanClasses.includes('wb-startup-gate-half is-top'), false);
     scan.destroy();
 
-    const minimal = animation.startStartupAnimation({ host, style: 'minimal', targetMs: 8000, hardLimitMs: 12000 });
+    const minimal = animation.startStartupAnimation({ host, style: 'minimal', targetMs: 8000, hardLimitMs: 20000 });
     const minimalClasses = classesOf(minimal);
     assert.ok(minimalClasses.includes('wb-startup-brand'));
     assert.equal(minimalClasses.includes('wb-startup-shutter'), false);
@@ -170,7 +170,7 @@ test('progress follows the reference non-linear curve and the counter tracks it'
   try {
     const host = new dom.Element('startupHost');
     const player = animation.startStartupAnimation({
-      host, style: 'names', targetMs: 8000, hardLimitMs: 12000,
+      host, style: 'names', targetMs: 8000, hardLimitMs: 20000,
       requestFrame: fn => { frames.push(fn); return frames.length; },
       cancelFrame: () => {},
     });
@@ -203,7 +203,7 @@ test('the word cycler swaps AI names every second and leaves no stray node', () 
   try {
     const host = new dom.Element('startupHost');
     const player = animation.startStartupAnimation({
-      host, style: 'names', targetMs: 8000, hardLimitMs: 12000,
+      host, style: 'names', targetMs: 8000, hardLimitMs: 20000,
       requestFrame: fn => { frames.push(fn); return frames.length; },
       cancelFrame: () => {},
     });
@@ -237,7 +237,7 @@ test('destroy stops every timer and listener at once and leaves no node behind',
   const intervalsBefore = dom.intervals.size;
   const listenersBefore = (dom.events.get('visibilitychange') || []).length;
   const host = new dom.Element('startupHost');
-  const player = animation.startStartupAnimation({ host, style: 'names', targetMs: 8000, hardLimitMs: 12000 });
+  const player = animation.startStartupAnimation({ host, style: 'names', targetMs: 8000, hardLimitMs: 20000 });
   assert.equal(host.children.length, 1);
   assert.equal(dom.intervals.size, intervalsBefore + 1);
   assert.equal((dom.events.get('visibilitychange') || []).length, listenersBefore + 1);
@@ -251,7 +251,7 @@ test('destroy stops every timer and listener at once and leaves no node behind',
 
 test('syncing phase fades the overlay out while destroy stays synchronous', async () => {
   const host = new dom.Element('startupHost');
-  const player = animation.startStartupAnimation({ host, style: 'names', targetMs: 8000, hardLimitMs: 12000 });
+  const player = animation.startStartupAnimation({ host, style: 'names', targetMs: 8000, hardLimitMs: 20000 });
   player.setPhase('syncing');
   assert.equal(player.root.dataset.phase, 'syncing');
   player.destroy();
@@ -262,7 +262,7 @@ test('syncing phase fades the overlay out while destroy stays synchronous', asyn
 
 test('logout destroys the overlay immediately so it never covers the login card', () => {
   const host = new dom.Element('startupHost');
-  const player = animation.startStartupAnimation({ host, style: 'names', targetMs: 8000, hardLimitMs: 12000 });
+  const player = animation.startStartupAnimation({ host, style: 'names', targetMs: 8000, hardLimitMs: 20000 });
   client.lockSession();
   player.destroy();
   assert.equal(host.children.length, 0);
@@ -411,7 +411,7 @@ test('skipping the intro still enters the workspace and loads the overview', asy
   await dom.emit('panel:authenticated');
   await flush();
   await flush();
-  const overlay = (dom.root.children || []).find(el => el.id === 'wbStartup');
+  const overlay = (document.body.children || []).find(el => el.id === 'wbStartup');
   assert.ok(overlay, 'overlay is mounted before the skip');
   assert.equal(calls.some(call => call.url === '/panel/api/overview'), false);
   await overlay.fire('click', {});
@@ -437,7 +437,7 @@ test('fast data never unmounts the router startup overlay before the 8000ms targ
     return {};
   });
   client.acceptSession({ authenticated: true, csrf_token: 'dwell' });
-  const overlay = () => (dom.root.children || []).find(el => el.id === 'wbStartup') || null;
+  const overlay = () => (document.body.children || []).find(el => el.id === 'wbStartup') || null;
   const startedAt = Date.now();
   await dom.emit('panel:authenticated');
   await flush();

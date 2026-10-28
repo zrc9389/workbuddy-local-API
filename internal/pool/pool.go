@@ -3,6 +3,7 @@
 package pool
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -60,7 +61,8 @@ type Pool struct {
 	idleWeightMax     float64
 	// preferExpiring 最早到期优先路由开关（默认 true）。开启且快过期窗口内存在有效
 	// 批次时，选号在成本层内先按最早到期排序；关闭后只使用普通加权路由。
-	preferExpiring bool
+	preferExpiring  bool
+	hardConcurrency bool
 	// maxInFlight 单账号最大在途请求数；0 = 不限（租约关闭）。
 	maxInFlight int
 	// maxInFlightGlobal global 域单账号在途上限分档（WAF 403 修复 P1-1：global 域
@@ -84,6 +86,12 @@ type Pool struct {
 }
 
 // defaultBreaker* 熔断器默认参数（FreeBuff2API 参考口径）。
+// DefaultAccountMaxInFlight 账号级默认硬并发上限（workbuddy2api-hub v1.8.0 公开规范）
+const DefaultAccountMaxInFlight = 3
+
+// AccountHardConcurrencyCap 单账号硬并发封顶阈值（严禁单一账号超过 3 并发打穿上游）
+const AccountHardConcurrencyCap = 3
+
 func New(stateFp string) *Pool {
 	p := &Pool{
 		byUID:              map[string]*entry{},
@@ -244,7 +252,11 @@ func (p *Pool) SetMaxInFlight(n int) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if n >= 0 {
-		p.maxInFlight = n
+		if p.hardConcurrency && n > AccountHardConcurrencyCap {
+			p.maxInFlight = AccountHardConcurrencyCap
+		} else {
+			p.maxInFlight = n
+		}
 	}
 }
 
@@ -261,14 +273,52 @@ func (p *Pool) SetMaxInFlightGlobal(n int) {
 // inFlightLimit 报告账号的生效在途上限（global 分档优先，回落 maxInFlight）；
 // 0 = 不限。调用方需已持 p.mu（或快照过 limit，见 Acquire）。
 func (p *Pool) inFlightLimit(e *entry) int {
-	if p.maxInFlightGlobal > 0 && e.a.Realm() == "global" {
-		return p.maxInFlightGlobal
+	limit := p.maxInFlight
+	if p.maxInFlightGlobal > 0 && e.a != nil && e.a.Realm() == "global" {
+		limit = p.maxInFlightGlobal
 	}
-	return p.maxInFlight
+	if p.hardConcurrency {
+		if limit <= 0 || limit > AccountHardConcurrencyCap {
+			return AccountHardConcurrencyCap
+		}
+	}
+	return limit
 }
 
-// SetStore 注入池状态快照镜像（redisstore.Store）。nil 表示不镜像（纯本地恢复）。
-// 必须在 SyncToDir 之前调用，使"择新恢复"发生在账号对齐之前。
+// EnforceHardConcurrency 启用账号级硬并发 3 保护（公开规范要求，封顶上限为 3）
+func (p *Pool) EnforceHardConcurrency() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.hardConcurrency = true
+	p.maxInFlight = DefaultAccountMaxInFlight
+}
+
+// IsHardConcurrencyEnforced 报告当前是否启用了硬并发限制
+func (p *Pool) IsHardConcurrencyEnforced() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.hardConcurrency
+}
+
+// HardConcurrencyStats 报告池级在途并发与硬上限可观测状态
+type HardConcurrencyStats struct {
+	Enforced          bool `json:"enforced"`
+	HardCap           int  `json:"hard_cap"`
+	MaxInFlight       int  `json:"max_in_flight"`
+	MaxInFlightGlobal int  `json:"max_in_flight_global"`
+}
+
+func (p *Pool) HardConcurrencyStats() HardConcurrencyStats {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return HardConcurrencyStats{
+		Enforced:          p.hardConcurrency,
+		HardCap:           AccountHardConcurrencyCap,
+		MaxInFlight:       p.maxInFlight,
+		MaxInFlightGlobal: p.maxInFlightGlobal,
+	}
+}
+
 func (p *Pool) SetStore(s StoreSnapshotter) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -283,13 +333,12 @@ func (p *Pool) SetStore(s StoreSnapshotter) {
 // （global 档 maxInFlightGlobal，P1-1；未设置回落 maxInFlight）。
 func (p *Pool) Acquire(uid string) bool {
 	p.mu.RLock()
+	defer p.mu.RUnlock()
 	e, ok := p.byUID[uid]
-	if !ok {
-		p.mu.RUnlock()
+	if !ok || e.deleting {
 		return false
 	}
 	limit := p.inFlightLimit(e)
-	p.mu.RUnlock()
 	if limit <= 0 {
 		// 不限：计数仍累加（供状态观测），但永不拒绝。
 		e.inFlight.Add(1)
@@ -307,6 +356,15 @@ func (p *Pool) Acquire(uid string) bool {
 }
 
 // Release 释放一个在途名额。幂等减到 0 为止（防重复释放扣成负数）。
+func (p *Pool) BeginAccountDeletion(uid string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e, ok := p.byUID[uid]; ok {
+		e.deleting = true
+		p.disableLocked(e, "account deletion pending")
+	}
+}
+
 func (p *Pool) Release(uid string) {
 	p.mu.RLock()
 	e, ok := p.byUID[uid]
@@ -376,6 +434,27 @@ func (p *Pool) Remove(uid string) *auth.Auth {
 	p.dirty.Store(true)
 	p.saveLocked()
 	return e.a
+}
+
+// RemoveChecked removes an account only when the updated local snapshot has
+// been persisted. On persistence failure it restores the in-memory entry.
+func (p *Pool) RemoveChecked(uid string) (*auth.Auth, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return nil, nil
+	}
+	delete(p.byUID, uid)
+	p.dirty.Store(true)
+	failures := p.persistFails
+	p.saveLocked()
+	if p.stateFp != "" && p.persistFails > failures {
+		p.byUID[uid] = e
+		p.dirty.Store(true)
+		return nil, errors.New("pool state persistence failed")
+	}
+	return e.a, nil
 }
 
 // upsertLocked 更新或插入单个账号；已存在则只换凭证、保留 credits/cooling 状态。

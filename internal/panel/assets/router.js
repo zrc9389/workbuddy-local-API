@@ -115,12 +115,16 @@ function beginStartup() {
   if (startupRun) return startupRun;
   let run = null;
   // onFinish fires when the 360ms exit starts, for both the timed path and skip.
-  const animation = startStartupAnimation({ onFinish: () => markStartupClosed(run) });
+  // Router owns the complete handoff so the workspace always opens before
+  // the overlay is destroyed, including at the hard deadline.
+  const animation = startStartupAnimation({ hardLimitMs: 0, onFinish: () => markStartupClosed(run) });
   const startedAt = Date.now();
   run = {
     animation, startedAt,
     deadline: startedAt + TARGET_MS,
+    // Reserve the fade-out window inside the advertised hard limit.
     hardDeadline: startedAt + HARD_LIMIT_MS,
+    dataDeadline: startedAt + Math.max(TARGET_MS, HARD_LIMIT_MS - STARTUP_EXIT_MS),
     generation: startupGeneration,
     playedFor: sessionGeneration,
     reduced: !animation.root,
@@ -139,12 +143,12 @@ function beginStartup() {
 async function driveStartup(run) {
   await sleepUntil(run.deadline);
   if (run.closed || run.skipped) return;
-  if (run.valuesPromise) await Promise.race([run.valuesPromise.catch(() => null), sleepUntil(run.hardDeadline)]);
+  if (run.valuesPromise) await Promise.race([run.valuesPromise.catch(() => null), sleepUntil(run.dataDeadline)]);
   if (run.closed || run.skipped) return;
   run.animation.setPhase('syncing');
   setBooting(false);
   enterWorkspace(run);
-  await delay(STARTUP_EXIT_MS);
+  await delay(Math.min(STARTUP_EXIT_MS, Math.max(0, run.hardDeadline - Date.now())));
   if (run.closed) return;
   run.animation.destroy();
 }
@@ -163,7 +167,7 @@ function attachStartupData(run) {
   // outlive the animation.
   const refreshController = new AbortController();
   startupRefreshAbort = refreshController;
-  const refreshCutoff = setTimeout(() => refreshController.abort(), Math.max(0, run.hardDeadline - Date.now()));
+  const refreshCutoff = setTimeout(() => refreshController.abort(), Math.max(0, run.dataDeadline - Date.now()));
   const refreshWork = import('./egress.js')
     .then(m => m.refreshSubscriptionsOnce?.({signal: refreshController.signal, timeoutMs: 4000}))
     .catch(() => null)
@@ -173,7 +177,7 @@ function attachStartupData(run) {
     });
   run.data = Promise.allSettled([
     loadCapabilities(),
-    bootstrapAccounts(run.hardDeadline),
+    bootstrapAccounts(run.dataDeadline),
     preferencesPromise,
     animationStylePromise,
     refreshWork,
@@ -189,7 +193,7 @@ function attachStartupData(run) {
     return run.data;
   }
   const generation = run.generation;
-  run.valuesPromise = withinStartupBudget(run.data, run.deadline).then(result => {
+  run.valuesPromise = withinStartupBudget(run.data, run.dataDeadline).then(result => {
     const values = result?.timed_out ? null : result;
     run.values = values;
     if (values && generation === startupGeneration && !run.closed) applyStartupValues(values);
@@ -267,8 +271,10 @@ $('btnRefresh').onclick = async () => {
   button.setAttribute('aria-busy', 'true');
   loading = true;
   try {
-    await api('balance_all', {method:'POST', body:'{}'});
-    await loadOverview(true);
+    const result = await api('refresh', {method:'POST', body:'{}'});
+    const failed = Object.entries(result.components || {}).filter(([, item]) => item?.ok !== true);
+    await Promise.allSettled([loadOverview(true), loadUsage({force:true}), loadPackages(), loadLogs()]);
+    if (!result.ok || failed.length) toast('刷新部分未完成：' + failed.map(([name]) => name).join('、'), 'err');
   }
   catch (error) { if (error.name !== 'AbortError') toast('账号刷新未完成：' + error.message, 'err'); }
   finally {

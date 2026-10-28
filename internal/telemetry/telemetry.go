@@ -3,9 +3,20 @@ package telemetry
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 	"time"
 )
+
+// AccountReference is a non-reversible stable association key for deletion and
+// retention. It does not expose the account UID in telemetry records.
+func AccountReference(uid string) string {
+	if uid == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("wb2-account:" + uid))
+	return fmt.Sprintf("sha256:%x", sum[:16])
+}
 
 // NewRequestID 生成不含用户信息的本地请求 ID。
 func NewRequestID() string {
@@ -34,6 +45,7 @@ type Event struct {
 	RequestID        string    `json:"request_id"`
 	Path             string    `json:"path"`
 	Account          string    `json:"account,omitempty"`
+	AccountRef       string    `json:"account_ref,omitempty"`
 	Model            string    `json:"model,omitempty"`
 	Status           int       `json:"status"`
 	OK               bool      `json:"ok"`

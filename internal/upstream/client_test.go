@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,15 @@ import (
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 )
+
+func TestChatStreamReaderContextReturnsMalformedEndpointError(t *testing.T) {
+	c := New()
+	c.ChatBaseCN = ":// malformed endpoint"
+	_, _, _, err := c.ChatStreamReaderContext(context.Background(), nil, strings.NewReader(`{"model":"x"}`), 13, "", ChatMeta{}, true)
+	if err == nil {
+		t.Fatal("expected malformed endpoint error")
+	}
+}
 
 func TestClassify(t *testing.T) {
 	cases := []struct {
@@ -648,5 +658,33 @@ func TestFetchModelsOverlaysV3ConfigCapabilities(t *testing.T) {
 	}
 	if got := strings.Join(mi.Efforts, ","); got != "low,high,max" {
 		t.Errorf("Efforts=%v want low,high,max", mi.Efforts)
+	}
+}
+
+func TestErrorClassificationMetricsObservability(t *testing.T) {
+	ResetClassificationMetrics()
+	defer ResetClassificationMetrics()
+
+	// 触发若干分类
+	Classify(429, "too many requests")
+	Classify(402, "insufficient credit")
+	Classify(500, "internal server error")
+	Classify(200, "ok") // ErrNone 不累加到错误度量中
+
+	m := GetClassificationMetrics()
+	if m.Total != 3 {
+		t.Fatalf("expected total 3 errors classified, got %d", m.Total)
+	}
+	if m.ByKind["soft_rate"] != 1 {
+		t.Errorf("expected 1 soft_rate, got %d", m.ByKind["soft_rate"])
+	}
+	if m.ByKind["hard_credit"] != 1 {
+		t.Errorf("expected 1 hard_credit, got %d", m.ByKind["hard_credit"])
+	}
+	if m.ByKind["server"] != 1 {
+		t.Errorf("expected 1 server, got %d", m.ByKind["server"])
+	}
+	if m.LastKind != "server" {
+		t.Errorf("expected last kind 'server', got %s", m.LastKind)
 	}
 }

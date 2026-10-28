@@ -51,13 +51,20 @@ func TestLocalPasswordLifecycle(t *testing.T) {
 	if w := call(r); w.Code != 401 {
 		t.Fatal("key granted admin", w.Code)
 	}
-	r = localRequest("POST", "/auth/login", `{"password":"wrong"}`)
-	if w := call(r); w.Code != 401 {
-		t.Fatal(w.Code)
+	// 严禁空密码登录：空密码必须报错 400
+	r = localRequest("POST", "/auth/login", `{"password":""}`)
+	if w := call(r); w.Code != 400 {
+		t.Fatalf("expected 400 for empty password, got %d", w.Code)
 	}
-	w := call(localRequest("POST", "/auth/login", `{"password":"123456"}`))
+	// 首次输入任意非空密码并持久化。
+	w := call(localRequest("POST", "/auth/login", `{"password":"initial-pass"}`))
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
+	}
+	// 设定后再次使用错误密码登录必须被拒绝 401
+	r = localRequest("POST", "/auth/login", `{"password":"wrong"}`)
+	if w := call(r); w.Code != 401 {
+		t.Fatalf("expected 401 for wrong password after initial setup, got %d", w.Code)
 	}
 	cookie := w.Result().Cookies()[0]
 	if cookie.MaxAge != int(sessionLifetime.Seconds()) {
@@ -89,7 +96,7 @@ func TestLocalPasswordLifecycle(t *testing.T) {
 	if w = call(r); w.Code != 403 {
 		t.Fatal("missing CSRF allowed", w.Code)
 	}
-	r = localRequest("POST", "/auth/password", `{"old_password":"123456","new_password":"test-password-2"}`)
+	r = localRequest("POST", "/auth/password", `{"old_password":"initial-pass","new_password":"test-password-2"}`)
 	r.AddCookie(cookie)
 	r.Header.Set("X-CSRF-Token", s.CSRF)
 	if w = call(r); w.Code != 200 {

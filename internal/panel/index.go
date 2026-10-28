@@ -9,7 +9,10 @@
 package panel
 
 import (
+	"crypto/rand"
 	"embed"
+	"encoding/base64"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -36,13 +39,49 @@ var assetFS embed.FS
 //   - form-action 'none'        页面无表单提交目标（配置页是 JS 提交）
 //   - frame-ancestors 'none'    禁止被任何站点 iframe 嵌套（点击劫持）
 //   - base-uri 'none'          禁止注入 <base> 改写相对路径
-const csp = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-	"connect-src 'self'; img-src 'self' data:; font-src 'self'; form-action 'none'; " +
-	"frame-ancestors 'none'; base-uri 'none'"
+const cspBase = "default-src 'none'; script-src 'self' %s; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; " +
+	"connect-src 'self'; img-src 'self' data:; font-src 'self'; media-src 'self' data: blob:; " +
+	"form-action 'none'; frame-ancestors 'none'; base-uri 'none'"
+
+func pageNonce() (string, error) {
+	b := make([]byte, 18)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func noncePage(src []byte, nonce string) []byte {
+	const open = "<script"
+	var out strings.Builder
+	text := string(src)
+	for {
+		i := strings.Index(text, open)
+		if i < 0 {
+			out.WriteString(text)
+			break
+		}
+		out.WriteString(text[:i])
+		rest := text[i:]
+		j := strings.Index(rest, ">")
+		if j < 0 {
+			out.WriteString(rest)
+			break
+		}
+		tag := rest[:j]
+		if !strings.Contains(tag, " nonce=") {
+			tag += " nonce=\"" + nonce + "\""
+		}
+		out.WriteString(tag)
+		out.WriteByte('>')
+		text = rest[j+1:]
+	}
+	return []byte(out.String())
+}
 
 // setSecurityHeaders 写入面板统一安全响应头（页面与 API 都要，API 也含 JSON 数据）。
 func setSecurityHeaders(w http.ResponseWriter) {
-	w.Header().Set("Content-Security-Policy", csp)
+	w.Header().Set("Content-Security-Policy", fmt.Sprintf(cspBase, "'none'"))
 	w.Header().Set("X-Content-Type-Options", "nosniff") // 禁 MIME 嗅探
 	w.Header().Set("X-Frame-Options", "DENY")           // 老浏览器兜底（CSP frame-ancestors 的等价项）
 	w.Header().Set("Referrer-Policy", "no-referrer")    // 不外泄面板地址给外部站点
@@ -53,9 +92,15 @@ func setSecurityHeaders(w http.ResponseWriter) {
 // index 输出面板页面（静态无秘密；数据接口 /panel/api/* 才走鉴权）。
 func (p *Panel) index(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
+	nonce, err := pageNonce()
+	if err != nil {
+		http.Error(w, "security nonce unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Security-Policy", fmt.Sprintf(cspBase, "'nonce-"+nonce+"'"))
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(indexHTML)
+	_, _ = w.Write(noncePage(indexHTML, nonce))
 }
 
 // appScript 输出前端逻辑（同源脚本，供 CSP script-src 'self' 加载）。

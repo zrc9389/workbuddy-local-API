@@ -439,7 +439,7 @@ function renderSubscriptionDetails() {
   if (!host) return;
   host.innerHTML = subscriptions.map(item => {
     const enabled = item.enabled !== false, id = String(item.id || '');
-    return '<article class="subscription-detail-row"><div class="subscription-detail-main"><strong>' + esc(item.name || id) + '</strong><span class="mono">' + esc(item.url_preview || (item.has_url ? '地址已保存' : '无地址')) + '</span></div><dl class="subscription-detail-facts"><div><dt>节点</dt><dd>' + esc(item.node_count ?? 0) + '</dd></div><div><dt>最近刷新</dt><dd>' + esc(item.last_refresh_at ? ago(item.last_refresh_at) : '未刷新') + '</dd></div></dl><div class="subscription-detail-actions"><button type="button" data-subscription-toggle="' + esc(id) + '" aria-pressed="' + enabled + '">' + (enabled ? '已启用' : '已停用') + '</button><button type="button" data-subscription-reveal="' + esc(id) + '">查看地址</button><button type="button" class="danger" data-subscription-delete="' + esc(id) + '">删除</button></div></article>';
+    return '<article class="subscription-detail-row"><div class="subscription-detail-main"><strong>' + esc(item.name || id) + '</strong><span class="mono">' + esc(item.url_preview || (item.has_url ? '地址已保存' : '无地址')) + '</span></div><dl class="subscription-detail-facts"><div><dt>节点</dt><dd>' + esc(item.node_count ?? 0) + '</dd></div><div><dt>最近刷新</dt><dd>' + esc(item.last_refresh_at ? ago(item.last_refresh_at) : '未刷新') + '</dd></div></dl><div class="subscription-detail-actions"><button type="button" data-subscription-toggle="' + esc(id) + '" aria-pressed="' + enabled + '">' + (enabled ? '已启用' : '已停用') + '</button><button type="button" data-subscription-reveal="' + esc(id) + '">查看地址预览</button><button type="button" class="danger" data-subscription-delete="' + esc(id) + '">删除</button></div></article>';
   }).join('') || '<div class="empty">尚无订阅</div>';
 }
 async function openSubscriptionDetails() {
@@ -541,17 +541,18 @@ async function bindAccountNode(node, uid = targetUID) {
 }
 // Refresh every enabled subscription once, strictly serially. Each item gets its
 // own AbortController and a short timeout; one failure never stops the rest. The
-// whole run shares a 12s ceiling so it can never outlive the startup animation.
+// whole run shares the startup hard deadline so it cannot outlive the overlay.
 // It only ever posts `{action:'refresh',id}` and never touches `meta/tests`.
 export async function refreshSubscriptionsOnce({ signal, timeoutMs = 8000 } = {}) {
   const failed = [], refreshed = [];
   const startedAt = Date.now();
   const itemTimeout = Math.min(4000, Math.max(500, Number(timeoutMs) || 8000));
-  const totalBudget = 12000;
+  // Keep subscription refresh within the router's 20s startup hard limit.
+  const totalBudget = 20000;
   const remainingBudget = () => totalBudget - (Date.now() - startedAt);
   let list = [];
   {
-    // The list read shares the 12s ceiling too; otherwise a stalled GET could
+    // The list read shares the same ceiling too; otherwise a stalled GET could
     // outlive the startup animation before the first POST is ever attempted.
     const controller = new AbortController(), onAbort = () => controller.abort();
     let timedOut = false;

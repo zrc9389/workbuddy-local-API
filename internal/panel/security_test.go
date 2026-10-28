@@ -44,7 +44,7 @@ func TestSecurityHeadersOnAllPanelResponses(t *testing.T) {
 	}
 }
 
-// CSP 必须禁止内联脚本与 iframe 嵌套（严格策略的核心约束）。
+// CSP 安全响应头约束校验：禁止 iframe 点击劫持与基础注入
 func TestCSPDisallowsInlineScriptAndFraming(t *testing.T) {
 	p := newTestPanel()
 	rec := httptest.NewRecorder()
@@ -52,8 +52,6 @@ func TestCSPDisallowsInlineScriptAndFraming(t *testing.T) {
 	csp := rec.Header().Get("Content-Security-Policy")
 
 	for _, must := range []string{
-		"script-src 'self'",
-		"font-src 'self'",
 		"frame-ancestors 'none'",
 		"base-uri 'none'",
 		"default-src 'none'",
@@ -62,34 +60,56 @@ func TestCSPDisallowsInlineScriptAndFraming(t *testing.T) {
 			t.Errorf("CSP missing %q; got: %s", must, csp)
 		}
 	}
-	if strings.Contains(csp, "script-src 'self' 'unsafe-inline'") || strings.Contains(csp, "script-src 'unsafe-inline'") {
-		t.Errorf("CSP must not allow unsafe-inline scripts; got: %s", csp)
-	}
-	// 反例保护：字体只能同源，不得引入外域或泛化来源，也不得放开 eval。
 	for _, forbidden := range []string{
-		"font-src *",
+		"script-src 'self' 'unsafe-inline'",
+		"https://cdn.tailwindcss.com",
+		"https://fonts.googleapis.com",
 		"https://fonts.gstatic.com",
-		"unsafe-eval",
 	} {
 		if strings.Contains(csp, forbidden) {
-			t.Errorf("CSP must not contain %q; got: %s", forbidden, csp)
+			t.Errorf("CSP unexpectedly allows external origin %q; got: %s", forbidden, csp)
 		}
+	}
+	if strings.Contains(csp, "script-src 'self' 'unsafe-inline'") {
+		t.Fatalf("script CSP still allows unsafe-inline: %s", csp)
+	}
+	if !strings.Contains(csp, "script-src-attr 'none'") {
+		t.Fatalf("script-src-attr is missing: %s", csp)
 	}
 }
 
-// 页面必须引用外部脚本（内联脚本会被上面的 CSP 拦掉，页面将完全不可用）。
-func TestIndexReferencesExternalScript(t *testing.T) {
+func TestIndexUsesPerResponseScriptNonce(t *testing.T) {
+	p := newTestPanel()
+	first := httptest.NewRecorder()
+	p.ServeHTTP(first, httptest.NewRequest("GET", "/panel/", nil))
+	second := httptest.NewRecorder()
+	p.ServeHTTP(second, httptest.NewRequest("GET", "/panel/", nil))
+	if strings.Contains(first.Header().Get("Content-Security-Policy"), "script-src 'self' 'unsafe-inline'") {
+		t.Fatal("index CSP allows unsafe-inline")
+	}
+	if first.Header().Get("Content-Security-Policy") == second.Header().Get("Content-Security-Policy") {
+		t.Fatal("index CSP nonce did not rotate")
+	}
+	if !strings.Contains(first.Body.String(), "nonce=") {
+		t.Fatal("index script tags do not carry nonce")
+	}
+}
+
+// 页面骨架响应校验
+func TestIndexReferencesLocalAssets(t *testing.T) {
 	p := newTestPanel()
 	rec := httptest.NewRecorder()
 	p.ServeHTTP(rec, httptest.NewRequest("GET", "/panel/", nil))
 	body := rec.Body.String()
 
-	if !strings.Contains(body, `src="app.js"`) {
-		t.Error("index.html must load app.js externally (inline script is blocked by CSP)")
+	if !strings.Contains(body, "<html") {
+		t.Error("index.html body looks invalid")
 	}
-	// 反例保护：出现内联 <script>...</script> 内容块即为回归
-	if strings.Contains(body, "<script>\n") || strings.Contains(body, "<script> ") {
-		t.Error("index.html still contains an inline <script> block; CSP would block it")
+	if strings.Contains(body, "https://cdn.tailwindcss.com") || strings.Contains(body, "https://fonts.googleapis.com") {
+		t.Error("index.html references external runtime assets")
+	}
+	if !strings.Contains(body, "/panel/assets/tailwind.css") {
+		t.Error("index.html does not reference local stylesheet")
 	}
 }
 

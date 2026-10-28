@@ -1,15 +1,766 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark light">
-<title>WorkBuddy Local · 本机工作台</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23201b18'/%3E%3Cpath d='m6 10 4 13 6-9 6 9 4-13' stroke='%23d47756' stroke-width='3' fill='none'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/panel/assets/styles.css">
-<script type="module" src="/panel/assets/ambient.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WorkBuddy — Local Workspace</title>
+    <link rel="stylesheet" href="/panel/assets/tailwind.css">
+    <link rel="stylesheet" href="/panel/assets/styles.css">
+    <script type="module" src="/panel/app.js"></script>
+    <style>
+        :root {
+            --bg-dark: #050605;
+            --text-main: #e6eae8;
+            --ui-scale: 1;
+            --page-scale: 1;
+        }
+
+        * {
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: 'JetBrains Mono', monospace;
+            overflow: hidden;
+        }
+
+        /* 自适应缩放容器工具 */
+        .scalable-ui {
+            transform: scale(var(--ui-scale));
+        }
+
+        /* 顶部中央天气栏独立居中缩放，不受左右两侧宽度变化影响 */
+        .scalable-center-top {
+            transform: translateX(-50%) scale(var(--ui-scale));
+            transform-origin: top center;
+        }
+
+        /* 老虎机数字滚轮窗口 */
+        .digit-window {
+            height: 148px;
+            width: 102px;
+            overflow: hidden;
+            position: relative;
+            display: inline-block;
+        }
+
+        .digit-strip {
+            display: flex;
+            flex-direction: column;
+            will-change: transform;
+        }
+
+        .digit-item {
+            height: 148px;
+            width: 102px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: 140px;
+            font-weight: 500;
+            line-height: 1;
+            color: #ffffff;
+            position: relative;
+            letter-spacing: -0.03em;
+        }
+
+        /* 数字 0 中心圆点还原原版几何字体特征 */
+        .digit-zero::after {
+            content: '';
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            background-color: #ffffff;
+            border-radius: 50%;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        /* 扫描线微纹理 */
+        .scanline-overlay {
+            pointer-events: none;
+            background: repeating-linear-gradient(
+                0deg,
+                rgba(255, 255, 255, 0.018) 0px,
+                rgba(255, 255, 255, 0.018) 1px,
+                transparent 1px,
+                transparent 3px
+            );
+        }
+
+        #project-labels-layer { pointer-events: none !important; }
+        /* 悬停项目文字标签样式 */
+        .project-dom-label {
+            position: absolute;
+            pointer-events: none;
+            white-space: nowrap;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            font-weight: 500;
+            letter-spacing: 0.08em;
+            color: rgba(255, 255, 255, 0.92);
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.95), 0 0 3px rgba(0, 0, 0, 0.9);
+            transform: translate(-50%, -50%);
+            transition: color 0.2s ease, text-shadow 0.2s ease, opacity 0.25s ease;
+            will-change: transform, left, top, opacity;
+        }
+
+        .project-dom-label.hovered {
+            color: #ffffff;
+            text-shadow: 0 0 14px rgba(255, 255, 255, 0.95), 0 2px 10px rgba(0, 0, 0, 1);
+        }
+
+        /* 顶部天气切换按钮样式 */
+        .weather-btn {
+            position: relative;
+            padding: 4px 10px;
+            font-size: 10px;
+            letter-spacing: 0.14em;
+            color: rgba(255, 255, 255, 0.55);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: rgba(8, 12, 10, 0.35);
+            backdrop-filter: blur(6px);
+            transition: color 0.25s ease, border-color 0.25s ease, background-color 0.25s ease, box-shadow 0.25s ease;
+            white-space: nowrap;
+        }
+
+        .weather-btn:hover {
+            color: rgba(255, 255, 255, 0.92);
+            border-color: rgba(255, 255, 255, 0.38);
+        }
+
+        .weather-btn.active {
+            color: #ffffff;
+            border-color: rgba(255, 255, 255, 0.78);
+            background: rgba(255, 255, 255, 0.12);
+            box-shadow: 0 0 12px rgba(255, 255, 255, 0.15);
+        }
+    
+        /* 进度条快速滑动的流光特效 (与录屏视频完全一致) */
+        .shimmer-fast-beam {
+            position: absolute;
+            top: 0; bottom: 0;
+            width: 32px;
+            background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.45) 40%, #ffffff 60%, rgba(255, 255, 255, 0.45) 80%, transparent 100%);
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.9);
+            animation: fastShimmerSlide 0.95s cubic-bezier(0.25, 0.1, 0.25, 1) infinite;
+            pointer-events: none;
+        }
+        @keyframes fastShimmerSlide {
+            0% { transform: translateX(-40px); }
+            100% { transform: translateX(145px); }
+        }
+
+
+        /* 登录失败震动与警示红框特效 */
+        
+
+        @keyframes accessDeniedShake {
+            0%, 100% { transform: translateX(0); }
+            15%, 55%, 85% { transform: translateX(-6px); }
+            35%, 70% { transform: translateX(6px); }
+        }
+        
+        @keyframes canvasFaultJolt {
+            0%, 100% { transform: translate(0, 0); }
+            15% { transform: translate(-5px, 3px); }
+            30% { transform: translate(4px, -4px); }
+            45% { transform: translate(-4px, -2px); }
+            60% { transform: translate(5px, 2px); }
+            75% { transform: translate(-2px, 3px); }
+            90% { transform: translate(3px, -1px); }
+        }
+        .canvas-fault-jolt {
+            animation: canvasFaultJolt 460ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both !important;
+        }
+
+        .access-denied-shake {
+            animation: accessDeniedShake 460ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+        }
+                /* 密码输入框透明黑与防浏览器高亮发白 */
+        /* 密码输入框：无论输入或不输入、聚焦或失焦，恒定维持原样半透明，不发白不变色 */
+        #input-access-key,
+        #input-access-key:focus,
+        #input-access-key:active,
+        #input-access-key:hover {
+            background: rgba(0, 0, 0, 0.60) !important;
+            background-color: rgba(0, 0, 0, 0.60) !important;
+            border: 1px solid rgba(255, 255, 255, 0.20) !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.20) !important;
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+            outline: none !important;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.8) !important;
+            -webkit-box-shadow: 0 0 20px rgba(0, 0, 0, 0.8) !important;
+            transition: none !important;
+        }
+
+        #input-access-key::placeholder {
+            color: rgba(255, 255, 255, 0.35) !important;
+            -webkit-text-fill-color: rgba(255, 255, 255, 0.35) !important;
+        }
+
+        /* 仅在密码报错时晃动并红框提示 */
+        #input-access-key.access-denied-border {
+            border-color: #ff5c74 !important;
+            border-bottom-color: #ff5c74 !important;
+            box-shadow: 0 0 20px rgba(255, 92, 116, 0.45) !important;
+            -webkit-box-shadow: 0 0 20px rgba(255, 92, 116, 0.45) !important;
+            color: #ff5c74 !important;
+            -webkit-text-fill-color: #ff5c74 !important;
+        }
+
+        #input-access-key:-webkit-autofill,
+        #input-access-key:-webkit-autofill:hover, 
+        #input-access-key:-webkit-autofill:focus, 
+        #input-access-key:-webkit-autofill:active {
+            -webkit-box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.6) inset !important;
+            box-shadow: 0 0 0 1000px rgba(0, 0, 0, 0.6) inset !important;
+            -webkit-text-fill-color: #ffffff !important;
+            caret-color: #ffffff !important;
+            transition: background-color 5000s ease-in-out 0s !important;
+        }
+
+        /* 错误时覆盖 autofill 颜色与阴影 */
+        #input-access-key.access-denied-border,
+        #input-access-key.access-denied-border:-webkit-autofill,
+        .access-denied-border {
+            border-color: #ff5c74 !important;
+            box-shadow: 0 0 24px rgba(255, 92, 116, 0.45) !important;
+            color: #ff5c74 !important;
+        }
+
+        /* Comment 12: 迷你折线图由快到慢、由左到右蔓延展开动画 */
+        @keyframes miniSparkSpread {
+            0% { width: 0px; }
+            100% { width: 78px; }
+        }
+        .svg-mini-clip-rect {
+            animation: miniSparkSpread 620ms cubic-bezier(0.12, 0.96, 0.24, 1) both;
+        }
+
+        /* 任务状态与进度平滑过渡 */
+        .task-state-smooth {
+            transition: opacity 350ms ease, color 350ms ease, background-color 350ms ease, width 350ms ease;
+        }
+
+        /* ==================== 画廊级大留白排版系统 (Editorial Negative Space) ==================== */
+        button:focus, button:focus-visible {
+            outline: none !important;
+            box-shadow: none !important;
+        }
+
+        /* 整体放大缩小等比视口壳层（预留外层顶栏安全高度，任何宽高比均零重叠等比缩放） */
+        #project-page-view {
+            padding-top: calc(58px * var(--ui-scale));
+            padding-bottom: calc(14px * var(--ui-scale));
+        }
+        .editorial-scale-shell {
+            width: 1100px;
+            height: 664px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            transform: scale(var(--page-scale));
+            transform-origin: center center;
+            will-change: transform;
+            flex-shrink: 0;
+        }
+
+        /* Comment 13: 章节导航不加白框与底部横线，仅字体高亮 */
+        .chapter-link {
+            position: relative;
+            padding: 4px 0;
+            font-size: 11px;
+            letter-spacing: 0.12em;
+            color: rgba(255, 255, 255, 0.36);
+            transition: color 0.22s ease;
+            white-space: nowrap;
+            cursor: pointer;
+            background: transparent;
+            border: none;
+            outline: none !important;
+        }
+        .chapter-link:hover {
+            color: rgba(255, 255, 255, 0.82);
+        }
+        .chapter-link.active {
+            color: #ffffff;
+            font-weight: 500;
+        }
+
+        /* Comment 1: 底部操作按钮固定左右括号宽度与中间名称槽位宽度，彻底消除切换闪烁 */
+        .editorial-action-btn {
+            min-width: 176px;
+            height: 34px;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            gap: 4px;
+            padding: 0 14px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10.5px;
+            letter-spacing: 0.12em;
+            white-space: nowrap;
+            cursor: pointer;
+            transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+        }
+        .editorial-action-btn:hover {
+            border-color: rgba(255, 255, 255, 0.95);
+            color: #ffffff;
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+        .editorial-action-btn:hover {
+            border-color: rgba(255, 255, 255, 0.95);
+            color: #ffffff;
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+        .editorial-action-btn .btn-bracket {
+            color: rgba(255, 255, 255, 0.4);
+            pointer-events: none;
+            flex-shrink: 0;
+            padding: 0 2px;
+        }
+        .editorial-action-btn .btn-mid {
+            flex: 1;
+            text-align: center;
+            overflow: hidden;
+            pointer-events: none;
+            font-variant-numeric: tabular-nums;
+            display: inline-block;
+            padding: 0 2px;
+        }
+
+        /* Comment 12: 线性图表从左向右由快到慢快速蔓延入场动画 */
+        @keyframes svgClipSpread {
+            0% { width: 0px; }
+            100% { width: 540px; }
+        }
+        .svg-clip-spread-rect {
+            animation: svgClipSpread 720ms cubic-bezier(0.12, 0.96, 0.24, 1) both;
+        }
+
+        /* Comment 10: 任务进度条白线推进与 1/9 处突然冒红动画 */
+        @keyframes taskOkGrow {
+            0% { transform: scaleX(0); }
+            100% { transform: scaleX(1); }
+        }
+        @keyframes taskFaultBurst {
+            0%, 42% { opacity: 0; transform: scaleX(0); }
+            56% { opacity: 1; transform: scaleX(1.08); }
+            100% { opacity: 1; transform: scaleX(1); }
+        }
+        .task-bar-grow {
+            transform-origin: left center;
+            animation: taskOkGrow 460ms cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+        .task-fault-pop {
+            transform-origin: left center;
+            animation: taskFaultBurst 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+        }
+
+        .editorial-row {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            transition: border-color 0.22s ease;
+            padding-bottom: 0.65rem;
+            padding-top: 0.65rem;
+        }
+        .editorial-row:hover {
+            border-bottom-color: rgba(255, 255, 255, 0.34);
+        }
+
+        .editorial-tab {
+            font-size: 10.5px;
+            letter-spacing: 0.14em;
+            color: rgba(255, 255, 255, 0.38);
+            padding-bottom: 3px;
+            border-bottom: 1px solid transparent;
+            transition: color 0.2s ease, border-color 0.2s ease;
+            cursor: pointer;
+            background: transparent;
+        }
+        .editorial-tab:hover {
+            color: rgba(255, 255, 255, 0.82);
+        }
+        .editorial-tab.active {
+            color: #ffffff;
+            border-bottom-color: rgba(255, 255, 255, 0.85);
+        }
+
+        .editorial-input {
+            background: transparent;
+            border: none;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+            color: #ffffff;
+            padding: 6px 0;
+            font-size: 12px;
+            letter-spacing: 0.1em;
+            outline: none;
+            transition: border-color 0.25s ease;
+            user-select: text;
+        }
+        .editorial-input:focus {
+            border-bottom-color: rgba(255, 255, 255, 0.88);
+        }
+
+        .editorial-text-btn {
+            font-size: 10.5px;
+            letter-spacing: 0.14em;
+            color: rgba(255, 255, 255, 0.50);
+            transition: color 0.2s ease;
+            cursor: pointer;
+            background: transparent;
+            border: none;
+            padding: 2px 0;
+            white-space: nowrap;
+        }
+        .editorial-text-btn:hover:not(:disabled) {
+            color: #ffffff;
+        }
+        .editorial-text-btn:disabled {
+            opacity: 0.25;
+            cursor: default;
+        }
+
+        .selectable-text {
+            user-select: text;
+        }
+
+        /* 隐藏数字输入框原生上下微调箭头 (Comment 15) */
+        input[type="number"]::-webkit-outer-spin-button,
+        input[type="number"]::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        input[type="number"] {
+            -moz-appearance: textfield;
+            appearance: textfield;
+        }
+
+        /* 界面柔和过渡动画：零高度跳动、丝滑微浮渐显 */
+        /* 画廊级单行末字平滑渐隐截断系统：超出最大长度时最后一个字柔和渐隐淡出，杜绝文字溢出与重叠 */
+        .fade-truncate {
+            white-space: nowrap !important;
+            overflow: hidden !important;
+            text-overflow: clip !important;
+            -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent 100%);
+            mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent 100%);
+        }
+
+        /* 界面平滑渐显：纯透明度过渡，绝对零位移、零字体跳动 */
+        @keyframes editorialSoftSwap {
+            0% { opacity: 0; }
+            100% { opacity: 1; }
+        }
+        .editorial-soft-swap {
+            animation: editorialSoftSwap 160ms ease-out both;
+        }
+        @keyframes editorialKpiFade {
+            0% { opacity: 0.32; }
+            100% { opacity: 1; }
+        }
+        .editorial-kpi-fade {
+            animation: editorialKpiFade 220ms ease-out both;
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .editorial-soft-swap, .editorial-kpi-fade, .svg-clip-spread-rect, .task-bar-grow, .task-fault-pop {
+                animation: none !important;
+            }
+        }
+
+        .tabular-nums-left {
+            font-variant-numeric: tabular-nums;
+            text-align: left;
+        }
+
+        /* 克制雅致的非正常状态微光色阶 (Comment 3, 4, 7, 8) */
+        .tone-normal {
+            color: rgba(255, 255, 255, 0.72);
+        }
+        .tone-guard {
+            color: #f0c987;
+        }
+        .tone-paused {
+            color: #9ab6d8;
+        }
+        .tone-forced {
+            color: #98dfc2;
+        }
+        .tone-fault {
+            color: #ff5c74;
+            text-shadow: 0 0 10px rgba(255, 92, 116, 0.24);
+        }
+
+    
+        
+
+        
+
+        
+
+        /* 个性化列表操作按钮与激活标签：字体、尺寸、字间距绝对对齐防抖 */
+        .cust-act-lbl {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif !important;
+            font-size: 12px !important;
+            line-height: 1 !important;
+            letter-spacing: 0 !important;
+            text-align: center !important;
+            user-select: none !important;
+            white-space: nowrap !important;
+            display: inline-block !important;
+            width: 28px !important;
+            box-sizing: border-box !important;
+            color: #98dfc2 !important;
+        }
+        .cust-act-btn {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif !important;
+            font-size: 12px !important;
+            line-height: 1 !important;
+            letter-spacing: 0 !important;
+            text-align: center !important;
+            background: transparent !important;
+            border: none !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            cursor: pointer !important;
+            white-space: nowrap !important;
+            display: inline-block !important;
+            width: 28px !important;
+            box-sizing: border-box !important;
+            transition: color 0.2s ease !important;
+        }
+
+        /* 文本溢出平滑渐隐 */
+        .fade-out-tail {
+            overflow: hidden !important;
+            white-space: nowrap !important;
+            text-overflow: clip !important;
+            mask-image: linear-gradient(to right, #000000 calc(100% - 100% / 9), transparent 100%) !important;
+            -webkit-mask-image: linear-gradient(to right, #000000 calc(100% - 100% / 9), transparent 100%) !important;
+        }
+
+        #custom-music-name-input,
+        #custom-music-name-input:focus,
+        #custom-music-name-input:active {
+            background: transparent !important;
+            background-color: transparent !important;
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+            box-shadow: none !important;
+            -webkit-box-shadow: none !important;
+        }
+
+    
+        /* Comment 4: OAuth 授权中黄色微光呼吸动画 */
+        @keyframes oauthGlowPulse {
+            0%, 100% {
+                opacity: 1;
+                filter: drop-shadow(0 0 6px rgba(250, 204, 21, 0.75));
+            }
+            50% {
+                opacity: 0.55;
+                filter: drop-shadow(0 0 2px rgba(250, 204, 21, 0.2));
+            }
+        }
+        .oauth-polling-pulse {
+            animation: oauthGlowPulse 1.2s infinite ease-in-out;
+            color: #facc15 !important;
+        }
+
+        /* Comment 2 & 3: 授权与订阅输入验证中黄色轻微晃动动效 (左右位移仅 2px~3px 平滑晃动) */
+        @keyframes verifyingSway {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-2.5px); }
+            75% { transform: translateX(2.5px); }
+        }
+        .input-verifying-sway,
+        .editorial-input.input-verifying-sway,
+        .editorial-input.input-verifying-sway:focus {
+            border-bottom-color: #facc15 !important;
+            border-color: #facc15 !important;
+            animation: verifyingSway 240ms ease-in-out infinite;
+        }
+
+        /* Comment 5: 订阅导入错误高亮抖动效果 (下边框变红并颤抖) */
+        .input-error-shake,
+        .editorial-input.input-error-shake,
+        .editorial-input.input-error-shake:focus {
+            border-bottom-color: #ff5c74 !important;
+            border-color: #ff5c74 !important;
+            animation: accessDeniedShake 460ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+        }
+
+        /* Comment 1 & 4: 输入校验成功绿色下划线反馈动效 */
+        .input-success-green,
+        .editorial-input.input-success-green,
+        .editorial-input.input-success-green:focus {
+            border-bottom-color: #4ade80 !important;
+            border-color: #4ade80 !important;
+        }
+
+        #custom-music-name-input::placeholder,
+        #custom-slogan-name-input::placeholder {
+            color: rgba(255, 255, 255, 0.35) !important;
+            -webkit-text-fill-color: rgba(255, 255, 255, 0.35) !important;
+            opacity: 1 !important;
+        }
+        #custom-music-name-input,
+        #custom-slogan-name-input {
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+        }
+
+        /* 彻底根除所有输入框、文本域点击与获得焦点时浏览器高亮发白 */
+        input, textarea, select, .editorial-input {
+            background: transparent !important;
+            background-color: transparent !important;
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.28) !important;
+            outline: none !important;
+            box-shadow: none !important;
+            -webkit-box-shadow: none !important;
+            user-select: text !important;
+        }
+
+        input:focus, textarea:focus, select:focus, .editorial-input:focus,
+        input:active, textarea:active, select:active, .editorial-input:active {
+            background: transparent !important;
+            background-color: transparent !important;
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.85) !important;
+            outline: none !important;
+            box-shadow: none !important;
+            -webkit-box-shadow: none !important;
+        }
+
+        /* WebKit / Chrome 原生 Autofill 强制半透明深色黑底，杜绝变成刺眼亮白色 */
+        input:-webkit-autofill,
+        input:-webkit-autofill:hover, 
+        input:-webkit-autofill:focus, 
+        input:-webkit-autofill:active,
+        textarea:-webkit-autofill,
+        textarea:-webkit-autofill:hover,
+        textarea:-webkit-autofill:focus,
+        textarea:-webkit-autofill:active {
+            -webkit-box-shadow: 0 0 0 1000px #080b09 inset !important;
+            box-shadow: 0 0 0 1000px #080b09 inset !important;
+            -webkit-text-fill-color: #ffffff !important;
+            color: #ffffff !important;
+            transition: background-color 5000s ease-in-out 0s !important;
+            background: transparent !important;
+        }
+
+        /* 占位符统一呈半透明灰色 */
+        input::placeholder, textarea::placeholder, .editorial-input::placeholder {
+            color: rgba(255, 255, 255, 0.35) !important;
+            -webkit-text-fill-color: rgba(255, 255, 255, 0.35) !important;
+        }
+
+        /* 第二个按钮点击瞬间高亮白一下，随后立即变回半透明 */
+        #btn-page-ripple {
+            background-color: rgba(255, 255, 255, 0.04) !important;
+            border-color: rgba(255, 255, 255, 0.22) !important;
+            color: rgba(255, 255, 255, 0.75) !important;
+            transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease !important;
+        }
+        #btn-page-ripple:hover {
+            border-color: rgba(255, 255, 255, 0.65) !important;
+            color: rgba(255, 255, 255, 0.95) !important;
+            background-color: rgba(255, 255, 255, 0.08) !important;
+        }
+        #btn-page-ripple:focus,
+        #btn-page-ripple:focus-visible {
+            outline: none !important;
+            box-shadow: none !important;
+        }
+        .btn-flash-white {
+            background-color: #ffffff !important;
+            color: #050605 !important;
+            border-color: #ffffff !important;
+        }
+        .btn-flash-white .btn-bracket,
+        .btn-flash-white .btn-mid {
+            color: #050605 !important;
+        }
+
+    
+        /* 授权回调地址输入框：默认半透明浅白下划线，点击输入时变高亮纯白 */
+        #inp-oauth-callback-url {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.35) !important;
+            transition: border-bottom-color 0.2s ease !important;
+        }
+        #inp-oauth-callback-url:focus,
+        #inp-oauth-callback-url:active {
+            border-bottom: 1px solid #ffffff !important;
+            border-bottom-color: #ffffff !important;
+        }
+        #inp-oauth-callback-url.input-verifying-sway,
+        #inp-oauth-callback-url.input-verifying-sway:focus,
+        #inp-oauth-callback-url.input-verifying-sway:active {
+            border-bottom-color: #facc15 !important;
+            border-color: #facc15 !important;
+            animation: verifyingSway 240ms ease-in-out infinite !important;
+        }
+        #inp-oauth-callback-url.input-error-shake,
+        #inp-oauth-callback-url.input-error-shake:focus,
+        #inp-oauth-callback-url.input-error-shake:active {
+            border-bottom-color: #ff5c74 !important;
+            border-color: #ff5c74 !important;
+            animation: accessDeniedShake 460ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both !important;
+        }
+        #inp-oauth-callback-url.input-success-green,
+        #inp-oauth-callback-url.input-success-green:focus,
+        #inp-oauth-callback-url.input-success-green:active {
+            border-bottom-color: #4ade80 !important;
+            border-color: #4ade80 !important;
+        }
+
+    
+        /* 导入/导出 JSON 配置按钮动态交互规范 (Comment 1) */
+        .json-btn-busy {
+            color: #facc15 !important;
+            text-shadow: 0 0 8px rgba(250, 204, 21, 0.45) !important;
+            animation: jsonBtnSlowPulse 1.8s ease-in-out infinite !important;
+        }
+        .json-btn-success {
+            color: #34d399 !important;
+            text-shadow: 0 0 10px rgba(52, 211, 153, 0.5) !important;
+            transition: color 0.25s ease !important;
+        }
+        .json-btn-error {
+            color: #ff5c74 !important;
+            text-shadow: 0 0 10px rgba(255, 92, 116, 0.5) !important;
+            animation: jsonBtnFaultShake 0.45s ease-in-out !important;
+        }
+        @keyframes jsonBtnSlowPulse {
+            0%, 100% { opacity: 1; color: #facc15; }
+            50% { opacity: 0.45; color: #facc15; }
+        }
+        @keyframes jsonBtnFaultShake {
+            0% { transform: translateX(0); }
+            20% { transform: translateX(-4px); }
+            40% { transform: translateX(4px); }
+            60% { transform: translateX(-3px); }
+            80% { transform: translateX(2px); }
+            100% { transform: translateX(0); }
+        }
+
+</style>
 </head>
-<body class="is-booting">
+<body class="relative w-screen h-screen overflow-hidden select-none bg-[#050605]">
+<div id="v02-compatibility-layer" style="display:none;" aria-hidden="true">
 <!-- ===== ambient shell: 底色 / 光场 / 细流，z-index 0-2 ===== -->
 <div class="atmosphere" aria-hidden="true"><div class="fluid fluid-one"></div><div class="fluid fluid-two"></div><div class="grain"></div></div>
 <a class="skip-link" href="#content">跳到内容</a>
@@ -192,8 +943,248 @@
 <div class="veil" id="reqDetailVeil" inert><section class="modal req-detail-modal" role="dialog" aria-modal="true" aria-labelledby="reqDetailTitle"><div class="card-heading"><div><h2 id="reqDetailTitle">错误详情</h2></div><button id="btnCloseReqDetail" type="button" class="ghost" data-modal-close>关闭 ×</button></div><div id="reqDetailBody" class="req-detail-body"></div></section></div>
 <div class="veil" id="taskFailureVeil" inert><section class="modal" role="dialog" aria-modal="true" aria-labelledby="taskFailureTitle"><div class="card-heading"><h2 id="taskFailureTitle">失败详情</h2><button id="btnCloseTaskFailures" type="button" class="ghost" data-modal-close>关闭 ×</button></div><div id="taskFailureBody" class="job-accounts"></div></section></div>
 <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
-<script type="module" src="app.js"></script>
-<script type="module" src="/panel/assets/boot-guard.js"></script>
-<script type="module" src="/panel/assets/overview.js"></script>
+</div>
+
+
+    <!-- ==================== 顶部固定导航栏 ==================== -->
+    <header class="fixed top-0 left-0 w-full px-7 py-6 flex justify-between items-start z-50 pointer-events-none">
+        <!-- 左上角品牌标识 -->
+        <div class="pointer-events-auto scalable-ui origin-top-left">
+            <h1 class="text-white text-[15px] font-medium tracking-tight leading-none mb-2 font-['Space_Grotesk']">
+                WorkBuddy
+            </h1>
+            <div class="flex items-center space-x-2 text-[9.5px] tracking-[0.16em] text-neutral-400">
+                <span class="inline-block w-3 h-[1px] bg-neutral-500"></span>
+                <span id="role-tag">[ LOCAL CONTROL MESH ]</span>
+            </div>
+        </div>
+
+        <!-- 顶部中央：自然天气切换栏（已移除蓝调时刻，采用绝对居中定位彻底杜绝右侧按钮变化引起的抖动） -->
+        <div id="weather-switcher" style="display: none !important;" class="pointer-events-auto hidden items-center space-x-2 absolute left-1/2 top-6 scalable-center-top">
+            <span class="text-[9px] tracking-[0.18em] text-white/50 mr-1 hidden sm:inline">[ WEATHER ]</span>
+            <button data-weather="overcast" class="weather-btn active">[ 阴天 ]</button>
+            <button data-weather="night" class="weather-btn">[ 夜晚 ]</button>
+            <button data-weather="dusk" class="weather-btn">[ 黄昏 ]</button>
+        </div>
+
+        <!-- 右上角音频与关于控制栏（固定 Mute 标签宽度，防止切换 Unmute 时宽度伸缩） -->
+        <div id="top-right-controls" class="pointer-events-auto hidden items-center space-x-3 text-xs tracking-wider text-neutral-300 scalable-ui origin-top-right">
+            <button id="btn-mute" class="flex items-center space-x-2 hover:text-white transition-colors py-1 px-2">
+                <canvas id="sound-wave-canvas" width="22" height="12" class="opacity-85 shrink-0"></canvas>
+                <span id="mute-label" class="inline-block w-[48px] text-left">Mute</span>
+            </button>
+            <span class="text-neutral-500">—</span>
+            <button id="btn-refresh-all" class="hover:text-white transition-colors py-1 px-2" title="全局数据刷新 [ 账号池 / 积分用量 / 积分构成 / 错误记录 ]">
+                刷新
+            </button>
+            <span class="text-neutral-500">—</span>
+            <button id="btn-about" class="hover:text-white transition-colors py-1 px-2">
+                关于
+            </button>
+        </div>
+    </header>
+
+    <!-- ==================== 阶段 1 & 2：方块中心点阵列 + 数字滚轮 + 声音入口 ==================== -->
+    <div id="intro-layer" class="fixed inset-0 z-40 bg-[#050605] flex flex-col justify-center items-center transition-opacity duration-700">
+        
+        <!-- 底层全屏交互式“方块+中心点”矩阵 Canvas -->
+        <canvas id="intro-grid-canvas" class="absolute inset-0 w-full h-full z-0"></canvas>
+
+        <!-- 阶段 1：数字滚轮计数器 (严格 000 -> 100 -> 极速回滚至 000) -->
+        <div id="counter-box" class="relative z-10 flex items-center justify-center space-x-1 pointer-events-none transition-opacity duration-300 scalable-ui origin-center">
+            <div class="digit-window"><div id="strip-0" class="digit-strip"></div></div>
+            <div class="digit-window"><div id="strip-1" class="digit-strip"></div></div>
+            <div class="digit-window"><div id="strip-2" class="digit-strip"></div></div>
+        </div>
+
+        <!-- 阶段 2：密码输入框与确认进入入口 -->
+        <div id="prompt-box" class="relative z-10 hidden flex-col items-center text-center px-4 opacity-0 transition-opacity duration-500 scalable-ui origin-center">
+            <p id="prompt-subtitle" class="text-white text-base font-normal tracking-[0.22em] text-neutral-300 uppercase mb-5 font-['Space_Grotesk']">
+                LOCAL CONTROL MESH // SECURE ACCESS
+            </p>
+            <!-- 密码输入与确认容器 (点击进入后先以中等速度渐隐) -->
+            <div id="password-container" class="flex flex-col items-center gap-4 transition-all duration-400 ease-out">
+                <div class="relative w-[320px]">
+                    <input id="input-access-key" type="password" placeholder="ENTER ACCESS KEY" autocomplete="new-password" value="" autofocus
+                           class="w-full h-11 bg-black/60 border border-white/20 rounded-none px-4 text-center text-white font-mono text-xs tracking-[0.25em] outline-none shadow-[0_0_20px_rgba(0,0,0,0.8)]">
+                </div>
+                <!-- 保留鼠标靠近时字符随机转变 (scrambleText) 的密码确认按钮 -->
+                <button id="btn-enter-system" class="group border border-white/30 hover:border-white/90 bg-white/5 hover:bg-white/10 transition-all py-2.5 px-7 text-[11px] tracking-[0.2em] text-white font-mono cursor-pointer" data-text="[ ACCESS WORKSPACE ]">
+                    [ ACCESS WORKSPACE ]
+                </button>
+            </div>
+            <p id="password-hint" class="text-[9px] font-mono tracking-[0.16em] text-neutral-500 mt-4 transition-opacity duration-300">
+                PRESS ENTER OR CLICK TO DECRYPT
+            </p>
+        </div>
+
+        <!-- 左下角：加载状态文字在上方 + 底部带极速滑动流光的微型进度条 (对齐录屏视频) -->
+        <div id="intro-bottom-left" class="fixed bottom-6 left-7 z-20 flex flex-col space-y-1.5 pointer-events-none scalable-ui origin-bottom-left">
+            <div class="text-[9.5px] tracking-[0.16em] text-neutral-300 font-mono">
+                <span id="loading-status">[ LOADING ASSETS ]</span>
+            </div>
+            <div class="relative w-[130px] h-[1.5px] bg-white/20 overflow-hidden">
+                <div id="mini-progress-bar" class="h-full bg-white/90 w-0 transition-all duration-75 relative"></div>
+                <!-- 进度条上快速滑动的白光光束 (对齐录屏流光) -->
+                <div class="shimmer-fast-beam"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== 阶段 3：主场景（雨林池塘 + 弹簧物理全息网格 + 四周几何悬浮特效 + 3D水面倒影与阴影） ==================== -->
+    <main id="main-scene" class="fixed inset-0 z-10 opacity-0 pointer-events-none transition-opacity duration-500">
+        
+        <!-- 主场景全屏物理渲染 Canvas -->
+        <canvas id="main-world-canvas" class="absolute inset-0 w-full h-full z-10 pointer-events-auto"></canvas>
+
+        <!-- 实时跟随 3D 物理网格节点的 DOM 文字标签层 -->
+        <div id="project-labels-layer" class="absolute inset-0 z-20 pointer-events-none overflow-hidden transition-opacity duration-300"></div>
+
+        <!-- 扫描线与暗角叠层 -->
+        <div class="absolute inset-0 scanline-overlay z-20 pointer-events-none"></div>
+
+        <!-- 底部 HUD 状态栏 -->
+        <footer id="main-footer" class="fixed bottom-6 left-0 w-full px-7 flex justify-between items-end z-30 pointer-events-none text-[9.5px] tracking-[0.15em] text-neutral-300 opacity-0 transition-opacity duration-700">
+            <!-- 左下角：悬停发声提示与音阶指示器 -->
+            <div class="flex flex-col space-y-2 pointer-events-auto scalable-ui origin-bottom-left">
+                <div id="hover-sound-status" class="text-neutral-300">[ HOVER TO GENERATE SOUNDS ]</div>
+                <div class="flex items-center space-x-6 text-neutral-400">
+                    <span id="chord-indicator">( - )</span>
+                    <span id="note-counter">00 [ + ]</span>
+                </div>
+            </div>
+
+            <!-- 右下角：社交链接与邮箱 -->
+            <div class="flex flex-col items-end space-y-2 pointer-events-auto scalable-ui origin-bottom-right">
+                <div class="flex items-center space-x-2">
+                    <span class="inline-block w-3 h-[1px] bg-neutral-400"></span>
+                    <button id="btn-socials" class="hover:text-white transition-colors tracking-[0.15em]">
+                        GATEWAY / API
+                    </button>
+                </div>
+                <div class="flex items-center space-x-2">
+                    <button id="btn-copy-email" class="hover:text-white transition-colors flex items-center space-x-1">
+                        <span id="email-text">[ 127.0.0.1:7863/V1 ]</span>
+                    </button>
+                </div>
+            </div>
+        </footer>
+    </main>
+
+    <!-- ==================== 项目新页面视图 (方块由中心向四周旋转扩散后进入的新页面) ==================== -->
+    <!-- ==================== 项目新页面视图 (大留白画廊呼吸结构 + 右侧框内纯虚线几何视窗) ==================== -->
+    <input id="hidden-json-file-input" type="file" accept=".json,application/json" class="hidden" />
+    <section id="project-page-view" class="fixed inset-0 z-40 hidden items-center justify-center overflow-hidden bg-[#050806]/86 backdrop-blur-md opacity-0 transition-opacity duration-500 pointer-events-none">
+        <div id="editorial-scale-shell" class="editorial-scale-shell">
+        
+        <!-- 顶部：极简无框章节导视尺（严格锁定 44px 高度，左侧定宽，右侧绝对单行不折行） -->
+        <div class="w-full pt-1.5 flex justify-between items-center gap-4 border-b border-white/10 pb-3 h-[44px] shrink-0 overflow-hidden pointer-events-auto">
+            <div class="flex items-center space-x-4 shrink-0 min-w-[240px]">
+                <button id="btn-back-to-grid" class="text-[10.5px] tracking-[0.2em] text-white/65 hover:text-white transition-colors py-1 whitespace-nowrap min-w-[104px] text-left shrink-0" data-scramble="[ <- MATRIX ]">
+                    [ &larr; MATRIX ]
+                </button>
+                <span class="w-[1px] h-3 bg-white/15 inline-block shrink-0"></span>
+                <span id="page-archive-tag" class="text-[10px] tracking-[0.22em] text-white/45 whitespace-nowrap inline-block w-[124px] font-mono shrink-0 overflow-hidden">01 // OVERVIEW</span>
+            </div>
+
+            <nav id="chapter-nav" class="flex items-center flex-nowrap space-x-3.5 shrink-0 whitespace-nowrap overflow-hidden">
+                <button data-chapter="overview" class="chapter-link active">01 概览</button>
+                <button data-chapter="accounts" class="chapter-link">02 账号池</button>
+                <button data-chapter="egress" class="chapter-link">03 账号出口</button>
+                <button data-chapter="models" class="chapter-link">04 模型查看</button>
+                <button data-chapter="tasks" class="chapter-link">05 账号任务</button>
+                <button data-chapter="usage" class="chapter-link">06 积分用量</button>
+                <button data-chapter="packages" class="chapter-link">07 积分构成</button>
+                <button data-chapter="logs" class="chapter-link">08 错误记录</button>
+                <button data-chapter="encryption" class="chapter-link">09 系统设置</button>
+                <button data-chapter="customization" class="chapter-link">10 个性化</button>
+            </nav>
+        </div>
+
+        <!-- 中央核心舞台：大比例负空间留白，左侧无框排版 + 右侧唯一独立正方形 3D 视窗 -->
+        <div class="w-full my-auto grid grid-cols-12 gap-14 items-center pointer-events-auto py-2">
+            
+            <!-- 左侧 7 列：纯无框呼吸排版区（所有槽位绝对锁定高度，彻底根除切换与心跳抖动） -->
+            <div class="col-span-7 flex flex-col justify-center">
+                <div class="flex items-center space-x-2.5 text-[10px] tracking-[0.22em] text-white/42 mb-2 h-[16px] shrink-0 overflow-hidden">
+                    <span class="w-1.5 h-1.5 bg-white/80 rounded-full shrink-0"></span>
+                    <span id="page-role" class="whitespace-nowrap overflow-hidden max-w-[360px]">CORE ENGINE // HEALTH &amp; TOPOLOGY</span>
+                </div>
+                <!-- 标题与副标题：单行锁定，绝不换行折叠 -->
+                <div class="flex items-baseline space-x-4 h-[44px] overflow-hidden whitespace-nowrap shrink-0">
+                    <h2 id="page-title" class="text-[38px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-none whitespace-nowrap shrink-0 overflow-hidden max-w-[520px]">
+                        SYSTEM OVERVIEW
+                    </h2>
+                    <span id="page-cn-subtitle" class="text-[13px] tracking-[0.18em] text-white/45 font-normal shrink-0">系统概览</span>
+                </div>
+                <!-- 描述段落：严格固定 38px 槽位高度，行高 19px 恒定两行，绝不上下顶动下方元素 -->
+                <p id="page-desc" class="text-[12px] leading-[19px] text-white/46 max-w-xl mt-2.5 h-[38px] min-h-[38px] max-h-[38px] overflow-hidden text-left shrink-0">
+                    汇总本地网关运行健康度、凭据池路由可用率与实时上下行吞吐状态。
+                </p>
+
+                <!-- 三列极简无框核心读数（垂直居中布局，上下留出充裕呼吸空间，绝不压线切字） -->
+                <div id="editorial-kpi-strip" class="grid grid-cols-3 gap-6 py-3.5 my-2 border-y border-white/10 max-w-xl text-left h-[84px] min-h-[84px] max-h-[84px] items-center shrink-0">
+                    <div class="shrink-0 flex flex-col justify-center min-w-0">
+                        <div id="spec-label-1" class="text-[10.5px] uppercase tracking-[0.16em] text-white/40 mb-1.5 leading-tight whitespace-nowrap">可用账号</div>
+                        <div id="page-spec-1" class="text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap">12 / 16</div>
+                    </div>
+                    <div id="kpi-col-2" class="shrink-0 flex flex-col justify-center min-w-0 transition-transform duration-200">
+                        <div id="spec-label-2" class="text-[10.5px] uppercase tracking-[0.16em] text-white/40 mb-1.5 leading-tight whitespace-nowrap">账号额度</div>
+                        <div id="page-spec-2" class="text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap">30,536</div>
+                    </div>
+                    <div class="shrink-0 flex flex-col justify-center min-w-0">
+                        <div id="spec-label-3" class="text-[10.5px] uppercase tracking-[0.16em] text-white/40 mb-1.5 leading-tight whitespace-nowrap">实时下行</div>
+                        <div id="page-spec-3" class="text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap">26.4 MB/s</div>
+                    </div>
+                </div>
+
+                <!-- 动态业务内容区（恒定锁定 244px 高度，零晃动） -->
+                <div id="editorial-stage-body" class="h-[236px] min-h-[236px] max-h-[236px] pt-2 pb-1 max-w-xl flex flex-col justify-start items-stretch overflow-hidden text-left shrink-0">
+                </div>
+
+                <!-- 底部操作与左下方页码栏（恒定锁定 36px 高度） -->
+                <div class="flex justify-between items-center gap-3 pt-2 max-w-xl h-[36px] shrink-0">
+                    <div class="flex items-center gap-3 shrink-0">
+                        <button id="btn-page-chord" data-scramble="RESOURCE CURVE" class="editorial-action-btn border border-white/40 hover:border-white bg-white/[0.04] text-white/80 hover:text-white transition-colors">
+                            <span class="btn-bracket">[</span>
+                            <span id="btn-page-chord-mid" class="btn-mid">RESOURCE CURVE</span>
+                            <span class="btn-bracket">]</span>
+                        </button>
+                        <button id="btn-page-ripple" data-scramble="COPY ENDPOINT" class="editorial-action-btn border border-white/20 hover:border-white/65 text-white/75 hover:text-white">
+                            <span class="btn-bracket">[</span>
+                            <span id="btn-page-ripple-mid" class="btn-mid">COPY ENDPOINT</span>
+                            <span class="btn-bracket">]</span>
+                        </button>
+                    </div>
+                    <div id="editorial-pager" class="text-[10.5px] tracking-[0.15em] text-white/45 flex items-center justify-end space-x-2.5 min-w-[164px] tabular-nums-left shrink-0">
+                    </div>
+                </div>
+            </div>
+
+            <!-- 右侧 5 列：全屏唯一的独立正方形 3D 几何画框（所有虚线连接严格裁剪在框内） -->
+            <div class="col-span-5 flex flex-col items-end justify-center">
+                <div id="preview-canvas" class="relative w-[356px] h-[356px] border border-white/20 bg-black/35 p-4 flex flex-col justify-between overflow-hidden shrink-0">
+                    <div class="flex justify-between items-center gap-3 text-[9.5px] tracking-[0.16em] text-white/45 shrink-0">
+                        <span id="preview-geo-tag" class="whitespace-nowrap shrink-0">[ OBELISK // 14V ]</span>
+                        <span id="preview-fps" class="whitespace-nowrap truncate text-right text-white/70">SYNC // 60 FPS</span>
+                    </div>
+                    <canvas id="project-preview-canvas" width="320" height="320" class="w-full flex-1 min-h-0 my-1 cursor-pointer object-contain" title="点击触发谐振泛音与波纹"></canvas>
+                    <div class="flex justify-between items-center gap-3 text-[9px] tracking-[0.16em] text-white/38 shrink-0">
+                        <span id="preview-link-hint" class="whitespace-nowrap">DASHED TOPOLOGY // IN-FRAME</span>
+                        <button id="btn-toggle-sphere" class="hover:text-white transition-colors tracking-[0.16em] px-1 whitespace-nowrap" title="切换查看经典纯白球体与当前专属几何">[ SPHERE ]</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 底部极简归档线（严格锁定 28px 高度，单行防溢出） -->
+        <div class="w-full mb-1 flex justify-between items-center text-[9.5px] tracking-[0.16em] text-white/38 border-t border-white/10 pt-3 h-[28px] shrink-0 overflow-hidden pointer-events-auto">
+            <span id="page-coords" class="whitespace-nowrap overflow-hidden">PRESS [ ESC ] TO CONVERGE TILES &bull; KEYS [ 1 - 9 ] SWITCH CHAPTER</span>
+            <span id="editorial-status-line" class="whitespace-nowrap text-white/60 overflow-hidden">WORKBUDDY LOCAL WORKSPACE // 127.0.0.1:7863</span>
+        </div>
+        </div>
+    </section>
+
+<audio id="bg-music-player" loop preload="auto" class="hidden"></audio>
 </body>
 </html>

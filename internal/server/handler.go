@@ -14,6 +14,7 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -136,17 +137,18 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.History == nil {
 		cfg.History, _ = conversation.Open(conversation.Options{})
 	}
-	if cfg.MaxBodyBytes <= 0 {
-		cfg.MaxBodyBytes = 16 << 20
-	}
 	if cfg.MaxConcurrent <= 0 {
 		cfg.MaxConcurrent = 8
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), slots: make(chan struct{}, cfg.MaxConcurrent)}
-	h.bodyBudget = resource.NewBudget(cfg.MaxBodyBytes * 2)
 	if cfg.MaxWorkingBytes <= 0 {
 		cfg.MaxWorkingBytes = 256 << 20
 	}
+	bodyBudgetLimit := cfg.MaxBodyBytes * 2
+	if bodyBudgetLimit == 0 {
+		bodyBudgetLimit = cfg.MaxWorkingBytes
+	}
+	h.bodyBudget = resource.NewBudget(bodyBudgetLimit)
 	h.workLimit = cfg.MaxWorkingBytes
 	h.workBudget = resource.NewBudget(cfg.MaxWorkingBytes)
 	h.mux.HandleFunc("POST /v1/chat/completions", h.chatCompletions)
@@ -169,6 +171,12 @@ func NewHandler(cfg Config) *Handler {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 统一 API 常用安全响应头：防 MIME 嗅探与敏感业务缓存
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if !strings.HasPrefix(r.Header.Get("Accept"), "text/event-stream") && !strings.HasPrefix(r.URL.Path, "/panel/assets/") {
+		w.Header().Set("Cache-Control", "no-store")
+	}
+
 	if !h.cfg.LogsEnabled && (r.URL.Path == "/panel/api/logs" || r.URL.Path == "/panel/api/request_logs" || r.URL.Path == "/panel/api/request_metrics") {
 		writeOpenAIError(w, 404, "feature_disabled", "request logging disabled")
 		return

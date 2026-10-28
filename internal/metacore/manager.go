@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -351,6 +352,24 @@ func (m *Manager) subscriptionsLocked() []Subscription {
 	}
 	return result
 }
+
+// IsBound reports whether uid currently owns a Meta route. It is a read-only
+// snapshot used by account mutation guards; callers must still handle a
+// concurrent unbind/bind outcome through their normal operation result.
+func (m *Manager) IsBound(uid string) bool {
+	if m == nil || !safeID(uid) {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, b := range m.state.Bindings {
+		if b.UID == uid {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *Manager) Nodes() NodesResponse {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -378,6 +397,44 @@ func (m *Manager) EnsureStarted(ctx context.Context) error {
 	defer m.unlock()
 	return m.ensure(ctx)
 }
+
+// StartSubscriptionRefresh periodically refreshes enabled providers whose cached
+// data is older than interval. The loop is owned by Manager so every refresh
+// uses the same serialized operation gate and Mihomo apply/rollback path as a
+// manual refresh. It stops with ctx and never overlaps another refresh.
+func (m *Manager) StartSubscriptionRefresh(ctx context.Context, interval time.Duration) {
+	if m == nil || interval <= 0 {
+		return
+	}
+	go func() {
+		refreshDue := func() {
+			for _, sub := range m.Subscriptions() {
+				if !sub.Enabled || !sub.HasURL || (!sub.LastRefreshAt.IsZero() && time.Since(sub.LastRefreshAt) < interval) {
+					continue
+				}
+				refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				_, err := m.RefreshSubscription(refreshCtx, sub.ID)
+				cancel()
+				if err != nil && !errors.Is(err, context.Canceled) {
+					log.Printf("metacore: scheduled subscription refresh %s failed: %v", sub.ID, err)
+				}
+			}
+		}
+		// Recover providers that were already stale when the process started.
+		refreshDue()
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				refreshDue()
+			}
+		}
+	}()
+}
+
 func (m *Manager) ensure(ctx context.Context) error {
 	m.mu.Lock()
 	m.lastUse = time.Now()

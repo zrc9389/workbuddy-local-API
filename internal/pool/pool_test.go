@@ -1154,6 +1154,23 @@ func TestSaveFailureRecordedAndRecovers(t *testing.T) {
 	}
 }
 
+func TestRemoveCheckedRestoresOnPersistFailure(t *testing.T) {
+	dir := t.TempDir()
+	block := filepath.Join(dir, "block")
+	if err := os.WriteFile(block, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := New(filepath.Join(block, "state.json"))
+	a := &auth.Auth{UID: "u-remove", AccessToken: "a"}
+	p.Add(a)
+	if _, err := p.RemoveChecked("u-remove"); err == nil {
+		t.Fatal("expected persistence failure")
+	}
+	if _, ok := p.Status("u-remove"); !ok {
+		t.Fatal("entry was not restored after persistence failure")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // T2 熔断器 + 全冷却兜底 + 指数退避
 // ---------------------------------------------------------------------------
@@ -1980,4 +1997,102 @@ func TestResumeIdempotent(t *testing.T) {
 	if st, _ := p.Status("u1"); st.Paused {
 		t.Errorf("Paused 应仍为 false: %+v", st)
 	}
+}
+
+func TestAccountHardConcurrencyCap3(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "u_cap"})
+
+	// 启用账号级硬并发 3
+	p.EnforceHardConcurrency()
+
+	// 试图设置超限并发 10，应当被硬封顶在 3
+	p.SetMaxInFlight(10)
+
+	// 前 3 次 Acquire 必须全部成功
+	for i := 1; i <= 3; i++ {
+		if !p.Acquire("u_cap") {
+			t.Fatalf("acquire %d should succeed under hard concurrency 3", i)
+		}
+	}
+
+	// 第 4 次 Acquire 必须被硬拒绝
+	if p.Acquire("u_cap") {
+		t.Fatal("4th acquire must fail due to hard concurrency cap of 3")
+	}
+
+	// 释放 1 个槽位后，第 5 次 Acquire 必须成功
+	p.Release("u_cap")
+	if !p.Acquire("u_cap") {
+		t.Fatal("acquire after release should succeed")
+	}
+
+	// 再次尝试必然失败
+	if p.Acquire("u_cap") {
+		t.Fatal("acquire exceeding 3 again must fail")
+	}
+
+	// 释放干净
+	for i := 0; i < 3; i++ {
+		p.Release("u_cap")
+	}
+
+	// 验证 EnforceHardConcurrency
+	p.SetMaxInFlight(1)
+	p.EnforceHardConcurrency()
+	for i := 0; i < 3; i++ {
+		if !p.Acquire("u_cap") {
+			t.Fatalf("enforced acquire %d failed", i)
+		}
+	}
+	if p.Acquire("u_cap") {
+		t.Fatal("enforced 4th acquire must fail")
+	}
+	for i := 0; i < 3; i++ {
+		p.Release("u_cap")
+	}
+
+	// 验证试图通过 SetMaxInFlight(0) 尝试绕过限制：在 EnforceHardConcurrency 下仍必须严格受上限 3 约束
+	p.SetMaxInFlight(0)
+	for i := 1; i <= 3; i++ {
+		if !p.Acquire("u_cap") {
+			t.Fatalf("acquire %d under SetMaxInFlight(0) with enforced cap failed", i)
+		}
+	}
+	if p.Acquire("u_cap") {
+		t.Fatal("4th acquire under SetMaxInFlight(0) must still fail under hard concurrency")
+	}
+	for i := 0; i < 3; i++ {
+		p.Release("u_cap")
+	}
+
+	// 验证可观测性统计
+	stats := p.HardConcurrencyStats()
+	if !stats.Enforced || stats.HardCap != 3 {
+		t.Fatalf("unexpected hard concurrency stats: %+v", stats)
+	}
+	if !p.IsHardConcurrencyEnforced() {
+		t.Fatal("IsHardConcurrencyEnforced should be true")
+	}
+}
+
+func TestDeletionFencePreventsNewLeases(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "deleting"})
+	p.Add(&auth.Auth{UID: "other"})
+	if !p.Acquire("deleting") {
+		t.Fatal("initial lease rejected")
+	}
+	p.BeginAccountDeletion("deleting")
+	if p.Acquire("deleting") {
+		t.Fatal("new lease admitted after deletion fence")
+	}
+	if !p.Acquire("other") {
+		t.Fatal("other account blocked")
+	}
+	if st, _ := p.Status("deleting"); st.InFlight != 1 {
+		t.Fatalf("existing lease lost: %+v", st)
+	}
+	p.Release("deleting")
+	p.Release("other")
 }

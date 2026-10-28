@@ -1,8 +1,11 @@
 package conversation
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -50,5 +53,40 @@ func TestExpirationAndCopy(t *testing.T) {
 	}
 	if s.Stats().Bytes != 0 {
 		t.Fatal("expired bytes retained")
+	}
+}
+
+func TestReaderHistoryPersistenceAndCancellation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.json")
+	opts := Options{Path: path, MaxBytes: 1024}
+	s, err := Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := `[{"role":"user","content":"` + strings.Repeat("x", 2<<20) + `"}]`
+	if err = s.PutReader("big", strings.NewReader(value)); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, ok := s.OpenReader("big")
+	if !ok {
+		t.Fatal("history not found")
+	}
+	b, err := io.ReadAll(r)
+	r.Close()
+	if err != nil || string(b) != value {
+		t.Fatal("history changed", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if s.PutReaderContext(ctx, "cancel", strings.NewReader(value)) == nil {
+		t.Fatal("cancellation ignored")
+	}
+	if r, ok := s.OpenReader("cancel"); ok {
+		r.Close()
+		t.Fatal("cancelled history committed")
 	}
 }

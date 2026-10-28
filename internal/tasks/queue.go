@@ -127,16 +127,25 @@ func (p *Service) StartGrowthQueue(concurrency int, growth bool) (started bool, 
 		if st.Disabled {
 			continue
 		}
+		if p.AccountDeletionStarted(st.UID) {
+			continue
+		}
 		a := p.cfg.Pool.AuthByUID(st.UID)
 		if a == nil {
 			continue
 		}
 		p.scanSlots <- struct{}{}
+		generation, admitted := p.beginScan(a.UID)
+		if !admitted {
+			p.releaseScan()
+			continue
+		}
 		wg.Add(1)
-		go func(a *auth.Auth) {
+		go func(a *auth.Auth, generation uint64) {
 			defer wg.Done()
 			defer p.releaseScan()
-			one := queueAccount{a: a}
+			defer p.endScan(a.UID)
+			one := queueAccount{a: a, generation: generation}
 			// D4 门控：global 账号无 CN 成长任务体系，不发起任何上游调用。
 			if a.IsGlobal() {
 				return
@@ -155,15 +164,17 @@ func (p *Service) StartGrowthQueue(concurrency int, growth bool) (started bool, 
 					// 合并小程序口径待办（与 tasksScanAll 同口径：mp 列表是默认口径
 					// 超集，按 code 去重；失败静默）。此前此处漏合并——扫描显示
 					// mp 待办而队列报"无可执行待办"。
-					if mpTasks, mpErr := p.cfg.Upstream.ListTasksMP(a); mpErr == nil {
-						seen := map[string]bool{}
-						for _, t := range one.grow {
-							seen[t.TaskCode] = true
-						}
-						for _, t := range mpTasks {
-							if growthPending(t) && !seen[t.TaskCode] {
-								one.grow = append(one.grow, t)
+					if p.scanValid(a.UID, generation) {
+						if mpTasks, mpErr := p.cfg.Upstream.ListTasksMP(a); mpErr == nil {
+							seen := map[string]bool{}
+							for _, t := range one.grow {
 								seen[t.TaskCode] = true
+							}
+							for _, t := range mpTasks {
+								if growthPending(t) && !seen[t.TaskCode] {
+									one.grow = append(one.grow, t)
+									seen[t.TaskCode] = true
+								}
 							}
 						}
 					}
@@ -177,7 +188,7 @@ func (p *Service) StartGrowthQueue(concurrency int, growth bool) (started bool, 
 				accts = append(accts, one)
 				mu.Unlock()
 			}
-		}(a)
+		}(a, generation)
 	}
 	wg.Wait()
 
@@ -197,12 +208,25 @@ func (p *Service) StartGrowthQueue(concurrency int, growth bool) (started bool, 
 		return false, 0, 0, "全部账号没有待办任务"
 	}
 
+	p.taskMu.Lock()
 	q.mu.Lock()
+	for i := range items {
+		for _, account := range accts {
+			if account.a.UID == items[i].UID {
+				_, deleting := p.deletingAccounts[items[i].UID]
+				if deleting || p.generation[items[i].UID] != account.generation {
+					items[i].Status = "cancelled"
+				}
+				break
+			}
+		}
+	}
 	q.items = items
 	q.conc = concurrency
 	q.seq++
 	seq = q.seq
 	q.mu.Unlock()
+	p.taskMu.Unlock()
 
 	go p.runQueueItems(accts, items, concurrency)
 	log.Printf("panel: 队列启动：%d 项（并发 %d，成长 %v）", len(items), concurrency, growth)
@@ -239,9 +263,15 @@ func (p *Service) runQueueItems(accts []queueAccount, items []QueueItem, concurr
 		go func(one queueAccount) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			if !q.hasPending(one.a.UID) {
+				return
+			}
 			// per-account 互斥：与单任务/一键完成共用一把锁。
-			if !p.TryLockAccount(one.a.UID) {
+			if !p.tryLockQueuedAccount(one.a.UID, one.generation) {
 				p.queueSet(q, one.a.UID, func(it *QueueItem) {
+					if it.Status != "pending" {
+						return
+					}
 					it.Status, it.Message = "skipped", "该账号有其它任务动作在执行，跳过"
 				})
 				return
@@ -250,15 +280,22 @@ func (p *Service) runQueueItems(accts []queueAccount, items []QueueItem, concurr
 			// 前置：批量接受尚未接受的任务。上游对 not_accepted 的任务不计数——
 			// 面板「一键完成」一直有这步，队列路径此前漏了（表现为上报 200 但进度
 			// 一直 not_accepted、无法领奖）。失败不阻塞（行为事件才是进度判据）。
-			if accepted := p.acceptPendingTasks(one.a); accepted > 0 {
-				time.Sleep(reportGap) // 给上游状态流转留时间
+			if !p.AccountDeletionStarted(one.a.UID) {
+				if accepted := p.acceptPendingTasks(one.a); accepted > 0 {
+					time.Sleep(reportGap) // 给上游状态流转留时间
+				}
 			}
-			for i := range q.items {
-				uid, kind, code := q.snapshotAt(i)
+			for i := range items {
+				uid, kind, code, status := q.snapshotAt(i)
 				if uid != one.a.UID {
 					continue
 				}
-				p.queueMarkAt(i, "running", "")
+				if status != "pending" {
+					continue
+				}
+				if !p.startQueueItem(i, uid) {
+					continue
+				}
 				var msg string
 				var err error
 				switch kind {
@@ -279,15 +316,57 @@ func (p *Service) runQueueItems(accts []queueAccount, items []QueueItem, concurr
 
 // queueAccount 队列执行的账号单元（runQueueItems 参数）。
 type queueAccount struct {
-	a    *auth.Auth
-	grow []upstream.Task
+	a          *auth.Auth
+	grow       []upstream.Task
+	generation uint64
+}
+
+func (p *Service) tryLockQueuedAccount(uid string, generation uint64) bool {
+	p.taskMu.Lock()
+	defer p.taskMu.Unlock()
+	if _, deleting := p.deletingAccounts[uid]; deleting {
+		return false
+	}
+	if p.generation[uid] != generation {
+		return false
+	}
+	if _, active := p.activeAccounts[uid]; active || len(p.activeAccounts) >= p.cfg.MaxActiveAccounts {
+		return false
+	}
+	p.activeAccounts[uid] = struct{}{}
+	return true
+}
+func (q *queueState) hasPending(uid string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, item := range q.items {
+		if item.UID == uid && item.Status == "pending" {
+			return true
+		}
+	}
+	return false
+}
+func (p *Service) startQueueItem(index int, uid string) bool {
+	p.taskMu.Lock()
+	defer p.taskMu.Unlock()
+	if _, deleting := p.deletingAccounts[uid]; deleting {
+		return false
+	}
+	q := p.queue()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if index >= len(q.items) || q.items[index].UID != uid || q.items[index].Status != "pending" {
+		return false
+	}
+	q.items[index].Status, q.items[index].Message = "running", ""
+	return true
 }
 
 // snapshotAt 锁内读条目三元组（避免锁外持有指针）。
-func (q *queueState) snapshotAt(i int) (uid, kind, code string) {
+func (q *queueState) snapshotAt(i int) (uid, kind, code, status string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return q.items[i].UID, q.items[i].Kind, q.items[i].Code
+	return q.items[i].UID, q.items[i].Kind, q.items[i].Code, q.items[i].Status
 }
 
 // queueMarkAt 按索引更新队列条目状态（条目数组固定不再增删）。

@@ -14,8 +14,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
 )
 
 func TestRealCoreIsolationAndNativeProviders(t *testing.T) {
@@ -122,6 +126,52 @@ func TestRealCoreIsolationAndNativeProviders(t *testing.T) {
 	if ba.Port == bb.Port || ba.RouteID == bb.RouteID {
 		t.Fatal("shared route")
 	}
+	accountA := &auth.Auth{UID: "account-a", ProxyURL: proxyA}
+	accountB := &auth.Auth{UID: "account-b", ProxyURL: proxyB}
+	client := upstream.New()
+	client.AccountLease = func(ctx context.Context, account *auth.Auth) (func(), error) {
+		return m.AcquireAccount(ctx, account.UID)
+	}
+	accountFetch := func(account *auth.Auth, target string) (string, error) {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+		if err != nil {
+			return "", err
+		}
+		response, err := client.DoAccount(request, account)
+		if err != nil {
+			return "", err
+		}
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		return string(body), err
+	}
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "direct:", r.URL.Path) }))
+	defer direct.Close()
+	if got, err := accountFetch(&auth.Auth{UID: "direct"}, direct.URL+"/direct-check"); err != nil || got != "direct:/direct-check" {
+		t.Fatalf("direct route: %q %v", got, err)
+	}
+	var parallel sync.WaitGroup
+	failures := make(chan string, 40)
+	for index := 0; index < 20; index++ {
+		for _, item := range []struct {
+			account *auth.Auth
+			want    string
+		}{{accountA, "fixture-A"}, {accountB, "fixture-B"}} {
+			parallel.Add(1)
+			go func(account *auth.Auth, want string) {
+				defer parallel.Done()
+				got, err := accountFetch(account, "http://192.0.2.1/concurrent")
+				if err != nil || got != want {
+					failures <- fmt.Sprintf("%s: %q %v", account.UID, got, err)
+				}
+			}(item.account, item.want)
+		}
+	}
+	parallel.Wait()
+	close(failures)
+	for failure := range failures {
+		t.Error(failure)
+	}
 	fetch := func(proxy string) string {
 		t.Helper()
 		u, _ := url.Parse(proxy)
@@ -177,6 +227,9 @@ func TestRealCoreIsolationAndNativeProviders(t *testing.T) {
 	}
 	if got := fetch(proxyA); got != "fixture-B" {
 		t.Fatal("A not switched", got)
+	}
+	if got, err := accountFetch(accountA, "http://192.0.2.1/after-switch"); err != nil || got != "fixture-B" {
+		t.Fatalf("account client retained old route: %q %v", got, err)
 	}
 	if got := fetch(proxyB); got != "fixture-B" {
 		t.Fatal("A changed B", got)
@@ -265,4 +318,36 @@ func TestRealCoreIsolationAndNativeProviders(t *testing.T) {
 		t.Fatal("idle wake route", got)
 	}
 	release()
+	if err = m2.DeleteAccountBinding(ctx, "account-a"); err != nil {
+		t.Fatal("delete account route", err)
+	}
+	if m2.IsBound("account-a") || !m2.IsBound("account-b") {
+		t.Fatal("account deletion changed wrong binding")
+	}
+	if got := fetch(proxyB); got != "fixture-B" {
+		t.Fatal("account deletion affected B", got)
+	}
+	deletedProxy, _ := url.Parse(proxyA)
+	deletedTransport := &http.Transport{Proxy: http.ProxyURL(deletedProxy), DisableKeepAlives: true}
+	defer deletedTransport.CloseIdleConnections()
+	deletedClient := &http.Client{Transport: deletedTransport, Timeout: 3 * time.Second}
+	deletedResponse, deletedErr := deletedClient.Get(direct.URL + "/deleted")
+	if deletedErr == nil {
+		deletedResponse.Body.Close()
+		if deletedResponse.StatusCode < 400 {
+			t.Fatal("deleted listener still forwards requests", deletedResponse.StatusCode)
+		}
+	}
+	b.Close()
+	unavailableProxy, _ := url.Parse(proxyB)
+	unavailableTransport := &http.Transport{Proxy: http.ProxyURL(unavailableProxy), DisableKeepAlives: true}
+	defer unavailableTransport.CloseIdleConnections()
+	unavailableClient := &http.Client{Transport: unavailableTransport, Timeout: 3 * time.Second}
+	unavailableResponse, unavailableErr := unavailableClient.Get(direct.URL + "/unavailable")
+	if unavailableErr == nil {
+		unavailableResponse.Body.Close()
+		if unavailableResponse.StatusCode < 400 {
+			t.Fatal("unavailable proxy silently fell back", unavailableResponse.StatusCode)
+		}
+	}
 }

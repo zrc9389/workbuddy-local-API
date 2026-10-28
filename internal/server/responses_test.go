@@ -1,16 +1,37 @@
 package server
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/jsonscan"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
 )
+
+func TestDecodeResponsesRequestRejectsTrailingJSONAndHonorsLimit(t *testing.T) {
+	h := NewHandler(Config{MaxBodyBytes: 32 << 10})
+	var got map[string]any
+	if err := h.decodeResponsesRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"x"} {"extra":true}`)), &got); err == nil {
+		t.Fatal("expected trailing JSON rejection")
+	}
+	body := `{"model":"` + strings.Repeat("x", 31) + `"}`
+	if err := h.decodeResponsesRequest(httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)), &got); err != nil {
+		t.Fatalf("exactly bounded JSON rejected: %v", err)
+	}
+}
 
 func TestResponsesAdapterTranslatesRequest(t *testing.T) {
 	var outbound map[string]any
@@ -59,6 +80,91 @@ func TestResponsesAdapterTranslatesRequest(t *testing.T) {
 	}
 	if response["object"] != "response" || response["status"] != "completed" {
 		t.Errorf("response=%#v", response)
+	}
+}
+
+func TestResponsesLargePayloadPreservesBodyAndCleansSpool(t *testing.T) {
+	var outbound map[string]any
+	up := &upstream.Client{HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		raw, _ := io.ReadAll(r.Body)
+		if !json.Valid(raw) {
+			t.Errorf("upstream body is invalid JSON")
+		}
+		_ = json.Unmarshal(raw, &outbound)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(sseOK))}, nil
+	})}, ChatBaseCN: "https://fake.example"}
+	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "u-large", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: up})
+	text := strings.Repeat("x", 300<<10)
+	body := `{"model":"glm-5.2","stream":false,"max_output_tokens":32,"input":"` + text + `"}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	msgs, _ := outbound["messages"].([]any)
+	if len(msgs) != 1 {
+		t.Fatalf("messages=%#v", outbound["messages"])
+	}
+	content, _ := msgs[0].(map[string]any)["content"].(string)
+	if content != text {
+		t.Fatalf("content length=%d want=%d", len(content), len(text))
+	}
+	if got, _ := outbound["max_tokens"].(float64); got != 32 {
+		t.Fatalf("max_tokens=%v", outbound["max_tokens"])
+	}
+	if files, _ := filepath.Glob(filepath.Join(os.TempDir(), "wb_req_spool_*.tmp")); len(files) != 0 {
+		t.Fatalf("spool files leaked: %v", files)
+	}
+}
+
+func TestResponsesLargePayloadStreamCompletes(t *testing.T) {
+	var outbound []byte
+	up := &upstream.Client{HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		outbound, _ = io.ReadAll(r.Body)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(sseOK))}, nil
+	})}, ChatBaseCN: "https://fake.example"}
+	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "u-stream-large", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: up})
+	body := `{"model":"glm-5.2","stream":true,"input":"` + strings.Repeat("y", 300<<10) + `"}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !bytes.Contains(rec.Body.Bytes(), []byte("response.created")) || !bytes.Contains(rec.Body.Bytes(), []byte("response.completed")) {
+		t.Fatalf("missing Responses stream events: %s", rec.Body.String())
+	}
+	if !json.Valid(outbound) {
+		t.Fatal("upstream body invalid")
+	}
+}
+
+func TestResponsesLargePayloadPreservesImageAndTools(t *testing.T) {
+	var outbound map[string]any
+	up := &upstream.Client{HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		raw, _ := io.ReadAll(r.Body)
+		if !json.Valid(raw) {
+			t.Fatal("invalid upstream JSON")
+		}
+		_ = json.Unmarshal(raw, &outbound)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(sseOK))}, nil
+	})}, ChatBaseCN: "https://fake.example"}
+	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "u-image", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: up})
+	image := "data:image/png;base64," + strings.Repeat("A", 2<<20)
+	body := `{"model":"glm-5.2","input":[{"role":"user","content":[{"type":"input_image","image_url":"` + image + `"}]}],"tools":[{"type":"function","name":"lookup","description":"d","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}]}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	msgs := outbound["messages"].([]any)
+	part := msgs[0].(map[string]any)["content"].([]any)[0].(map[string]any)
+	if part["type"] != "image_url" || part["image_url"] != image {
+		t.Fatalf("image part lost: %#v", part)
+	}
+	tools := outbound["tools"].([]any)
+	fn := tools[0].(map[string]any)["function"].(map[string]any)
+	if fn["name"] != "lookup" {
+		t.Fatalf("tool lost: %#v", fn)
 	}
 }
 
@@ -139,6 +245,26 @@ func TestResponsesAdapterPreviousResponseAndToolOutput(t *testing.T) {
 	}
 }
 
+type failingResponseWriter struct{ header http.Header }
+
+func (w *failingResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+func (w *failingResponseWriter) WriteHeader(int)           {}
+func (w *failingResponseWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+func (w *failingResponseWriter) Flush()                    {}
+
+func TestResponsesStreamReportsClientWriteFailure(t *testing.T) {
+	w := &failingResponseWriter{}
+	err := writeResponsesStream(w, map[string]any{"id": "resp-fail", "output": []any{}, "output_text": "x"})
+	if err == nil {
+		t.Fatal("expected downstream write error")
+	}
+}
+
 func TestResponsesStreamUsesSDKEventEnvelopes(t *testing.T) {
 	response := map[string]any{
 		"id":          "resp_1",
@@ -202,3 +328,379 @@ func TestResponsesStreamUsesSDKEventEnvelopes(t *testing.T) {
 		}
 	}
 }
+
+func TestLargeResponsesMessageConversionMatchesRegular(t *testing.T) {
+	inputs := []string{
+		`[{"type":"function_call","id":"item","call_id":"call","name":"lookup","arguments":"{}"},{"type":"function_call_output","call_id":"call","output":"result"}]`,
+		`[{"role":"user","content":[{"type":"input_text","text":"hello","extra":42},{"type":"input_image","image_url":"https://example.test/a","other":true}]}]`,
+		`[]`,
+	}
+	for _, input := range inputs {
+		var decoded any
+		if err := json.Unmarshal([]byte(input), &decoded); err != nil {
+			t.Fatal(err)
+		}
+		expected, err := responsesInputMessages(decoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := largeResponsesMessagesAt(strings.NewReader(input), jsonscan.Span{Start: 0, End: int64(len(input))}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var actual []map[string]any
+		if err := json.Unmarshal(got, &actual); err != nil {
+			t.Fatal(err)
+		}
+		encoded, _ := json.Marshal(expected)
+		var normalized []map[string]any
+		_ = json.Unmarshal(encoded, &normalized)
+		if !reflect.DeepEqual(actual, normalized) {
+			t.Fatalf("input %s: got %s, want %s", input, got, encoded)
+		}
+	}
+	input := `[]`
+	got, err := largeResponsesMessagesAt(strings.NewReader(input), jsonscan.Span{Start: 0, End: int64(len(input))}, json.RawMessage(`"system"`))
+	if err != nil || !json.Valid(got) {
+		t.Fatalf("empty input with instructions: %s %v", got, err)
+	}
+}
+
+func TestResponsesLargeHistoryContinuesFromSmallRequest(t *testing.T) {
+	var bodies []map[string]any
+	up := &upstream.Client{HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		bodies = append(bodies, body)
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(sseOK))}, nil
+	})}, ChatBaseCN: "https://fake.example"}
+	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "large-history", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: up, StrictContext: true})
+	text := strings.Repeat("Q", 2<<20)
+	first := httptest.NewRecorder()
+	h.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"glm-5.2","input":"`+text+`"}`)))
+	if first.Code != 200 {
+		t.Fatalf("first: %d %s", first.Code, first.Body)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(first.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	second := httptest.NewRecorder()
+	request := `{"model":"glm-5.2","previous_response_id":"` + result["id"].(string) + `","input":"next"}`
+	h.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(request)))
+	if second.Code != 200 {
+		t.Fatalf("second: %d %s", second.Code, second.Body)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("calls=%d", len(bodies))
+	}
+	msgs := bodies[1]["messages"].([]any)
+	if len(msgs) != 3 || msgs[0].(map[string]any)["content"] != text || msgs[2].(map[string]any)["content"] != "next" {
+		t.Fatalf("history mismatch; messages=%d", len(msgs))
+	}
+}
+
+func TestStreamingJSONMatchesStandardEncoding(t *testing.T) {
+	values := []any{map[string]any{"text": strings.Repeat("a", 16383) + "😀<>&\n" + strings.Repeat("z", 200000), "nested": []any{nil, true, 1.0, map[string]any{"x": "\ufffd"}}}, []map[string]any{{"content": strings.Repeat("x", 1<<20)}}, []byte{1, 2, 3}}
+	for _, value := range values {
+		var out bytes.Buffer
+		if err := writeStreamingJSON(&out, value); err != nil {
+			t.Fatal(err)
+		}
+		want, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(out.Bytes(), want) {
+			t.Fatalf("JSON differs from standard encoding")
+		}
+	}
+}
+
+func TestResponsesLargeToolArgumentsComplete(t *testing.T) {
+	args := `{"input":"` + strings.Repeat("q", 2<<20) + `"}`
+	var stream strings.Builder
+	for start := 0; start < len(args); start += 8192 {
+		end := start + 8192
+		if end > len(args) {
+			end = len(args)
+		}
+		fragment, _ := json.Marshal(args[start:end])
+		stream.WriteString(`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"run","arguments":`)
+		stream.Write(fragment)
+		stream.WriteString(`}}]}}]}` + "\n\n")
+	}
+	stream.WriteString("data: [DONE]\n\n")
+	up := &upstream.Client{HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		io.Copy(io.Discard, r.Body)
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(stream.String()))}, nil
+	})}, ChatBaseCN: "https://fake.example"}
+	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "large-tool", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: up})
+	rec := httptest.NewRecorder()
+	body := `{"model":"glm-5.2","input":"` + strings.Repeat("x", 300<<10) + `"}`
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)))
+	if rec.Code != 200 {
+		t.Fatalf("status=%d %s", rec.Code, rec.Body)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	output := result["output"].([]any)
+	call := output[0].(map[string]any)
+	if call["arguments"] != args {
+		t.Fatalf("arguments incomplete")
+	}
+}
+
+func TestChatLargeAggregatedContentAndToolSpool(t *testing.T) {
+	text := strings.Repeat("abcd", 300000)
+	var events strings.Builder
+	for i := 0; i < len(text); i += 8000 {
+		end := i + 8000
+		if end > len(text) {
+			end = len(text)
+		}
+		b, _ := json.Marshal(text[i:end])
+		events.WriteString(`data: {"choices":[{"delta":{"content":`)
+		events.Write(b)
+		events.WriteString(`,"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"run","arguments":`)
+		events.Write(b)
+		events.WriteString(`}}]}}]}` + "\n\n")
+	}
+	events.WriteString("data: [DONE]\n\n")
+	up := &upstream.Client{HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		io.Copy(io.Discard, r.Body)
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(events.String()))}, nil
+	})}, ChatBaseCN: "https://fake.example"}
+	before, _ := filepath.Glob(filepath.Join(os.TempDir(), "wb_response_value_*.tmp"))
+	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "chat-spool", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: up})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`)))
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	msg := result["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+	if msg["content"] != text {
+		t.Fatal("content mismatch")
+	}
+	fn := msg["tool_calls"].([]any)[0].(map[string]any)["function"].(map[string]any)
+	if fn["arguments"] != text {
+		t.Fatal("arguments mismatch")
+	}
+	after, _ := filepath.Glob(filepath.Join(os.TempDir(), "wb_response_value_*.tmp"))
+	if len(after) != len(before) {
+		t.Fatalf("response spools leaked: before=%v after=%v", before, after)
+	}
+}
+
+func TestResponsesSpoolLargeContentAndArguments(t *testing.T) {
+	text := strings.Repeat("xy世界", 140000)
+	var events strings.Builder
+	for start := 0; start < len(text); {
+		end := start + 8000
+		if end > len(text) {
+			end = len(text)
+		}
+		for end < len(text) && !utf8.RuneStart(text[end]) {
+			end--
+		}
+		part, _ := json.Marshal(text[start:end])
+		events.WriteString(`data: {"choices":[{"delta":{"content":`)
+		events.Write(part)
+		events.WriteString(`,"reasoning_content":`)
+		events.Write(part)
+		events.WriteString(`,"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"run","arguments":`)
+		events.Write(part)
+		events.WriteString(`}}]}}]}` + "\n\n")
+		start = end
+	}
+	events.WriteString("data: [DONE]\n\n")
+	up := &upstream.Client{HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		io.Copy(io.Discard, r.Body)
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(events.String()))}, nil
+	})}, ChatBaseCN: "https://fake.example"}
+	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "response-spool", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: up})
+	for _, stream := range []bool{false, true} {
+		before, _ := filepath.Glob(filepath.Join(os.TempDir(), "wb_response_value_*.tmp"))
+		rec := httptest.NewRecorder()
+		body := fmt.Sprintf(`{"model":"glm-5.2","stream":%t,"input":"hello"}`, stream)
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)))
+		if rec.Code != 200 {
+			t.Fatalf("stream=%v status=%d %s", stream, rec.Code, rec.Body)
+		}
+		var result map[string]any
+		if !stream {
+			if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			for _, line := range strings.Split(rec.Body.String(), "\n") {
+				if strings.HasPrefix(line, "data: ") {
+					var event map[string]any
+					if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+						t.Fatal(err)
+					}
+					if event["type"] == "response.completed" {
+						result = event["response"].(map[string]any)
+					}
+				}
+			}
+		}
+		if result == nil {
+			t.Fatal("response missing")
+		}
+		if result["output_text"] != text {
+			t.Fatal("content mismatch")
+		}
+		out := result["output"].([]any)
+		found := false
+		for _, v := range out {
+			item := v.(map[string]any)
+			if item["type"] == "function_call" {
+				if item["arguments"] != text {
+					t.Fatal("arguments mismatch")
+				}
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("tool call missing")
+		}
+		after, _ := filepath.Glob(filepath.Join(os.TempDir(), "wb_response_value_*.tmp"))
+		if len(after) != len(before) {
+			t.Fatalf("spool leak before=%d after=%d", len(before), len(after))
+		}
+	}
+}
+
+type failingResponsesWriter struct{ header http.Header }
+
+func (w *failingResponsesWriter) Header() http.Header { return w.header }
+func (w *failingResponsesWriter) WriteHeader(int)     {}
+func (w *failingResponsesWriter) Write([]byte) (int, error) {
+	return 0, errors.New("client disconnected")
+}
+
+type cancelBody struct {
+	r      io.Reader
+	cancel context.CancelFunc
+}
+
+func (r *cancelBody) Read(p []byte) (int, error) {
+	n, e := r.r.Read(p)
+	if e == io.EOF {
+		r.cancel()
+		return n, context.Canceled
+	}
+	return n, e
+}
+func (r *cancelBody) Close() error { return nil }
+func TestResponsesCustomToolSpoolAndCleanup(t *testing.T) {
+	input := strings.Repeat("a\n\"世界\\", 70000)
+	wrapped, _ := json.Marshal(map[string]any{"input": input})
+	var events strings.Builder
+	for i := 0; i < len(wrapped); {
+		end := i + 4000
+		if end > len(wrapped) {
+			end = len(wrapped)
+		}
+		for end < len(wrapped) && !utf8.RuneStart(wrapped[end]) {
+			end--
+		}
+		part, _ := json.Marshal(string(wrapped[i:end]))
+		events.WriteString(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_custom","function":{"name":"custom","arguments":`)
+		events.Write(part)
+		events.WriteString(`}}]}}]}` + "\n\n")
+		i = end
+	}
+	events.WriteString("data: [DONE]\n\n")
+	for _, stream := range []bool{false, true} {
+		up := &upstream.Client{HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			io.Copy(io.Discard, r.Body)
+			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(events.String()))}, nil
+		})}, ChatBaseCN: "https://fake.example"}
+		h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "custom-spool", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: up})
+		before, _ := filepath.Glob(filepath.Join(os.TempDir(), "wb_response_value_*.tmp"))
+		rec := httptest.NewRecorder()
+		body := fmt.Sprintf(`{"model":"glm-5.2","stream":%t,"input":"hello","tools":[{"type":"custom","name":"custom"}]}`, stream)
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)))
+		if rec.Code != 200 {
+			t.Fatalf("status=%d %s", rec.Code, rec.Body)
+		}
+		var result map[string]any
+		if !stream {
+			if e := json.Unmarshal(rec.Body.Bytes(), &result); e != nil {
+				t.Fatal(e)
+			}
+		} else {
+			for _, line := range strings.Split(rec.Body.String(), "\n") {
+				if strings.HasPrefix(line, "data: ") {
+					var v map[string]any
+					if e := json.Unmarshal([]byte(line[6:]), &v); e != nil {
+						t.Fatal(e)
+					}
+					if v["type"] == "response.completed" {
+						result = v["response"].(map[string]any)
+					}
+				}
+			}
+		}
+		if result == nil {
+			t.Fatal("missing response")
+		}
+		item := result["output"].([]any)[0].(map[string]any)
+		if item["input"] != input {
+			t.Fatalf("custom input mismatch stream=%v", stream)
+		}
+		after, _ := filepath.Glob(filepath.Join(os.TempDir(), "wb_response_value_*.tmp"))
+		if len(after) != len(before) {
+			t.Fatal("spool leaked")
+		}
+	}
+}
+func TestResponsesSpoolCleanupOnCancelAndWriteFailure(t *testing.T) {
+	text := strings.Repeat("x", 300<<10)
+	payload, _ := json.Marshal(text)
+	event := `data: {"choices":[{"delta":{"content":` + string(payload) + `}}]}` + "\n\n"
+	for _, mode := range []string{"cancel", "upstream_error", "write_error"} {
+		t.Run(mode, func(t *testing.T) {
+			before, _ := filepath.Glob(filepath.Join(os.TempDir(), "wb_response_value_*.tmp"))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			up := &upstream.Client{HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				io.Copy(io.Discard, r.Body)
+				var body io.ReadCloser
+				if mode == "cancel" {
+					body = &cancelBody{strings.NewReader(event), cancel}
+				} else if mode == "upstream_error" {
+					body = io.NopCloser(io.MultiReader(strings.NewReader(event), errorReader{}))
+				} else {
+					body = io.NopCloser(strings.NewReader(event + "data: [DONE]\n\n"))
+				}
+				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: body}, nil
+			})}, ChatBaseCN: "https://fake.example"}
+			h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "failure-" + mode, AccessToken: "at", ExpiresAt: 9999999999}), Upstream: up})
+			req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"glm-5.2","input":"hello"}`)).WithContext(ctx)
+			if mode == "write_error" {
+				h.ServeHTTP(&failingResponsesWriter{make(http.Header)}, req)
+			} else {
+				h.ServeHTTP(httptest.NewRecorder(), req)
+			}
+			after, _ := filepath.Glob(filepath.Join(os.TempDir(), "wb_response_value_*.tmp"))
+			if len(after) != len(before) {
+				t.Fatalf("spool leak: %v", after)
+			}
+		})
+	}
+}
+
+type errorReader struct{}
+
+func (errorReader) Read([]byte) (int, error) { return 0, errors.New("upstream read error") }

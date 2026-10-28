@@ -15,8 +15,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,9 +28,11 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/maintenance"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/metacore"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/modelpolicy"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/reqlog"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/scheduler"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/spool"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/tasks"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/telemetry"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
@@ -37,16 +41,19 @@ import (
 
 // Config 面板依赖（main 装配注入）。
 type Config struct {
-	Meta        *metacore.Manager
-	Maintenance *maintenance.Service
-	Demo        bool
-	Tasks       *tasks.Service // Shared task service; nil creates a default in New.
-	Pool        *pool.Pool
-	Upstream    *upstream.Client
-	Scheduler   *scheduler.Scheduler // 手动触发签到/保活；nil 时对应接口返回 501
-	AuthDir     string               // OAuth 登录完成后凭证落盘目录
-	RedisMode   string               // "upstash" / "noop"，仅观测透出
-	Version     string               // 面板版本号（展示用）
+	UpdateChecker           UpdateChecker
+	UpdateApplier           UpdateApplier
+	Meta                    *metacore.Manager
+	Maintenance             *maintenance.Service
+	Demo                    bool
+	Tasks                   *tasks.Service // Shared task service; nil creates a default in New.
+	Pool                    *pool.Pool
+	Upstream                *upstream.Client
+	Scheduler               *scheduler.Scheduler // 手动触发签到/保活；nil 时对应接口返回 501
+	AuthDir                 string               // OAuth 登录完成后凭证落盘目录
+	CredentialQuarantineDir string               // Deleted credentials retained for seven days
+	RedisMode               string               // "upstash" / "noop"，仅观测透出
+	Version                 string               // 面板版本号（展示用）
 
 	// Live 运行期可变配置（在线改配置立即生效）。
 	Live *livecfg.Holder
@@ -64,14 +71,23 @@ type Config struct {
 	StickyCount func() int
 
 	// Usage 逐请求用量记录器（nil = 用量接口返回 501）。
-	Usage *usage.Recorder
+	Usage               *usage.Recorder
+	SessionCleanup      func(string) error
+	DeletionJournalPath string
 	// RequestLog 请求指标与归档（nil = 对应接口返回 501）。
 	RequestLog telemetry.Sink
+	Spool      *spool.Store // unowned pressure spool records are retained
 
 	// ProbeFile 模型输出上限探测结果文件（scripts/probe_max_tokens.py --panel-out
 	// 写入；空或文件不存在 = model_probes 端点返回空集，面板不显示任何实测标注）。
 	// 只读展示：网关不解析、不依赖其内容做任何路由/出站决策。
 	ProbeFile string
+
+	// ModelPolicy 模型策略存储器（前端 model-policy 管理用）
+	ModelPolicy *modelpolicy.Store
+
+	// RestartService 自定义服务重启回调；nil 时使用默认自重启/配置重载机制
+	RestartService func() error
 }
 
 // Panel 管理面板 handler。挂载方式：外层 mux Handle("/panel/", panel)，
@@ -95,6 +111,13 @@ type Panel struct {
 	// poll 成功或超时（loginTTL）后剔除；面板常驻进程，容量天然有界。
 	loginMu sync.Mutex
 	logins  map[string]loginSession
+
+	modelPolicy    *modelpolicy.Store
+	deletions      *deletionCoordinator
+	customMu       sync.RWMutex
+	customData     map[string]any
+	updateMu       sync.Mutex
+	updateArtifact *UpdateArtifact
 }
 
 // loginTTL 授权 URL 的最长有效期：超时的 state 直接回收，
@@ -226,6 +249,9 @@ const bootstrapSessionTTL = 24 * time.Hour
 
 // New 构建面板。
 func New(cfg Config) *Panel {
+	if cfg.CredentialQuarantineDir == "" && cfg.AuthDir != "" {
+		cfg.CredentialQuarantineDir = filepath.Join(cfg.AuthDir, ".deleted-accounts")
+	}
 	if cfg.Tasks == nil {
 		cfg.Tasks = tasks.New(tasks.Config{Pool: cfg.Pool, Upstream: cfg.Upstream})
 	}
@@ -240,9 +266,61 @@ func New(cfg Config) *Panel {
 		modelsCache: map[string]*panelModelsSnapshot{},
 		logins:      map[string]loginSession{},
 		bootstraps:  map[string]bootstrapSession{},
+		modelPolicy: cfg.ModelPolicy,
+		customData: map[string]any{
+			"theme":      "dark",
+			"musicMode":  "manual",
+			"sloganMode": "manual",
+		},
+	}
+	if cfg.DeletionJournalPath != "" {
+		coordinator, err := newDeletionCoordinator(cfg.DeletionJournalPath)
+		if err != nil {
+			log.Printf("panel: account deletion journal unavailable: %v", err)
+		} else {
+			p.deletions = coordinator
+		}
+	}
+	if p.modelPolicy == nil {
+		p.modelPolicy, _ = modelpolicy.Open("")
 	}
 	p.routes()
 	return p
+}
+
+// PruneCredentialQuarantine deletes deleted credentials only after the seven-day
+// recovery window. It is invoked by startup and the deletion retry path.
+func (p *Panel) PruneCredentialQuarantine(now time.Time) error {
+	if p == nil || p.cfg.CredentialQuarantineDir == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(p.cfg.CredentialQuarantineDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	cutoff := now.Add(-7 * 24 * time.Hour)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		parts := strings.SplitN(entry.Name(), ".deleted-", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		deletedAt, err := time.Parse("20060102T150405.000000000Z", parts[1])
+		if err != nil {
+			continue
+		}
+		if deletedAt.Before(cutoff) {
+			if err := os.Remove(filepath.Join(p.cfg.CredentialQuarantineDir, entry.Name())); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Logs 返回日志环形缓冲（main 经 MultiWriter 镜像 log 与 chat 表格日志进来）。
@@ -380,6 +458,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/checkin", p.accountCheckin)
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/balance", p.accountBalance)
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/remove", p.accountRemove)
+	p.mux.HandleFunc("POST /panel/api/deletions/{uid}/retry", p.accountDeletionRetry)
 	p.mux.HandleFunc("GET /panel/api/accounts/{uid}/tasks", p.accountTasks)
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/accept", p.accountTaskAccept)
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/accept_all", p.taskAcceptAll)
@@ -401,6 +480,108 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/model_probes", p.modelProbes)
 	p.mux.HandleFunc("GET /panel/api/config", p.getConfig)
 	p.mux.HandleFunc("POST /panel/api/config", p.saveConfig)
+
+	// 账号池综合路由
+	p.mux.HandleFunc("GET /panel/api/accounts", p.accountsList)
+	p.mux.HandleFunc("POST /panel/api/accounts", p.accountsCreateOrUpdate)
+	p.mux.HandleFunc("POST /panel/api/accounts/refresh", p.accountsRefresh)
+
+	// 任务中心综合路由
+	p.mux.HandleFunc("GET /panel/api/tasks", p.tasksList)
+	p.mux.HandleFunc("POST /panel/api/tasks", p.tasksTrigger)
+	p.mux.HandleFunc("POST /panel/api/tasks/refresh", p.tasksTrigger)
+
+	// 模型策略与能力路由
+	p.mux.HandleFunc("GET /panel/api/model_policy", p.modelPolicyGet)
+	p.mux.HandleFunc("POST /panel/api/model_policy", p.modelPolicySet)
+	p.mux.HandleFunc("GET /panel/api/capabilities", p.capabilitiesGet)
+
+	// 页面刷新与数据承接兼容路由
+	p.mux.HandleFunc("POST /panel/api/overview", p.overview)
+	p.mux.HandleFunc("POST /panel/api/overview/refresh", p.accountsRefresh)
+	p.mux.HandleFunc("POST /panel/api/egress", p.EgressMatrix)
+	p.mux.HandleFunc("POST /panel/api/packages", p.packages)
+	p.mux.HandleFunc("POST /panel/api/packages/refresh", p.packages)
+
+	// 个性化配置专门路由（音乐、文案、主题等）
+	p.mux.HandleFunc("GET /panel/api/customization", p.customizationGet)
+	p.mux.HandleFunc("POST /panel/api/customization", p.customizationSet)
+
+	// 全局刷新与同步路由
+	p.mux.HandleFunc("POST /panel/api/refresh", p.globalRefresh)
+	p.mux.HandleFunc("POST /panel/api/sync", p.globalSync)
+
+	// 任务流水线触发与状态启停路由
+	p.mux.HandleFunc("POST /panel/api/tasks/run", p.tasksRun)
+	p.mux.HandleFunc("POST /panel/api/tasks/toggle", p.tasksToggle)
+
+	// 账号池综合刷新与出口测速路由
+	p.mux.HandleFunc("POST /panel/api/pool/refresh", p.poolRefresh)
+	p.mux.HandleFunc("POST /panel/api/egress/test", p.egressSpeedtest)
+	p.mux.HandleFunc("POST /panel/api/egress/speedtest", p.egressSpeedtest)
+
+	// 后端在线更新与版本检查路由
+	p.mux.HandleFunc("POST /panel/api/update/check", p.updateCheck)
+	p.mux.HandleFunc("POST /panel/api/update/apply", p.updateApply)
+}
+
+// apiErrorCaptureWriter 统一捕获 REST API 未匹配请求方法与未匹配端点，保证返回标准结构化 JSON。
+type apiErrorCaptureWriter struct {
+	http.ResponseWriter
+	isAPI       bool
+	statusCode  int
+	wroteHeader bool
+}
+
+func (w *apiErrorCaptureWriter) WriteHeader(code int) {
+	w.statusCode = code
+	if !w.isAPI {
+		w.ResponseWriter.WriteHeader(code)
+		w.wroteHeader = true
+		return
+	}
+	// 对 404 与 405 延迟到 Write 时检测 Content-Type，若为默认纯文本则拦截
+	if code == http.StatusMethodNotAllowed || code == http.StatusNotFound {
+		return
+	}
+	w.ResponseWriter.WriteHeader(code)
+	w.wroteHeader = true
+}
+
+func (w *apiErrorCaptureWriter) Write(b []byte) (int, error) {
+	if w.isAPI && (w.statusCode == http.StatusMethodNotAllowed || w.statusCode == http.StatusNotFound) {
+		ct := w.ResponseWriter.Header().Get("Content-Type")
+		if !strings.Contains(ct, "application/json") {
+			w.ResponseWriter.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.ResponseWriter.WriteHeader(w.statusCode)
+			w.wroteHeader = true
+			msg := "Not Found"
+			if w.statusCode == http.StatusMethodNotAllowed {
+				msg = "Method Not Allowed"
+			}
+			raw, _ := json.Marshal(map[string]any{"ok": false, "error": msg})
+			return w.ResponseWriter.Write(raw)
+		}
+	}
+	if !w.wroteHeader && w.statusCode != 0 {
+		w.ResponseWriter.WriteHeader(w.statusCode)
+		w.wroteHeader = true
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *apiErrorCaptureWriter) flush() {
+	if w.isAPI && !w.wroteHeader && (w.statusCode == http.StatusMethodNotAllowed || w.statusCode == http.StatusNotFound) {
+		w.ResponseWriter.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.ResponseWriter.WriteHeader(w.statusCode)
+		w.wroteHeader = true
+		msg := "Not Found"
+		if w.statusCode == http.StatusMethodNotAllowed {
+			msg = "Method Not Allowed"
+		}
+		raw, _ := json.Marshal(map[string]any{"ok": false, "error": msg})
+		_, _ = w.ResponseWriter.Write(raw)
+	}
 }
 
 // ServeHTTP 统一入口：先写安全响应头再分发，保证页面、静态资源、API
@@ -411,6 +592,14 @@ func (p *Panel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 到达 assets handler 前已失去原文，这里提前返回 400。
 	if strings.HasPrefix(r.URL.Path, "/panel/assets/") && hasDotDotSegment(r.URL.Path) {
 		http.Error(w, "invalid asset path", http.StatusBadRequest)
+		return
+	}
+	isAPI := strings.HasPrefix(r.URL.Path, "/panel/api/")
+	if isAPI {
+		w.Header().Set("Cache-Control", "no-store")
+		ew := &apiErrorCaptureWriter{ResponseWriter: w, isAPI: true}
+		p.mux.ServeHTTP(ew, r)
+		ew.flush()
 		return
 	}
 	p.mux.ServeHTTP(w, r)
@@ -432,12 +621,28 @@ func (p *Panel) expiringSoonWindow() time.Duration {
 func (p *Panel) overview(w http.ResponseWriter, r *http.Request) {
 	// 用 WithPaused 而不是 CountsDetailed：后者把暂停号并进 disabled（/status 的
 	// 「不可用」口径），而概况卡片要分开展示（issue #125）。
-	total, healthy, cooling, disabled, paused, inFlightFull := p.cfg.Pool.CountsDetailedWithPaused()
+	var total, healthy, cooling, disabled, paused, inFlightFull int
+	var accounts []pool.Status
+	var modelLocks any
+	if p.cfg.Pool != nil {
+		total, healthy, cooling, disabled, paused, inFlightFull = p.cfg.Pool.CountsDetailedWithPaused()
+		accounts = p.cfg.Pool.List()
+		modelLocks = p.cfg.Pool.ModelLockView()
+	} else {
+		accounts = []pool.Status{}
+	}
 	sticky := 0
 	if p.cfg.StickyCount != nil {
 		sticky = p.cfg.StickyCount()
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	// 统计隔离待授权账号数 (Comment 16)
+	blocked := 0
+	for _, acc := range accounts {
+		if acc.State == "BLOCKED" || acc.Blocked {
+			blocked++
+		}
+	}
+	data := map[string]any{
 		"version":         p.cfg.Version,
 		"demo":            p.cfg.Demo,
 		"uptime_sec":      int(time.Since(p.started).Seconds()),
@@ -450,10 +655,32 @@ func (p *Panel) overview(w http.ResponseWriter, r *http.Request) {
 		"disabled":        disabled,
 		"paused":          paused,
 		"in_flight_full":  inFlightFull,
-		"accounts":        p.cfg.Pool.List(),
-		// model_locks 模型级限流全清单（哪些模型不能用、锁了几个号、还要锁多久）：
-		// 与 accounts 的账号池视图互补，前端「模型锁池」表直接渲染。无锁时为 null。
-		"model_locks": p.cfg.Pool.ModelLockView(),
+		"blocked":         blocked,
+		"isolated":        blocked,
+		"unauthorized":    blocked,
+		"accounts":        accounts,
+		"model_locks":     modelLocks,
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":              true,
+		"version":         p.cfg.Version,
+		"demo":            p.cfg.Demo,
+		"uptime_sec":      int(time.Since(p.started).Seconds()),
+		"auth_required":   true,
+		"redis_mode":      p.cfg.RedisMode,
+		"sticky_sessions": sticky,
+		"total":           total,
+		"healthy":         healthy,
+		"cooling":         cooling,
+		"disabled":        disabled,
+		"paused":          paused,
+		"in_flight_full":  inFlightFull,
+		"blocked":         blocked,
+		"isolated":        blocked,
+		"unauthorized":    blocked,
+		"accounts":        accounts,
+		"model_locks":     modelLocks,
+		"data":            data,
 	})
 }
 
@@ -904,41 +1131,216 @@ func (p *Panel) accountBalance(w http.ResponseWriter, r *http.Request) {
 // accountRemove 移除账号：先出池（立即落盘 state），再删 auth 文件。
 func (p *Panel) accountRemove(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
-	st, exists := p.cfg.Pool.Status(uid)
-	if !exists {
+	if p.deletions == nil {
+		writeErr(w, http.StatusServiceUnavailable, "account deletion journal unavailable")
+		return
+	}
+	unlock := p.deletions.lockFor(uid)
+	defer unlock()
+	pending, hasPending := p.deletions.journal.get(uid)
+	_, exists := p.cfg.Pool.Status(uid)
+	if !exists && !hasPending {
 		writeErr(w, 404, "account not found")
 		return
 	}
-	if st.InFlight > 0 {
-		writeErr(w, 409, "account has active requests; wait before deleting")
+	a := p.cfg.Pool.AuthByUID(uid)
+	credential := ""
+	if a != nil {
+		credential = a.FilePath
+	} else if hasPending {
+		credential = pending.Credential
+	}
+	stages := p.accountDeletionStages(uid, credential, r.Context())
+	record, err := p.deletions.executeLocked(uid, credential, stages)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "stage": record.Phase, "error": "account deletion stage failed", "recoverable": true, "attempts": record.Attempts})
 		return
 	}
-	if p.cfg.Meta != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-		defer cancel()
-		if e := p.cfg.Meta.DeleteAccountBinding(ctx, uid); e != nil {
-			metaError(w, e)
+	if p.cfg.Tasks != nil {
+		p.cfg.Tasks.EndAccountDeletion(uid)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (p *Panel) accountDeletionStages(uid, credential string, parent context.Context) []deletionStage {
+	return []deletionStage{
+		{Name: "freeze", Run: func() error {
+			if _, ok := p.cfg.Pool.Status(uid); !ok {
+				return nil
+			}
+			p.cfg.Pool.BeginAccountDeletion(uid)
+			if p.cfg.Tasks != nil {
+				if err := p.cfg.Tasks.BeginAccountDeletion(uid); err != nil {
+					return err
+				}
+				if err := p.cfg.Tasks.WaitAccountIdle(parent, uid); err != nil {
+					return err
+				}
+			}
+			ticker := time.NewTicker(50 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				st, ok := p.cfg.Pool.Status(uid)
+				if !ok || st.InFlight == 0 {
+					return nil
+				}
+				select {
+				case <-parent.Done():
+					return parent.Err()
+				case <-ticker.C:
+				}
+			}
+		}},
+		{Name: "spool", Run: func() error { return nil }}, // No owner: preserve for independent recovery
+		{Name: "request_log", Run: func() error {
+			if d, ok := p.cfg.RequestLog.(interface{ DeleteAccount(string) error }); ok {
+				return d.DeleteAccount(uid)
+			}
+			return nil
+		}},
+		{Name: "usage", Run: func() error {
+			if p.cfg.Usage == nil {
+				return nil
+			}
+			if d, ok := any(p.cfg.Usage).(interface{ DeleteAccount(string) (int, error) }); ok {
+				_, err := d.DeleteAccount(uid)
+				return err
+			}
+			return nil
+		}},
+		{Name: "meta", Run: func() error {
+			if p.cfg.Meta == nil {
+				return nil
+			}
+			ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+			defer cancel()
+			return p.cfg.Meta.DeleteAccountBinding(ctx, uid)
+		}},
+		{Name: "transport", Run: func() error {
+			if p.cfg.Upstream != nil {
+				p.cfg.Upstream.ForgetTransport(uid)
+			}
+			return nil
+		}},
+		{Name: "session", Run: func() error {
+			if p.cfg.SessionCleanup != nil {
+				return p.cfg.SessionCleanup(uid)
+			}
+			return nil
+		}},
+		{Name: "tasks", Run: func() error {
+			if p.cfg.Tasks != nil {
+				return p.cfg.Tasks.DeleteAccount(uid)
+			}
+			return nil
+		}},
+		{Name: "credential", Run: func() error {
+			if credential == "" {
+				return nil
+			}
+			if p.cfg.CredentialQuarantineDir == "" {
+				return fmt.Errorf("credential quarantine directory is not configured")
+			}
+			if err := os.MkdirAll(p.cfg.CredentialQuarantineDir, 0700); err != nil {
+				return err
+			}
+			if _, err := os.Stat(credential); os.IsNotExist(err) {
+				return nil
+			} else if err != nil {
+				return err
+			}
+			name := filepath.Base(credential) + ".deleted-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+			return os.Rename(credential, filepath.Join(p.cfg.CredentialQuarantineDir, name))
+		}},
+		{Name: "pool", Run: func() error {
+			if p.cfg.Pool.AuthByUID(uid) != nil {
+				_, err := p.cfg.Pool.RemoveChecked(uid)
+				return err
+			}
+			return nil
+		}},
+		{Name: "verify", Run: func() error {
+			if _, ok := p.cfg.Pool.Status(uid); ok {
+				return fmt.Errorf("account remains in pool")
+			}
+			if credential != "" {
+				if _, err := os.Stat(credential); err == nil {
+					return fmt.Errorf("credential remains in active auth directory")
+				} else if !os.IsNotExist(err) {
+					return err
+				}
+			}
+			return nil
+		}},
+	}
+}
+
+func (p *Panel) accountDeletionRetry(w http.ResponseWriter, r *http.Request) {
+	uid := r.PathValue("uid")
+	if p.deletions == nil {
+		writeErr(w, http.StatusServiceUnavailable, "account deletion journal unavailable")
+		return
+	}
+	unlock := p.deletions.lockFor(uid)
+	defer unlock()
+	record, ok := p.deletions.journal.get(uid)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "pending deletion not found")
+		return
+	}
+	p.cfg.Pool.BeginAccountDeletion(uid)
+	if p.cfg.Tasks != nil {
+		if err := p.cfg.Tasks.BeginAccountDeletion(uid); err != nil {
+			writeErr(w, http.StatusConflict, "account deletion task fence failed")
 			return
 		}
 	}
-	a := p.cfg.Pool.Remove(uid)
-	if a == nil {
-		writeErr(w, http.StatusNotFound, "account not found")
+	credential := record.Credential
+	if a := p.cfg.Pool.AuthByUID(uid); a != nil && credential == "" {
+		credential = a.FilePath
+	}
+	updated, err := p.deletions.executeLocked(uid, credential, p.accountDeletionStages(uid, credential, r.Context()))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "stage": updated.Phase, "error": "account deletion stage failed", "recoverable": true})
 		return
 	}
-	fileMsg := ""
-	if a.FilePath != "" {
-		if err := os.Remove(a.FilePath); err != nil && !os.IsNotExist(err) {
-			fileMsg = err.Error()
-		}
+	if p.cfg.Tasks != nil {
+		p.cfg.Tasks.EndAccountDeletion(uid)
 	}
-	if fileMsg != "" {
-		log.Printf("panel: remove uid=%s（auth 文件删除失败: %s）", uid, fileMsg)
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "file_error": fileMsg})
-		return
-	}
-	log.Printf("panel: remove uid=%s（已出池并删除凭证文件）", uid)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// ResumePendingDeletions continues journal entries after all stores are loaded.
+func (p *Panel) ResumePendingDeletions() {
+	if p == nil || p.deletions == nil {
+		return
+	}
+	for _, pending := range p.deletions.pending() {
+		func() {
+			unlock := p.deletions.lockFor(pending.UID)
+			defer unlock()
+			record, ok := p.deletions.journal.get(pending.UID)
+			if !ok {
+				return
+			}
+			p.cfg.Pool.BeginAccountDeletion(record.UID)
+			if p.cfg.Tasks != nil {
+				if err := p.cfg.Tasks.BeginAccountDeletion(record.UID); err != nil {
+					log.Printf("panel: account deletion recovery task fence failed")
+					return
+				}
+			}
+			credential := record.Credential
+			if a := p.cfg.Pool.AuthByUID(record.UID); a != nil && credential == "" {
+				credential = a.FilePath
+			}
+			if _, err := p.deletions.executeLocked(record.UID, credential, p.accountDeletionStages(record.UID, credential, context.Background())); err != nil {
+				log.Printf("panel: account deletion recovery stage failed")
+			} else if p.cfg.Tasks != nil {
+				p.cfg.Tasks.EndAccountDeletion(record.UID)
+			}
+		}()
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -948,7 +1350,7 @@ func (p *Panel) accountRemove(w http.ResponseWriter, r *http.Request) {
 // checkinAll 手动触发全量签到（异步执行，进度看日志区/账号状态变化）。
 func (p *Panel) checkinAll(w http.ResponseWriter, r *http.Request) {
 	if p.cfg.Scheduler == nil {
-		writeErr(w, http.StatusNotImplemented, "scheduler not available")
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": false})
 		return
 	}
 	go p.cfg.Scheduler.RunCheckinNow()
@@ -959,7 +1361,7 @@ func (p *Panel) checkinAll(w http.ResponseWriter, r *http.Request) {
 // travelAll 手动触发全量猫猫旅行巡检（异步执行）。
 func (p *Panel) travelAll(w http.ResponseWriter, r *http.Request) {
 	if p.cfg.Scheduler == nil {
-		writeErr(w, http.StatusNotImplemented, "scheduler not available")
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": false})
 		return
 	}
 	go p.cfg.Scheduler.RunTravelNow()
@@ -970,7 +1372,7 @@ func (p *Panel) travelAll(w http.ResponseWriter, r *http.Request) {
 // activityAll 手动触发全量活跃上报（异步执行；点亮连登 + 解锁领养前置）。
 func (p *Panel) activityAll(w http.ResponseWriter, r *http.Request) {
 	if p.cfg.Scheduler == nil {
-		writeErr(w, http.StatusNotImplemented, "scheduler not available")
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": false})
 		return
 	}
 	go p.cfg.Scheduler.RunActivityNow()
@@ -981,7 +1383,7 @@ func (p *Panel) activityAll(w http.ResponseWriter, r *http.Request) {
 // keepaliveAll 手动触发全量 token 保活（异步执行）。
 func (p *Panel) keepaliveAll(w http.ResponseWriter, r *http.Request) {
 	if p.cfg.Scheduler == nil {
-		writeErr(w, http.StatusNotImplemented, "scheduler not available")
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": false})
 		return
 	}
 	go p.cfg.Scheduler.RunKeepaliveNow()
@@ -994,7 +1396,7 @@ func (p *Panel) keepaliveAll(w http.ResponseWriter, r *http.Request) {
 // 同步等待（上限受短 RPC 超时约束）比"触发后盲刷"体验更确定。
 func (p *Panel) balanceAll(w http.ResponseWriter, r *http.Request) {
 	if p.cfg.Scheduler == nil {
-		writeErr(w, http.StatusNotImplemented, "scheduler not available")
+		writeErr(w, http.StatusServiceUnavailable, "scheduler unavailable")
 		return
 	}
 	result := p.cfg.Scheduler.RunBalanceRefreshNow()
@@ -1088,17 +1490,54 @@ func (p *Panel) usageSave(w http.ResponseWriter, r *http.Request) {
 // 逐个账号向上游查（并发有上限，避免瞬时打满上游限流），失败只在对应账号上
 // 标 error，不影响其它账号——一个号 token 失效不该让整页空白。
 func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.Pool == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":                      true,
+			"accounts":                []any{},
+			"expiring_soon_window":    "72h",
+			"expiring_packages_count": 0,
+			"expiring_credits_total":  0,
+			"earliest_days":           0,
+			"earliest_credits":        0,
+			"total_packages_count":    0,
+			"total_remain_credits":    0,
+			"data": map[string]any{
+				"accounts":                []any{},
+				"expiring_soon_window":    "72h",
+				"expiring_packages_count": 0,
+				"expiring_credits_total":  0,
+				"earliest_days":           0,
+				"earliest_credits":        0,
+				"total_packages_count":    0,
+				"total_remain_credits":    0,
+			},
+		})
+		return
+	}
 	accts := p.cfg.Pool.List()
 	type row struct {
-		UID      string                   `json:"uid"`
-		Nickname string                   `json:"nickname"`
-		Realm    string                   `json:"realm"`
-		Remain   int64                    `json:"remain"`
-		Size     int64                    `json:"size"`
-		Packages []upstream.CreditPackage `json:"packages"`
-		Error    string                   `json:"error,omitempty"`
+		UID              string                   `json:"uid"`
+		Nickname         string                   `json:"nickname"`
+		Realm            string                   `json:"realm"`
+		Remain           int64                    `json:"remain"`
+		Size             int64                    `json:"size"`
+		Packages         []upstream.CreditPackage `json:"packages"`
+		ExpiringPackages []upstream.CreditPackage `json:"expiring_packages,omitempty"`
+		ExpiringCount    int                      `json:"expiring_count"`
+		ExpiringCredits  int64                    `json:"expiring_credits"`
+		EarliestDays     int                      `json:"earliest_days"`
+		Error            string                   `json:"error,omitempty"`
 	}
 	out := make([]row, len(accts))
+
+	filterExpiring := r.URL.Query().Get("filter") == "expiring" ||
+		r.URL.Query().Get("expiring") == "true" ||
+		r.URL.Query().Get("expiring_within") != "" ||
+		r.URL.Query().Get("within") == "72h" ||
+		r.URL.Query().Get("days") == "3"
+
+	now := time.Now()
+	expiringLimit := now.Add(72 * time.Hour)
 
 	sem := make(chan struct{}, 3)
 	var wg sync.WaitGroup
@@ -1114,30 +1553,138 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			it := row{UID: s.UID, Nickname: s.Nickname, Realm: s.Realm}
+			it := row{UID: s.UID, Nickname: s.Nickname, Realm: s.Realm, EarliestDays: 999}
 			a := p.cfg.Pool.AuthByUID(s.UID)
 			if a == nil {
 				it.Error = "account not loaded"
 				out[i] = it
 				return
 			}
-			packs, remain, size, err := p.cfg.Upstream.CreditPackages(a)
-			if err != nil {
-				it.Error = err.Error()
+			if p.cfg.Upstream == nil {
+				it.Error = "upstream unavailable"
 				out[i] = it
 				return
 			}
-			it.Packages = packs
+			packs, remain, size, err := p.cfg.Upstream.CreditPackages(a)
+			if err != nil {
+				it.Error = err.Error()
+				// 若遇到令牌失效 (UNAUTHORIZED / TOKEN_EXPIRED)，归入隔离待授权
+				errLower := strings.ToLower(err.Error())
+				if strings.Contains(errLower, "unauthorized") || strings.Contains(errLower, "token expired") || strings.Contains(errLower, "401") {
+					p.cfg.Pool.NoteUnauthorized(s.UID, "UNAUTHORIZED: "+err.Error())
+				}
+				out[i] = it
+				return
+			}
+
 			it.Remain = remain
 			it.Size = size
+
+			var expPacks []upstream.CreditPackage
+			var expCount int
+			var expCredits int64
+			minDays := 999
+
+			for _, pkg := range packs {
+				var expireTime time.Time
+				if pkg.ExpiresAt > 0 {
+					expireTime = time.Unix(pkg.ExpiresAt, 0)
+				} else if pkg.EndTime != "" {
+					layouts := []string{time.RFC3339, "2006-01-02 15:04:05", "2006-01-02T15:04:05", "2006-01-02"}
+					for _, l := range layouts {
+						if t, perr := time.ParseInLocation(l, pkg.EndTime, time.Local); perr == nil {
+							expireTime = t
+							break
+						}
+					}
+				}
+
+				if !expireTime.IsZero() {
+					dur := time.Until(expireTime)
+					days := int(math.Ceil(dur.Hours() / 24))
+					if days < 0 {
+						days = 0
+					}
+					if days < minDays {
+						minDays = days
+					}
+					// 3天(72小时)内到期判定：剩余额度>0 且到期时间在当前至72小时以内
+					if pkg.Remain > 0 && expireTime.After(now) && !expireTime.After(expiringLimit) {
+						expCount++
+						expCredits += pkg.Remain
+						expPacks = append(expPacks, pkg)
+					}
+				}
+			}
+
+			if minDays == 999 {
+				it.EarliestDays = 0
+			} else {
+				it.EarliestDays = minDays
+			}
+			it.ExpiringCount = expCount
+			it.ExpiringCredits = expCredits
+			it.ExpiringPackages = expPacks
+
+			if filterExpiring {
+				it.Packages = expPacks
+			} else {
+				it.Packages = packs
+			}
+
 			out[i] = it
 		}(i, s)
 	}
 	wg.Wait()
 
-	// 余额降序：多的在前，便于和少的对比。
+	// 汇总全局统计
+	var globalExpiringCount int
+	var globalExpiringCredits int64
+	var globalEarliestDays = 999
+	var globalEarliestCredits int64
+	var totalPackagesCount int
+	var totalRemainCredits int64
+
+	for _, r := range out {
+		globalExpiringCount += r.ExpiringCount
+		globalExpiringCredits += r.ExpiringCredits
+		totalPackagesCount += len(r.Packages)
+		totalRemainCredits += r.Remain
+		if r.ExpiringCount > 0 && r.EarliestDays < globalEarliestDays {
+			globalEarliestDays = r.EarliestDays
+			globalEarliestCredits = r.ExpiringCredits
+		}
+	}
+	if globalEarliestDays == 999 {
+		globalEarliestDays = 0
+	}
+
+	// 余额降序
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Remain > out[j].Remain })
-	writeJSON(w, http.StatusOK, map[string]any{"accounts": out})
+
+	resultData := map[string]any{
+		"accounts":                out,
+		"expiring_soon_window":    "72h",
+		"expiring_packages_count": globalExpiringCount,
+		"expiring_credits_total":  globalExpiringCredits,
+		"earliest_days":           globalEarliestDays,
+		"earliest_credits":        globalEarliestCredits,
+		"total_packages_count":    totalPackagesCount,
+		"total_remain_credits":    totalRemainCredits,
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":                      true,
+		"accounts":                out,
+		"expiring_soon_window":    "72h",
+		"expiring_packages_count": globalExpiringCount,
+		"expiring_credits_total":  globalExpiringCredits,
+		"earliest_days":           globalEarliestDays,
+		"earliest_credits":        globalEarliestCredits,
+		"total_packages_count":    totalPackagesCount,
+		"total_remain_credits":    totalRemainCredits,
+		"data":                    resultData,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

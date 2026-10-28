@@ -53,3 +53,32 @@ func TestLongestAcceptedBindingsRoundTrip(t *testing.T) {
 		t.Fatal(r2.Count())
 	}
 }
+
+func TestDeleteAccountRemovesBindingsAndPersists(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "bindings.json")
+	r := New(Config{LocalPath: p, MaxEntries: 10, TTL: time.Hour, Available: func() []string { return []string{"u1", "u2"} }})
+	r.Bind("a", "u1")
+	r.Bind("b", "u2")
+	if err := r.DeleteAccount("u1"); err != nil {
+		t.Fatal(err)
+	}
+	r.mu.RLock()
+	_, ok := r.entries["a"]
+	r.mu.RUnlock()
+	if ok {
+		t.Fatal("deleted binding remains")
+	}
+	r2 := New(Config{LocalPath: p, MaxEntries: 10, TTL: time.Hour, Available: func() []string { return []string{"u1", "u2"} }})
+	if err := r2.LoadLocal(); err != nil {
+		t.Fatal(err)
+	}
+	r2.mu.RLock()
+	_, ok = r2.entries["a"]
+	r2.mu.RUnlock()
+	if ok {
+		t.Fatal("deleted binding persisted")
+	}
+	if uid, ok := r2.Resolve("b"); !ok || uid != "u2" {
+		t.Fatalf("other binding=%q %v", uid, ok)
+	}
+}

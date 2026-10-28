@@ -90,6 +90,21 @@ func TestDailyCheckinNoRetryOn4xx(t *testing.T) {
 	}
 }
 
+func TestDailyCheckinNoRetryOnTransportFailure(t *testing.T) {
+	shortBillingRetry(t)
+	var calls int32
+	c := testClient(func(r *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&calls, 1)
+		return nil, errors.New("dial tcp: connection refused")
+	})
+	if err := c.DailyCheckin(&auth.Auth{AccessToken: "at"}); err == nil {
+		t.Fatal("transport failure should be returned")
+	}
+	if n := atomic.LoadInt32(&calls); n != 1 {
+		t.Fatalf("calls=%d want 1 (transport failure must not retry)", n)
+	}
+}
+
 func TestUserResourceDetailedRetriesTransient500(t *testing.T) {
 	shortBillingRetry(t)
 	var calls int32

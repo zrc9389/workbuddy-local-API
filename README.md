@@ -1,6 +1,6 @@
 # WorkBuddy Local v0.2 · Linux服务器多账号池
 
-**仅本机使用，管理密码默认 `123456`，聊天不需要API key。** 此版是在v0.1基础上的已确认改造；原v0.1发布包保留。请在新目录解压，不要直接覆盖含凭证的旧目录。
+**仅本机使用，首次启动时设置管理密码，聊天不需要 API key。** 此版是在 v0.1 基础上的改造；原 v0.1 发布包保留。请在新目录解压，不要直接覆盖含凭证的旧目录。
 
 ## Linux服务器（主交付）
 
@@ -12,7 +12,7 @@
 ssh -N -L 127.0.0.1:7863:127.0.0.1:7863 user@your-server
 ```
 
-然后访问本地 `http://127.0.0.1:7863/panel/`。不要开放服务器7863防火墙端口，也不要直接公网反代免key聊天。管理密码默认123456，首次登录后修改。
+然后访问本地 `http://127.0.0.1:7863/panel/`。不要开放服务器 7863 防火墙端口，也不要直接公网反代免 key 聊天。首次启动时设置管理密码。
 
 tar包的主程序名为 `wb2api`；先按手册准备 `/etc/workbuddy-local/config.json` 和 `/var/lib/workbuddy-local` 的服务用户权限，再前台验证：
 
@@ -29,7 +29,7 @@ sudo -u workbuddy-local /opt/workbuddy-local/deployment/linux/start.sh /etc/work
 - `start-no-logs.cmd`：无日志归档构建，统计仍独立工作。
 - `start-demo.cmd`与正常模式默认使用同一端口，不可同时启动。需要同时运行时使用环境变量 `WB2A_LISTEN=127.0.0.1:另一个端口`。
 
-保持窗口开启，退出优先Ctrl+C。首次生成config.json与密码哈希；登录后在「设置」修改密码。忘记密码须先停止程序，再在该模式目录执行 `workbuddy-local.exe -reset-password`；演示模式需加 `-demo`。
+保持窗口开启，退出优先 Ctrl+C。首次启动会生成 config.json 与密码哈希；登录后可在「设置」修改密码。忘记密码须先停止程序，再在该模式目录执行 `workbuddy-local.exe -reset-password`；演示模式需加 `-demo`。
 
 ## 这一版的页面
 

@@ -1,6 +1,7 @@
 package panel
 
 import (
+	"io"
 	"encoding/json"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/maintenance"
 	"net/http"
@@ -99,22 +100,45 @@ func (p *Panel) preferencesGet(w http.ResponseWriter, r *http.Request) {
 			animationStyle = normalizeAnimationStyle(v.Panel.StartupAnimation)
 		}
 	}
-	writeJSON(w, 200, map[string]any{"credit_guard_low": p.cfg.Pool.BalanceGuard(), "theme": theme, "animation_style": animationStyle})
+	p.customMu.RLock()
+	customCopy := make(map[string]any, len(p.customData))
+	for k, val := range p.customData {
+		customCopy[k] = val
+	}
+	p.customMu.RUnlock()
+
+	res := map[string]any{
+		"credit_guard_low": p.cfg.Pool.BalanceGuard(),
+		"theme":            theme,
+		"animation_style":  animationStyle,
+		"customization":    customCopy,
+	}
+	writeJSON(w, 200, res)
 }
+
 func (p *Panel) preferencesSet(w http.ResponseWriter, r *http.Request) {
+	bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1048576))
+	if err != nil {
+		writeErr(w, 400, "invalid preferences")
+		return
+	}
+	var rawMap map[string]any
+	if json.Unmarshal(bodyBytes, &rawMap) != nil {
+		writeErr(w, 400, "invalid preferences")
+		return
+	}
+	if len(rawMap) == 0 {
+		writeErr(w, 400, "preferences required")
+		return
+	}
+
 	var v struct {
 		Low            *int64 `json:"credit_guard_low"`
 		Theme          string `json:"theme"`
 		AnimationStyle string `json:"animation_style"`
 	}
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 2048)).Decode(&v) != nil {
-		writeErr(w, 400, "invalid preferences")
-		return
-	}
-	if v.Low == nil && v.Theme == "" && v.AnimationStyle == "" {
-		writeErr(w, 400, "preferences required")
-		return
-	}
+	_ = json.Unmarshal(bodyBytes, &v)
+
 	if v.Low != nil && (*v.Low < 1 || *v.Low > 1000000) {
 		writeErr(w, 400, "invalid credit_guard_low")
 		return
@@ -127,28 +151,41 @@ func (p *Panel) preferencesSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid animation_style")
 		return
 	}
-	if p.cfg.SaveConfig == nil {
-		writeErr(w, 503, "settings unavailable")
-		return
+
+	// 将任意个性化/扩展配置持久存储在内存中
+	p.customMu.Lock()
+	for k, val := range rawMap {
+		if k != "credit_guard_low" && k != "theme" && k != "animation_style" {
+			p.customData[k] = val
+		}
 	}
-	patch := map[string]any{}
-	if v.Low != nil {
-		patch["pool"] = map[string]any{"credit_floor": *v.Low}
-	}
-	panelPatch := map[string]any{}
-	if v.Theme != "" {
-		panelPatch["theme"] = v.Theme
-	}
-	if v.AnimationStyle != "" {
-		panelPatch["startup_animation"] = v.AnimationStyle
-	}
-	if len(panelPatch) > 0 {
-		patch["panel"] = panelPatch
-	}
-	raw, _ := json.Marshal(patch)
-	if _, e := p.cfg.SaveConfig(raw); e != nil {
-		writeErr(w, 500, e.Error())
-		return
+	p.customMu.Unlock()
+
+	if p.cfg.SaveConfig != nil {
+		patch := map[string]any{}
+		if v.Low != nil {
+			patch["pool"] = map[string]any{"credit_floor": *v.Low}
+		}
+		panelPatch := map[string]any{}
+		if v.Theme != "" {
+			panelPatch["theme"] = v.Theme
+		}
+		if v.AnimationStyle != "" {
+			panelPatch["startup_animation"] = v.AnimationStyle
+		}
+		for k, val := range rawMap {
+			if k != "credit_guard_low" && k != "theme" && k != "animation_style" {
+				panelPatch[k] = val
+			}
+		}
+		if len(panelPatch) > 0 {
+			patch["panel"] = panelPatch
+		}
+		raw, _ := json.Marshal(patch)
+		if _, e := p.cfg.SaveConfig(raw); e != nil {
+			writeErr(w, 500, e.Error())
+			return
+		}
 	}
 	if v.Low != nil {
 		p.cfg.Pool.SetBalanceGuard(*v.Low)

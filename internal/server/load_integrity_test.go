@@ -23,7 +23,7 @@ import (
 
 func TestSyntheticLargeContextAndPressureSpool(t *testing.T) {
 	for _, size := range []int{1 << 20, 4 << 20, 8 << 20} {
-		for _, conc := range []int{1, 2, 4, 8} {
+		for _, conc := range []int{1, 2, 4, 6, 8} {
 			t.Run(fmt.Sprintf("bytes%d_concurrency%d", size, conc), func(t *testing.T) {
 				text := strings.Repeat("a", size-25) + "TAIL_INTEGRITY_MARKER"
 				sum := sha256.Sum256([]byte(text))
@@ -63,6 +63,8 @@ func TestSyntheticLargeContextAndPressureSpool(t *testing.T) {
 				raw, _ := json.Marshal(map[string]any{"model": "fixture-model", "messages": []any{map[string]any{"role": "user", "content": text}}})
 				started := time.Now()
 				var peak atomic.Uint64
+				var rssPeak atomic.Uint64
+				var spoolPeak atomic.Int64
 				sampleDone := make(chan struct{})
 				sampleStop := make(chan struct{})
 				go func() {
@@ -77,6 +79,17 @@ func TestSyntheticLargeContextAndPressureSpool(t *testing.T) {
 							if m.HeapAlloc <= old || peak.CompareAndSwap(old, m.HeapAlloc) {
 								break
 							}
+						}
+						if rss := currentRSSBytes(); rss > 0 {
+							for {
+								old := rssPeak.Load()
+								if rss <= old || rssPeak.CompareAndSwap(old, rss) {
+									break
+								}
+							}
+						}
+						if jobs := int64(q.Stats().Jobs); jobs > spoolPeak.Load() {
+							spoolPeak.Store(jobs)
 						}
 						select {
 						case <-sampleStop:
@@ -114,7 +127,7 @@ func TestSyntheticLargeContextAndPressureSpool(t *testing.T) {
 				}
 				var mem runtime.MemStats
 				runtime.ReadMemStats(&mem)
-				t.Logf("synthetic_bytes=%d concurrency=%d duration=%s heap_after=%d sys=%d sampled_heap_peak=%d sha256=%s no_real_tokens_claimed=true", len(raw), conc, time.Since(started), mem.HeapAlloc, mem.Sys, peak.Load(), hex.EncodeToString(sum[:]))
+				t.Logf("synthetic_bytes=%d concurrency=%d duration=%s heap_after=%d sys=%d sampled_heap_peak=%d sampled_rss_peak=%d spool_jobs_peak=%d spool_jobs_final=%d spool_bytes_final=%d sha256=%s no_real_tokens_claimed=true", len(raw), conc, time.Since(started), mem.HeapAlloc, mem.Sys, peak.Load(), rssPeak.Load(), spoolPeak.Load(), q.Stats().Jobs, q.Stats().Bytes, hex.EncodeToString(sum[:]))
 				if q.Stats().Unknown != 0 || q.Stats().Jobs != 0 {
 					t.Fatal("successful spools left unresolved", q.Stats())
 				}

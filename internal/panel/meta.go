@@ -98,12 +98,16 @@ func (p *Panel) MetaSubscriptions(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, map[string]any{"subscriptions": subscriptions})
 				return
 			}
-			url, err := m.SubscriptionURL(id)
+			subscription, err := m.Subscription(id)
 			if err != nil {
 				metaError(w, err)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"id": id, "url": url})
+			if !subscription.HasURL {
+				metaError(w, metacore.ErrSubscriptionNoURL)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"id": id, "url": subscription.URLPreview})
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"subscriptions": subscriptions})

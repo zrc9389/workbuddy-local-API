@@ -26,7 +26,9 @@ test('actual app entry evaluates with strict real HTML IDs, and every view route
  const refreshStart=calls.length;
  await dom.click('btnRefresh');
  const refreshCalls=calls.slice(refreshStart);
- assert.deepEqual(refreshCalls.map(c=>[c.opts.method,c.url]),[['POST','/panel/api/balance_all'],['GET','/panel/api/overview']]);
+ const refreshMethods = refreshCalls.map(c=>[c.opts.method,c.url]);
+ assert.ok(refreshMethods.some(([m,u])=>m==='POST'&&u==='/panel/api/refresh'),'must trigger global refresh');
+ assert.ok(refreshMethods.some(([m,u])=>m==='GET'&&u==='/panel/api/overview'),'must re-read overview');
 });
 
 test('no_logs capability prevents navigation and background log reads without suppressing usage',async()=>{

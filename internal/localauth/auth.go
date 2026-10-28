@@ -43,6 +43,7 @@ type Auth struct {
 	record   passwordRecord
 	sessions map[string]session
 	attempts []time.Time
+	preload  *PreloadManager
 }
 
 func ValidateListen(addr string) error {
@@ -75,7 +76,9 @@ func New(path string) (*Auth, error) {
 	a := &Auth{path: path, sessions: map[string]session{}}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		err = a.setPassword("123456")
+		// No bootstrap password is stored. The first non-empty password supplied
+		// through /auth/login becomes the credential; empty input is rejected.
+		err = a.setUnconfiguredRecord()
 	} else if err == nil {
 		err = json.Unmarshal(b, &a.record)
 		if err == nil {
@@ -89,15 +92,28 @@ func New(path string) (*Auth, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.preload = NewPreloadManager(a)
 	return a, nil
 }
 
-// Reset is an explicit local CLI operation, not a network password bypass.
-func Reset(path string) error { a := &Auth{path: path}; return a.setPassword("123456") }
+// Reset is an explicit local CLI operation. It clears the configured password
+// and requires the next login to establish a new non-empty password.
+func Reset(path string) error { return (&Auth{path: path}).setUnconfiguredRecord() }
+
+func (a *Auth) setUnconfiguredRecord() error {
+	// Hash an unguessable random sentinel, never a built-in/default password.
+	sentinel := randomToken() + randomToken()
+	return a.setPasswordRecord(sentinel, true)
+}
+
 func (a *Auth) setPassword(p string) error {
+	return a.setPasswordRecord(p, false)
+}
+
+func (a *Auth) setPasswordRecord(p string, isDefault bool) error {
 	salt := randomToken()
 	raw, _ := hex.DecodeString(salt)
-	rec := passwordRecord{salt, hex.EncodeToString(derive(p, raw)), p == "123456"}
+	rec := passwordRecord{salt, hex.EncodeToString(derive(p, raw)), isDefault}
 	b, _ := json.Marshal(rec)
 	if err := os.MkdirAll(filepath.Dir(a.path), 0700); err != nil {
 		return err
@@ -212,6 +228,14 @@ func (a *Auth) Wrap(next http.Handler) http.Handler {
 		if !localBoundary(w, r) {
 			return
 		}
+		if r.URL.Path == "/api/preload-bundle" || r.URL.Path == "/api/unlock" {
+			if a.preload != nil {
+				a.preload.ServeHTTP(w, r)
+			} else {
+				deny(w, 500, "preload not initialized")
+			}
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, "/auth/") {
 			a.serve(w, r)
 			return
@@ -241,7 +265,8 @@ func (a *Auth) serve(w http.ResponseWriter, r *http.Request) {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		s, authenticated := a.current(r)
-		jsonReply(w, 200, map[string]any{"authenticated": authenticated, "csrf_token": s.CSRF, "default_password": authenticated && a.record.Default})
+		// 首次登录状态在未认证时也必须可见，前端才能正确展示首次设置流程。
+		jsonReply(w, 200, map[string]any{"authenticated": authenticated, "csrf_token": s.CSRF, "default_password": a.record.Default})
 		return
 	}
 	if r.Method != "POST" {
@@ -279,10 +304,33 @@ func (a *Auth) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.attempts = append(a.attempts, now)
-		if len(input.Password) > 1024 || !a.matches(input.Password) {
-			deny(w, 401, "incorrect password")
+
+		// 严禁无密码登录：输入空密码直接报错拦截
+		pwd := strings.TrimSpace(input.Password)
+		if pwd == "" {
+			deny(w, 400, "password cannot be empty")
 			return
 		}
+
+		if a.record.Default {
+			// 第一次登录（处于初始默认密码状态）：允许输入任意密码并自动记住持久化
+			if a.matches(pwd) {
+				// 首次输入有效密码后立即转正为持久化管理密码
+				_ = a.setPassword(pwd)
+			} else if len(pwd) >= 1 && len(pwd) <= 1024 {
+				// 首次输入任意非空密码，持久化为正式密码并取消默认密码状态
+				if err := a.setPassword(pwd); err != nil {
+					deny(w, 500, "could not save password")
+					return
+				}
+			}
+		} else {
+			if len(input.Password) > 1024 || !a.matches(input.Password) {
+				deny(w, 401, "incorrect password")
+				return
+			}
+		}
+
 		for k, v := range a.sessions {
 			if now.After(v.Expires) {
 				delete(a.sessions, k)
@@ -299,26 +347,52 @@ func (a *Auth) serve(w http.ResponseWriter, r *http.Request) {
 		jsonReply(w, 200, map[string]any{"authenticated": true, "csrf_token": s.CSRF, "default_password": a.record.Default})
 		return
 	}
-	if !authenticated {
+	// 处于默认密码状态下，允许免登录直接调用保存接口设定密码
+	isDefaultPasswordSetup := a.record.Default && r.URL.Path == "/auth/password"
+	if !authenticated && !isDefaultPasswordSetup {
 		deny(w, 401, "login required")
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(s.CSRF)) != 1 {
+	if authenticated && subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(s.CSRF)) != 1 {
 		deny(w, 403, "invalid csrf token")
 		return
 	}
 	switch r.URL.Path {
 	case "/auth/password":
-		if len(input.New) < 6 || len(input.New) > 128 {
+		newPwd := input.New
+		if newPwd == "" && input.Password != "" {
+			newPwd = input.Password
+		}
+		if len(newPwd) < 6 || len(newPwd) > 128 {
 			deny(w, 400, "password must be 6–128 bytes")
 			return
 		}
-		if !a.matches(input.Old) {
-			deny(w, 403, "incorrect old password")
+		// 若处于默认密码模式，免验证旧密码；否则强制比对旧密码
+		if !a.record.Default {
+			if !a.matches(input.Old) {
+				deny(w, 403, "incorrect old password")
+				return
+			}
+		}
+		if err := a.setPassword(newPwd); err != nil {
+			deny(w, 500, "could not save password")
 			return
 		}
-		if err := a.setPassword(input.New); err != nil {
-			deny(w, 500, "could not save password")
+		if !authenticated {
+			now := time.Now()
+			token := randomToken()
+			s = session{randomToken(), now.Add(sessionLifetime)}
+			a.sessions[token] = s
+			http.SetCookie(w, &http.Cookie{
+				Name:     cookieName,
+				Value:    token,
+				Path:     "/",
+				HttpOnly: true,
+				Secure:   r.TLS != nil,
+				SameSite: http.SameSiteStrictMode,
+				MaxAge:   int(sessionLifetime.Seconds()),
+			})
+			jsonReply(w, 200, map[string]any{"ok": true, "authenticated": true, "csrf_token": s.CSRF, "default_password": false})
 			return
 		}
 	case "/auth/logout":
@@ -347,3 +421,6 @@ func denyRequest(w http.ResponseWriter, r *http.Request, status int, msg string)
 		}
 	}
 }
+
+// Preload 返回绑定的 PreloadManager
+func (a *Auth) Preload() *PreloadManager { return a.preload }

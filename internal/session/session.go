@@ -254,6 +254,27 @@ func (r *Router) Bind(key, uid string) {
 	r.cfg.Store.SetBind(key, uid, r.cfg.TTL)
 }
 
+// DeleteAccount removes all sticky bindings for uid and synchronously persists
+// the local snapshot. Redis mirrors are invalidated after the in-memory swap.
+func (r *Router) DeleteAccount(uid string) error {
+	if r == nil || uid == "" {
+		return nil
+	}
+	r.mu.Lock()
+	removed := make([]string, 0)
+	for key, value := range r.entries {
+		if value.uid == uid {
+			delete(r.entries, key)
+			removed = append(removed, key)
+		}
+	}
+	r.mu.Unlock()
+	for _, key := range removed {
+		r.cfg.Store.DelBind(key)
+	}
+	return r.FlushLocal()
+}
+
 // Unbind 解除会话绑定（请求失败时调用，让该会话下次重新分配）。返回是否存在。
 func (r *Router) Unbind(key string) bool {
 	r.mu.Lock()

@@ -1,13 +1,22 @@
 package upstream
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 )
 
-// ValidateStrictHistory rejects malformed tool histories instead of letting the
-// compatibility cleanup silently remove a call/result or move intervening text.
+// ValidateStrictHistory 保持已有 []byte API 完全兼容
 func ValidateStrictHistory(body []byte) error {
+	if len(body) == 0 {
+		return nil
+	}
+	return ValidateStrictHistoryReader(bytes.NewReader(body))
+}
+
+// ValidateStrictHistoryReader 流式校验历史完整性，大请求无需整包读入内存切片
+func ValidateStrictHistoryReader(r io.Reader) error {
 	var v struct {
 		Messages []struct {
 			Role       string `json:"role"`
@@ -17,7 +26,7 @@ func ValidateStrictHistory(body []byte) error {
 			} `json:"tool_calls"`
 		} `json:"messages"`
 	}
-	if e := json.Unmarshal(body, &v); e != nil {
+	if e := json.NewDecoder(r).Decode(&v); e != nil {
 		return e
 	}
 	pending := map[string]bool{}

@@ -3,6 +3,7 @@ package upstream
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,13 +28,34 @@ func IsEmptyStreamError(err error) bool { return errors.Is(err, errEmptyStream) 
 // Aggregate 读取完整 SSE 流，聚合 delta.content 为单个 OpenAI chat.completion 响应。
 // 分片/半行由 bufio.Reader.ReadString 处理；遇到 "data: [DONE]" 结束。
 // tool_calls 以流式 delta 到达（按 index 合并：首片带 id/type/name，后续只带 arguments 片段）。
-func Aggregate(r io.Reader) (map[string]any, error) {
-	br := bufio.NewReaderSize(r, 64*1024)
+func Aggregate(r io.Reader) (map[string]any, error) { return aggregate(r, nil) }
+
+// AggregateSpool returns a response whose large values remain in private files.
+// The caller owns the returned store and must Close it after consuming the map.
+func AggregateSpool(r io.Reader) (map[string]any, *ResponseSpool, error) {
+	store := &ResponseSpool{}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = store.Close()
+		}
+	}()
+	result, err := aggregate(r, store)
+	if err != nil {
+		store.Close()
+		return nil, nil, err
+	}
+	committed = true
+	return result, store, nil
+}
+
+func aggregate(r io.Reader, store *ResponseSpool) (map[string]any, error) {
+	br := bufio.NewReaderSize(r, 16*1024)
 	var (
 		id, model     string
 		created       float64
-		content       strings.Builder
-		reasoning     strings.Builder
+		content       = newResponseText(store)
+		reasoning     = newResponseText(store)
 		role          = "assistant"
 		finishReason  = "stop"
 		usage         map[string]any
@@ -41,6 +63,7 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 		validEvents   int
 		sawDone       bool // 上游显式发过 data: [DONE]（正常收尾）
 		toolCalls     = map[int]map[string]any{}
+		toolArguments = map[int]*responseText{}
 		toolOrder     []int
 		// toolSeq 缺 index 的 tool_call 的分配序号源：跨帧延续「最近分配」槽位，
 		// 同帧内递增（见 mergeToolCallsChunk 注释）。
@@ -117,6 +140,29 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 			}
 			if cid, _ := merged["id"].(string); cid != "" {
 				idIndex[cid] = idx
+			}
+			// Avoid repeated concatenation of all prior argument fragments.
+			if fn, ok := call["function"].(map[string]any); ok {
+				if fragment, ok := fn["arguments"].(string); ok && fragment != "" {
+					builder := toolArguments[idx]
+					if builder == nil {
+						builder = newResponseText(store)
+						toolArguments[idx] = builder
+					}
+					builder.WriteString(fragment)
+					copyFn := make(map[string]any, len(fn))
+					for k, v := range fn {
+						if k != "arguments" {
+							copyFn[k] = v
+						}
+					}
+					copyCall := make(map[string]any, len(call))
+					for k, v := range call {
+						copyCall[k] = v
+					}
+					copyCall["function"] = copyFn
+					call = copyCall
+				}
 			}
 			mergeToolCallDelta(merged, call)
 		}
@@ -207,6 +253,17 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 			break
 		}
 	}
+	if content.err != nil {
+		return nil, content.err
+	}
+	if reasoning.err != nil {
+		return nil, reasoning.err
+	}
+	for _, v := range toolArguments {
+		if v.err != nil {
+			return nil, v.err
+		}
+	}
 	if validEvents == 0 {
 		// 上游返回 200 但没有任何有效数据事件（空流/只有 [DONE]/只有注释行）：
 		// 不再合成空 content 的假成功响应，直接报错，由 handler 映射为 502 upstream_parse。
@@ -220,15 +277,23 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 	}
 	message := map[string]any{
 		"role":    role,
-		"content": content.String(),
+		"content": content.Value(),
 	}
 	if reasoning.Len() > 0 {
-		message["reasoning_content"] = reasoning.String()
+		message["reasoning_content"] = reasoning.Value()
 	}
 	if len(toolOrder) > 0 {
 		sort.Ints(toolOrder)
 		calls := make([]map[string]any, 0, len(toolOrder))
 		for _, idx := range toolOrder {
+			if builder := toolArguments[idx]; builder != nil {
+				fn, _ := toolCalls[idx]["function"].(map[string]any)
+				if fn == nil {
+					fn = map[string]any{}
+					toolCalls[idx]["function"] = fn
+				}
+				fn["arguments"] = builder.Value()
+			}
 			calls = append(calls, toolCalls[idx])
 		}
 		// P1b：流被截断时 tool_call 的 arguments 是残缺 JSON（解析失败），不把脏参数
@@ -238,7 +303,11 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 		// 完整参数原样保留（正例零改动）；空参数（无参工具）不是截断，同样保留。
 		// 此前只认 finish_reason=="length"，EOF 截断的 tool_calls 残缺参数被原样下发。
 		if finishReason == "length" || !sawDone {
-			calls = dropTruncatedToolCalls(calls)
+			if store == nil {
+				calls = dropTruncatedToolCalls(calls)
+			} else {
+				calls = dropTruncatedSpoolCalls(calls)
+			}
 		}
 		if len(calls) > 0 {
 			message["tool_calls"] = calls
@@ -482,6 +551,12 @@ type StreamOption func(*streamOptions)
 
 type streamOptions struct {
 	onErrorFrame func(payload string)
+	onUsage      func(usage map[string]any)
+}
+
+// WithUsageObserver 注册流中 usage 用量末帧提取观察者
+func WithUsageObserver(fn func(usage map[string]any)) StreamOption {
+	return func(o *streamOptions) { o.onUsage = fn }
 }
 
 // WithErrorFrameObserver 注册"上游以 error 帧报错"的观察者：透传该帧之前先用
@@ -571,6 +646,10 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string, 
 					obj["id"] = firstID
 				}
 			}
+			// 仅当包含 "usage" 关键字时才对该末帧进行 Token 提取回调
+			if u, ok := obj["usage"].(map[string]any); ok && u != nil && o.onUsage != nil {
+				o.onUsage(u)
+			}
 			if raw, err := json.Marshal(normalizeFrame(obj)); err == nil {
 				payload = string(raw)
 			}
@@ -585,7 +664,7 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string, 
 		return valid, nil
 	}
 
-	br := bufio.NewReaderSize(r, 64*1024)
+	br := bufio.NewReaderSize(r, 16*1024)
 	validFrames := 0
 readLoop:
 	for {
@@ -667,4 +746,136 @@ func attachHintToErrorFrame(payload, hint string) string {
 		return payload
 	}
 	return string(out)
+}
+
+// PureStream 低内存纯流式透传与原生 TCP 背压：
+// - 精简双层嵌套 Reader，避免每一帧都执行 json.Unmarshal；
+// - 单层 16KB 缓冲读取，匹配换行直接写出并调用 Flush()，由 TCP 内核自然消化背压；
+// - 仅当单帧包含 "usage" 关键字时才对该末帧进行 Token 提取回调。
+func PureStream(w http.ResponseWriter, r io.Reader, opts ...StreamOption) error {
+	var o streamOptions
+	for _, f := range opts {
+		if f != nil {
+			f(&o)
+		}
+	}
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Accel-Buffering", "no")
+	fl, _ := w.(http.Flusher)
+
+	// 单层 16KB 缓冲读取
+	br := bufio.NewReaderSize(r, 16*1024)
+	validFrames := 0
+readLoop:
+	for {
+		line, err := br.ReadString('\n')
+		trimmed := strings.TrimRight(line, "\r\n")
+		switch {
+		case strings.HasPrefix(trimmed, "data: [DONE]"):
+			break readLoop
+		case strings.HasPrefix(trimmed, "data: "):
+			payload := strings.TrimPrefix(trimmed, "data: ")
+			// 仅当单帧包含 "usage" 关键字时才对该末帧进行 Token 提取回调
+			if strings.Contains(payload, `"usage"`) {
+				var uObj map[string]any
+				if json.Unmarshal([]byte(payload), &uObj) == nil {
+					if u, ok := uObj["usage"].(map[string]any); ok && u != nil {
+						if o.onUsage != nil {
+							o.onUsage(u)
+						}
+					}
+				}
+			}
+			// 包含 "error" 关键字时旁路通知观察者
+			if strings.Contains(payload, `"error"`) {
+				if o.onErrorFrame != nil {
+					o.onErrorFrame(payload)
+				}
+			}
+			// 匹配换行直接写出并调用 Flush()，由 TCP 内核自然消化背压
+			if _, werr := io.WriteString(w, "data: "+payload+"\n\n"); werr != nil {
+				return werr
+			}
+			if fl != nil {
+				fl.Flush()
+			}
+			validFrames++
+		case trimmed != "":
+			if _, werr := io.WriteString(w, line); werr != nil {
+				return werr
+			}
+			if fl != nil {
+				fl.Flush()
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+	}
+	if validFrames == 0 {
+		_, _ = io.WriteString(w, `data: {"error":{"message":"empty upstream stream","type":"upstream_error","code":"upstream_parse"}}`+"\n\n")
+	}
+	if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
+		return err
+	}
+	if fl != nil {
+		fl.Flush()
+	}
+	if validFrames == 0 {
+		return errEmptyStream
+	}
+	return nil
+}
+
+type peekCloser struct {
+	io.Reader
+	io.Closer
+}
+
+// PrecheckStream 执行流式首字节前探测：
+// 在尚未向客户端写出 HTTP 200 及 SSE 响应头之前，预读上游的首个有效行/帧；
+// 若在收到首个有效数据帧前遇到 EOF、读取错误，或首个数据帧直接是上游 error 帧，
+// 则返回 (nil, err)，以便上层调度器安全地触发“流式首字节前有限重试”（换号重试）；
+// 若预检通过，则返回通过 MultiReader 还原的首字节 Reader 与底层 Closer，保证数据逐字无损传递。
+func PrecheckStream(rc io.ReadCloser) (io.ReadCloser, error) {
+	if rc == nil {
+		return nil, errEmptyStream
+	}
+	br := bufio.NewReaderSize(rc, 4096)
+	var peeked []byte
+	validFound := false
+
+	for {
+		line, err := br.ReadString('\n')
+		if len(line) > 0 {
+			peeked = append(peeked, line...)
+		}
+		trimmed := strings.TrimRight(line, "\r\n")
+		if strings.HasPrefix(trimmed, "data: [DONE]") {
+			break
+		}
+		if strings.HasPrefix(trimmed, "data: ") {
+			validFound = true
+			break
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, err
+		}
+	}
+
+	if !validFound {
+		return nil, errEmptyStream
+	}
+
+	combined := io.MultiReader(bytes.NewReader(peeked), br)
+	return &peekCloser{Reader: combined, Closer: rc}, nil
 }

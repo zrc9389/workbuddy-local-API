@@ -3,7 +3,8 @@ import { session } from './api.js';
 const AI_NAMES = ['GPT', 'Claude', 'Gemini', 'Grok', 'DeepSeek', 'Qwen', 'Kimi', 'Llama'];
 const ANIMATION_STYLES = ['names', 'orbital', 'scan', 'minimal'];
 const TARGET_MS = 8000;
-const HARD_LIMIT_MS = 12000;
+// Allow bootstrap/refresh to settle for up to 20 seconds after the 8s minimum.
+const HARD_LIMIT_MS = 20000;
 const PREVIEW_MS = 3200;
 const PREVIEW_HARD_LIMIT_MS = 4200;
 const WORD_INTERVAL_MS = 1000;

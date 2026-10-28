@@ -2,10 +2,12 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/jsonscan"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
@@ -14,6 +16,7 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/telemetry"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -24,8 +27,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 客户端 IP 提取（按请求传递到 ChatStream，不透传时 upstream 侧忽略）；
 	// 消除早年共享字段方案的并发交叉污染（issue：ClientIP 竞态）。
 	clientIP := upstream.ExtractClientIP(r)
-	// Read through the configured per-request byte limit.
-	body, err := h.readBody(r)
+
+	// 有界固定缓冲接收请求体：<=256KB 驻留内存，>256KB 溢出至私有临时文件；并在函数出口安全清理
+	payload, err := h.readPayload(r)
 	if err != nil {
 		if errors.Is(err, errRequestBodyTooLarge) {
 			writeOpenAIError(w, 413, "request_body_too_large", h.bodyLimitMessage())
@@ -34,20 +38,79 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
 		return
 	}
+	defer payload.Close() // 请求生命周期结束时（含成功/失败/panic），必定安全删除私有临时文件
+
+	// 小请求复用内存切片；大请求保留在私有临时文件流中，严禁整包读回内存
+	var body []byte
+	if !payload.IsSpool {
+		body = payload.Memory
+	}
+
 	var peek struct {
 		Stream bool   `json:"stream"`
 		Model  string `json:"model"`
 	}
-	if err := json.Unmarshal(body, &peek); err != nil {
-		writeOpenAIError(w, 400, "invalid_request", "invalid JSON")
-		return
-	}
-	if h.cfg.StrictContext {
-		if e := upstream.ValidateStrictHistory(body); e != nil {
-			writeOpenAIError(w, 400, "history_integrity", e.Error())
+	peekBytes := payload.Peek(64 * 1024)
+	if err := json.Unmarshal(peekBytes, &peek); err != nil || peek.Model == "" {
+		if !payload.IsSpool {
+			writeOpenAIError(w, 400, "invalid_request", "invalid JSON")
+			return
+		}
+		ra, closer, rerr := payload.OpenReaderAt()
+		if rerr != nil {
+			writeOpenAIError(w, 500, "spool_error", rerr.Error())
+			return
+		}
+		spans, scanErr := jsonscan.Object(io.NewSectionReader(ra, 0, payload.Size))
+		if scanErr == nil {
+			for _, span := range spans {
+				if span.Key != "model" && span.Key != "stream" {
+					continue
+				}
+				if span.End-span.Start > 65536 {
+					scanErr = errors.New("control field too large")
+					break
+				}
+				value := make([]byte, span.End-span.Start)
+				if _, e := ra.ReadAt(value, span.Start); e != nil && e != io.EOF {
+					scanErr = e
+					break
+				}
+				if span.Key == "model" {
+					_ = json.Unmarshal(value, &peek.Model)
+				} else {
+					_ = json.Unmarshal(value, &peek.Stream)
+				}
+			}
+		}
+		closer.Close()
+		if scanErr != nil || peek.Model == "" {
+			writeOpenAIError(w, 400, "invalid_request", "invalid JSON")
 			return
 		}
 	}
+
+	if h.cfg.StrictContext {
+		if payload.IsSpool {
+			ra, closer, rerr := payload.OpenReaderAt()
+			if rerr != nil {
+				writeOpenAIError(w, 500, "spool_error", rerr.Error())
+				return
+			}
+			e := upstream.ValidateStrictHistoryAt(ra, payload.Size)
+			closer.Close()
+			if e != nil {
+				writeOpenAIError(w, 400, "history_integrity", e.Error())
+				return
+			}
+		} else {
+			if e := upstream.ValidateStrictHistory(body); e != nil {
+				writeOpenAIError(w, 400, "history_integrity", e.Error())
+				return
+			}
+		}
+	}
+
 	if h.cfg.ModelPolicy.Disabled(peek.Model) {
 		writeOpenAIError(w, 403, "model_disabled", "model disabled by local administrator")
 		return
@@ -63,7 +126,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 请求级统计：出口即打一行表格日志（任何路径都会走到）。
-	st := newChatStat(time.Now(), body, peek.Stream)
+	st := newChatStatWithModel(time.Now(), peek.Model, peek.Stream)
 	if tr := requestTraceFrom(r); tr != nil {
 		tr.stat = st
 		// 来源在 ServeHTTP 入口采集（此时才知道开关与请求头），此处转交给统计对象，
@@ -86,7 +149,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 会话粘性：从请求体提取会话键并解析绑定号（找不到/无效则 stickyUID 为空，走普通轮换）。
 	// ExtractKey 与粘性开关解耦（issue #35 侧）：关闭粘性时会话头族的聚合主键仍按
 	// 会话级（RequestIDForKey(sessKey)），不悄悄退化成轮级——提取本身与粘性无关。
-	sessKey := session.ExtractKey(body)
+	sessKey := strings.TrimSpace(r.Header.Get("X-Conversation-ID"))
+	if sessKey == "" {
+		if payload.IsSpool {
+			sessKey = session.ExtractKey(payload.Peek(64 * 1024))
+		} else {
+			sessKey = session.ExtractKey(body)
+		}
+	}
 	stickyUID := ""
 	if h.cfg.Session != nil && sessKey != "" {
 		// 按模型解析：绑定号在**当前模型**被 6004 限额时视为不可用 → 重新分配，
@@ -102,11 +172,21 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 清空重生成），故不再限 sessKey=="" 才计算；sessKey 由下方派生处以复合键方式
 	// 入键（防不同会话同轮文本互撞）。
 	// 必须在下方 prompt.Rewrite 之前取——改写会动 messages 内容，之后取会让键漂移。
-	turnKey := session.TurnKey(body)
+	var turnKey string
+	if payload.IsSpool {
+		turnKey = session.TurnKey(payload.Peek(64 * 1024))
+	} else {
+		turnKey = session.TurnKey(body)
+	}
 
 	// gateway_hint 判定所需的请求形态（image_url part）：在改写前取（与 turnKey
 	// 同理）。11133「模型不支持图片」指向的前提。
-	reqHasImage := hasImagePart(body)
+	var reqHasImage bool
+	if payload.IsSpool {
+		reqHasImage = bytes.Contains(payload.Peek(len(payload.Memory)), []byte("image_url"))
+	} else {
+		reqHasImage = hasImagePart(body)
+	}
 
 	// 在途租约：成功选中即占名额；函数出口（含成功 return 与 panic）统一释放。
 	var heldUID string
@@ -238,7 +318,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	//     粘性 key 进程内稳定生成；粘性 key 也空时走轮级兜底（TurnKey/TurnRequestID），
 	//     无 user 消息时退化成本请求级随机——轮转内捕获一次即共享；
 	//   - messageID 在 ChatHeaders 内每条消息生成（消息级独立，无需外部可见）。
-	chatMeta := upstream.ChatMeta{ConversationID: session.ResolveConversationID(body)}
+	resolvedConvID := session.ResolveConversationID(body)
+	if resolvedConvID == "" && sessKey != "" {
+		resolvedConvID = sessKey
+	}
+	chatMeta := upstream.ChatMeta{ConversationID: resolvedConvID}
 	if v := r.Header.Get("X-Conversation-Request-ID"); v != "" {
 		chatMeta.ConversationRequestID = v
 	} else if turnKey != "" && sessKey != "" {
@@ -256,6 +340,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	chatMeta.TraceID = r.Header.Get("X-Trace-ID")
 
+	boundUID := stickyUID
 	for i := 0; i < h.cfg.MaxRotate; i++ {
 		// 选号：粘性号优先（PickByUIDForModel 已校验该模型可用性 + 在途未满），否则普通轮换。
 		var acct *auth.Auth
@@ -327,7 +412,51 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		// 客户端 IP 按请求传递（PassthroughIP 开启时注入；消除共享字段竞态）。
 		attemptStarted := time.Now()
-		rc, status, respBody, terr := h.cfg.Upstream.ChatStreamContext(r.Context(), acct, body, clientIP, chatMeta)
+		attemptMeta := chatMeta
+		var rc io.ReadCloser
+		var status int
+		var respBody []byte
+		var terr error
+
+		// 判定是否为跨账号重试（轮转非首选账号，或绑定账号已偏离）
+		isCrossAccount := (i > 0) || (boundUID != "" && acct.UID != boundUID)
+
+		// 大请求（落盘至私有临时文件）：直接流式读取临时文件发往上游，出站堆内存零驻留，严禁整包读回
+		if payload.IsSpool {
+			// 落盘原文无法在不重建全文的情况下剥离旧账号的 conversation_id。
+			// 首次请求可以按原账号发送；跨账号重试绝不可复用旧 conversation_id，必须停止重放，避免串会话。
+			// 检查客户端是否显式指定了会话标识（Header 显式携带或落盘请求体中显式包含 conversation_id）
+			clientHasConvID := r.Header.Get("X-Conversation-ID") != "" || payload.HasConversationID()
+			if isCrossAccount && clientHasConvID {
+				st.status = http.StatusBadGateway
+				st.outcome = telemetry.OutcomeHTTPError
+				writeOpenAIError(w, http.StatusBadGateway, "conversation_replay_blocked", "large request was not replayed across accounts because its conversation id cannot be safely rewritten in a streaming path")
+				return
+			}
+
+			// 若跨账号且未带任何 conversation_id，清空请求头中的会话标识以防串号
+			if isCrossAccount {
+				attemptMeta.ConversationID = ""
+			}
+
+			rdr, rerr := payload.OpenReader()
+			if rerr != nil {
+				st.status = http.StatusInternalServerError
+				st.outcome = telemetry.OutcomeHTTPError
+				writeOpenAIError(w, http.StatusInternalServerError, "spool_open_failed", "request body spool could not be reopened")
+				return
+			}
+			unmodified := upstream.IsPayloadUnmodified(payload.Peek(64 * 1024))
+			rc, status, respBody, terr = h.cfg.Upstream.ChatStreamReaderContext(r.Context(), acct, rdr, payload.Size, clientIP, attemptMeta, unmodified)
+			_ = rdr.Close() // 每次 attempt 发送完毕后立即显式关闭文件描述符，避免句柄堆叠阻碍 Windows 上的磁盘删除
+		} else {
+			attemptBody := body
+			if isCrossAccount {
+				attemptMeta.ConversationID = ""
+				attemptBody = upstream.StripConversationID(attemptBody)
+			}
+			rc, status, respBody, terr = h.cfg.Upstream.ChatStreamContext(r.Context(), acct, attemptBody, clientIP, attemptMeta)
+		}
 		// 分类信封一次成型：upstream 已在错误路径返回 *upstream.Error（Kind +
 		// Retry-After 头解析）。传输层错误（非 *Error）走抖动换号分支；防御分支
 		// （terr 为 nil 但 status>=400，如 ErrNone 兜底）回落本地 Classify，双保险。
@@ -488,6 +617,31 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 记成健康、粘性把会话钉死在它身上，后续每一轮都打同一个限流号。
 		rc = resource.LimitResponse(rc, 32<<20)
 		if peek.Stream {
+			// 流式首字节前有限重试：向客户端发送响应头前预检上游流；
+			// 若在首字节前发现空流或错误帧，且仍在有限重试窗口内，直接换号重试，不向客户端输出坏流。
+			precheckedRC, preErr := upstream.PrecheckStream(rc)
+			if preErr != nil {
+				_ = rc.Close()
+				recordAttempt(acct.UID, pool.TokenUsageDelta{}, 0, false, attemptStarted, 0)
+				if i < h.cfg.MaxRotate-1 && r.Context().Err() == nil {
+					log.Printf("WARN: [server] stream precheck failed acct=%s: %v, retrying on next account", logfmt.Label(acct.UID, acct.Nickname), preErr)
+					h.cfg.Pool.NoteFailures(acct.UID)
+					fail(acct.UID)
+					if !rotateBackoff(i, r.Context()) {
+						break
+					}
+					continue
+				}
+				st.status = http.StatusBadGateway
+				st.outcome = telemetry.OutcomeStreamError
+				log.Printf("WARN: [server] stream acct=%s model=%s: precheck failed exhausted: %v", logfmt.Label(acct.UID, acct.Nickname), bareModel, preErr)
+				h.cfg.Pool.NoteFailures(acct.UID)
+				fail(acct.UID)
+				writeOpenAIError(w, http.StatusBadGateway, "upstream_stream_error", preErr.Error())
+				return
+			}
+			rc = precheckedRC
+
 			// 流式：透传结束后立即关闭上游 body，避免 defer 在轮转场景下堆积 fd。
 			st.status = http.StatusOK
 			stats := newChatStatsReaderSince(rc, st.start)
@@ -510,6 +664,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				st.status = http.StatusBadGateway
 				st.outcome = telemetry.OutcomeStreamError
 				log.Printf("WARN: [server] stream acct=%s model=%s: empty upstream stream (200+0 frames)", logfmt.Label(acct.UID, acct.Nickname), bareModel)
+				h.cfg.Pool.NoteFailures(acct.UID)
+				if stickyUID != "" && acct.UID == stickyUID {
+					unbindSticky()
+				}
 			case errFrame != "":
 				// 上游以 error 帧报错（6004 限流 / 内容拦截 / 审核）：按帧内容分类并
 				// 处置账号——**不记成功、不清 11102 负缓存、不绑粘性**。此前这些动作
@@ -517,6 +675,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 整个会话钉在它身上，后续每轮都失败。
 				kind := upstream.FrameKind(errFrame)
 				h.applyErrorPolicy(acct.UID, kind, errFrame, bareModel, nil)
+				if stickyUID != "" && acct.UID == stickyUID {
+					unbindSticky()
+				}
 				st.status = http.StatusServiceUnavailable
 				st.outcome = telemetry.OutcomeStreamError
 				log.Printf("WARN: [server] stream acct=%s model=%s: upstream error frame kind=%s payload=%s",
@@ -571,10 +732,21 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			rc.Close()
 			return
 		}
-		resp, err := upstream.Aggregate(rc)
+		resp, responseSpool, err := upstream.AggregateSpool(rc)
+		if sink, ok := w.(interface{ acceptResponseSpool(*upstream.ResponseSpool) }); ok && responseSpool != nil {
+			sink.acceptResponseSpool(responseSpool)
+			responseSpool = nil
+		}
+		if responseSpool != nil {
+			defer responseSpool.Close()
+		}
 		rc.Close()
 		if err != nil {
 			recordAttempt(acct.UID, pool.TokenUsageDelta{}, 0, false, attemptStarted, 0)
+			h.cfg.Pool.NoteFailures(acct.UID)
+			if stickyUID != "" && acct.UID == stickyUID {
+				unbindSticky()
+			}
 			// 上游流解析失败：客户端还没看到任何输出，回 502 并告知原因。
 			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
 			st.status = http.StatusBadGateway
@@ -592,7 +764,15 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if st.hasCache {
 			cacheMissWarn.noteCacheTokens(bareModel, st.promptTokens, st.cacheHit, st.cacheMiss)
 		}
-		writeJSON(w, http.StatusOK, resp)
+		if sink, ok := w.(interface{ acceptChatResponse(map[string]any) }); ok {
+			sink.acceptChatResponse(resp)
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			if err := writeStreamingJSON(w, resp); err != nil {
+				return
+			}
+		}
 		st.status = http.StatusOK
 		st.outcome = telemetry.OutcomeSuccess
 		st.toks = completionTokens(resp)

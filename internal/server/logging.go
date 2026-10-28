@@ -74,6 +74,18 @@ type chatStat struct {
 }
 
 // newChatStat 以请求进入 handler 的时刻为起点构造统计对象；toks 默认 -1（usage 缺失）。
+
+// newChatStatWithModel 直接使用已知 model 与 stream 构建统计对象，大请求零字节扫描开销
+func newChatStatWithModel(now time.Time, model string, stream bool) *chatStat {
+	mode := "sync"
+	if stream {
+		mode = "stream"
+	}
+	if model == "" {
+		model = "-"
+	}
+	return &chatStat{start: now, model: model, mode: mode, toks: -1}
+}
 func newChatStat(now time.Time, body []byte, stream bool) *chatStat {
 	mode := "sync"
 	if stream {
@@ -173,14 +185,14 @@ func (s *chatStatsReader) parseSSELine(line string) {
 			PromptCacheMissTok   *int     `json:"prompt_cache_miss_tokens"`
 		} `json:"usage"`
 	}
-	if json.Unmarshal([]byte(payload), &chunk) != nil || chunk.Usage == nil {
-		if json.Unmarshal([]byte(payload), &chunk) == nil && len(chunk.Error) > 0 {
-			s.errorFrame = true
-		}
+	if json.Unmarshal([]byte(payload), &chunk) != nil {
 		return
 	}
 	if len(chunk.Error) > 0 {
 		s.errorFrame = true
+	}
+	if chunk.Usage == nil {
+		return
 	}
 	if chunk.Usage.PromptTokens != nil {
 		s.hasPromptTokens = true
@@ -415,6 +427,7 @@ func (t *requestTrace) event(status int) telemetry.Event {
 	if t.stat != nil {
 		s := t.stat
 		e.Account = logfmt.Label(s.uid, s.nick)
+		e.AccountRef = telemetry.AccountReference(s.uid)
 		e.Model = s.model
 		e.Outcome = s.outcome
 		e.TTFBMs = s.ttfb.Milliseconds()

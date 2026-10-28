@@ -3,11 +3,13 @@ package conversation
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/jsonscan"
 	"io"
 	"os"
 	"path/filepath"
@@ -49,7 +51,17 @@ type Stats struct {
 	ArchivedEntries int   `json:"archived_entries"`
 	ArchivedBytes   int64 `json:"archived_bytes"`
 }
+type diskVolatileEntry struct {
+	path    string
+	expires time.Time
+	used    uint64
+	size    int64
+}
+
 type Store struct {
+	volatileDisk   map[string]diskVolatileEntry
+	volatileDir    string
+	volatileBytes  int64
 	mu             sync.Mutex
 	opts           Options
 	items          map[string]entry
@@ -242,6 +254,14 @@ func (s *Store) archive(id string, value json.RawMessage) error {
 }
 func (s *Store) prune() {
 	now := time.Now()
+	for id, v := range s.volatileDisk {
+		if now.After(v.expires) {
+			if os.Remove(v.path) == nil || errors.Is(statErr(v.path), os.ErrNotExist) {
+				s.volatileBytes -= v.size
+				delete(s.volatileDisk, id)
+			}
+		}
+	}
 	for k, v := range s.items {
 		if now.After(v.Expires) {
 			s.bytes -= int64(len(v.Value))
@@ -334,6 +354,17 @@ func (s *Store) Clear() error {
 	}
 	s.items = map[string]entry{}
 	s.bytes = 0
+	for id, v := range s.volatileDisk {
+		if err := os.Remove(v.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		delete(s.volatileDisk, id)
+	}
+	s.volatileBytes = 0
+	if s.volatileDir != "" {
+		_ = os.Remove(s.volatileDir)
+		s.volatileDir = ""
+	}
 	return nil
 }
 func (s *Store) Stats() Stats {
@@ -346,6 +377,9 @@ func (s *Store) Stats() Stats {
 // CheckWorkingBudget checks size before decoding a persistent record into memory.
 // Explicit refusal preserves the archive; callers must not silently drop prior turns.
 func (s *Store) CheckWorkingBudget(id string, limit int64) error {
+	if limit <= 0 {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if v, ok := s.items[id]; ok {
@@ -380,3 +414,229 @@ func (s *Store) ReclaimCache() int64 {
 	s.bytes = 0
 	return n
 }
+
+// PutReader stores a JSON array without retaining its contents in memory.
+func (s *Store) PutReader(id string, src io.ReadSeeker) error {
+	return s.PutReaderContext(context.Background(), id, src)
+}
+
+func (s *Store) PutReaderContext(ctx context.Context, id string, src io.ReadSeeker) error {
+	if !validID(id) {
+		return errors.New("invalid conversation")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	if _, err := jsonscan.Array(src); err != nil {
+		return err
+	}
+	size, err := src.Seek(0, io.SeekEnd)
+	if err != nil {
+		return err
+	}
+	if size > maxPersistedBytes {
+		return errors.New("history record too large")
+	}
+	if _, err = src.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	hash := sha256.New()
+	if _, err = io.Copy(hash, src); err != nil {
+		return err
+	}
+	if _, err = src.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prune()
+	var dir string
+	if s.opts.Path != "" {
+		dir = s.dir()
+		if err = os.MkdirAll(dir, 0700); err != nil {
+			return err
+		}
+	} else {
+		if s.volatileDir == "" {
+			s.volatileDir, err = os.MkdirTemp("", "wb_history_*")
+			if err != nil {
+				return err
+			}
+			s.volatileDisk = make(map[string]diskVolatileEntry)
+		}
+		dir = s.volatileDir
+	}
+	f, err := os.CreateTemp(dir, ".history-*")
+	if err != nil {
+		return err
+	}
+	temp := f.Name()
+	defer func() { f.Close(); os.Remove(temp) }()
+	if err = f.Chmod(0600); err != nil {
+		return err
+	}
+	if s.opts.Path != "" {
+		idJSON, _ := json.Marshal(id)
+		if _, err = fmt.Fprintf(f, `{"id":%s,"hash":"%x","value":`, idJSON, hash.Sum(nil)); err != nil {
+			return err
+		}
+	}
+	if _, err = io.Copy(f, src); err != nil {
+		return err
+	}
+	if s.opts.Path != "" {
+		if _, err = io.WriteString(f, "}\n"); err != nil {
+			return err
+		}
+	}
+	if err = f.Sync(); err != nil {
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	st, err := os.Stat(temp)
+	if err != nil {
+		return err
+	}
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	if s.opts.Path != "" {
+		target := s.file(id)
+		old := int64(0)
+		exists := false
+		if stOld, e := os.Stat(target); e == nil {
+			old = stOld.Size()
+			exists = true
+		}
+		if s.totalDiskBytes-old+st.Size() > maxArchiveBytes || (!exists && s.totalDiskCount >= maxArchiveRecords) {
+			return errors.New("history archive full; existing history retained")
+		}
+		if err = os.Rename(temp, target); err != nil {
+			return err
+		}
+		s.diskBytes += st.Size() - old
+		s.totalDiskBytes += st.Size() - old
+		if !exists {
+			s.diskCount++
+			s.totalDiskCount++
+		}
+	} else {
+		old, exists := s.volatileDisk[id]
+		oldSize := int64(0)
+		if exists {
+			oldSize = old.size
+		}
+		if s.volatileBytes-oldSize+st.Size() > maxArchiveBytes {
+			return errors.New("history archive full; existing history retained")
+		}
+		if !exists && len(s.volatileDisk) >= s.opts.MaxEntries {
+			return errors.New("history archive entry limit reached; existing history retained")
+		}
+		target := filepath.Join(dir, digest([]byte(id))+".json")
+		if err = os.Rename(temp, target); err != nil {
+			return err
+		}
+		s.clock++
+		s.volatileDisk[id] = diskVolatileEntry{target, time.Now().Add(s.opts.TTL), s.clock, st.Size()}
+		s.volatileBytes += st.Size() - oldSize
+	}
+	if old, ok := s.items[id]; ok {
+		s.bytes -= int64(len(old.Value))
+		delete(s.items, id)
+	}
+	return nil
+}
+
+// OpenReader returns a verified, seekable view of the stored JSON array.
+func (s *Store) OpenReader(id string) (io.ReadSeekCloser, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prune()
+	if v, ok := s.items[id]; ok {
+		s.clock++
+		v.Used = s.clock
+		s.items[id] = v
+		return readSeekNopCloser{bytes.NewReader(v.Value)}, true
+	}
+	if !validID(id) {
+		return nil, false
+	}
+	var path string
+	if s.opts.Path != "" {
+		path = s.file(id)
+	} else if v, ok := s.volatileDisk[id]; ok {
+		path = v.path
+		s.clock++
+		v.used = s.clock
+		s.volatileDisk[id] = v
+	} else {
+		return nil, false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	if s.opts.Path == "" {
+		return f, true
+	}
+	st, err := f.Stat()
+	if err != nil || st.Size() > maxPersistedBytes+(1<<20) {
+		f.Close()
+		return nil, false
+	}
+	fields, err := jsonscan.Object(f)
+	if err != nil {
+		f.Close()
+		return nil, false
+	}
+	var idSpan, hashSpan, value jsonscan.Span
+	for _, field := range fields {
+		switch field.Key {
+		case "id":
+			idSpan = field
+		case "hash":
+			hashSpan = field
+		case "value":
+			value = field
+		}
+	}
+	readString := func(sp jsonscan.Span) string {
+		if sp.End-sp.Start > 1024 || sp.End <= sp.Start {
+			return ""
+		}
+		b := make([]byte, sp.End-sp.Start)
+		if _, e := f.ReadAt(b, sp.Start); e != nil {
+			return ""
+		}
+		var x string
+		_ = json.Unmarshal(b, &x)
+		return x
+	}
+	if readString(idSpan) != id || value.End <= value.Start {
+		f.Close()
+		return nil, false
+	}
+	hash := sha256.New()
+	if _, err = io.Copy(hash, io.NewSectionReader(f, value.Start, value.End-value.Start)); err != nil || fmt.Sprintf("%x", hash.Sum(nil)) != readString(hashSpan) {
+		f.Close()
+		return nil, false
+	}
+	return sectionReadCloser{io.NewSectionReader(f, value.Start, value.End-value.Start), f}, true
+}
+
+type readSeekNopCloser struct{ *bytes.Reader }
+
+func (readSeekNopCloser) Close() error { return nil }
+
+type sectionReadCloser struct {
+	*io.SectionReader
+	f *os.File
+}
+
+func (v sectionReadCloser) Close() error { return v.f.Close() }
+func statErr(path string) error          { _, err := os.Stat(path); return err }

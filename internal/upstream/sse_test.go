@@ -3,6 +3,7 @@ package upstream
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -931,4 +932,53 @@ func TestCreditPackagesExpiryTimestamp(t *testing.T) {
 	if !found {
 		t.Fatalf("gift pack missing Unix-ms expiry: %+v", packs)
 	}
+}
+
+
+type dummyCloser struct {
+	io.Reader
+	closed bool
+}
+
+func (d *dummyCloser) Close() error {
+	d.closed = true
+	return nil
+}
+
+func TestPrecheckStream_Healthy(t *testing.T) {
+	raw := ": ping\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n"
+	dc := &dummyCloser{Reader: strings.NewReader(raw)}
+	checked, err := PrecheckStream(dc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer checked.Close()
+
+	buf := new(strings.Builder)
+	_, _ = io.Copy(buf, checked)
+	if !strings.Contains(buf.String(), "content\":\"hi\"") {
+		t.Fatalf("stream content lost: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), ": ping") {
+		t.Fatalf("comment lost: %s", buf.String())
+	}
+}
+
+func TestPrecheckStream_Empty(t *testing.T) {
+	raw := ": ping\n\n: another comment\n\n"
+	dc := &dummyCloser{Reader: strings.NewReader(raw)}
+	_, err := PrecheckStream(dc)
+	if !errors.Is(err, errEmptyStream) {
+		t.Fatalf("expected errEmptyStream, got: %v", err)
+	}
+}
+
+func TestPrecheckStream_PassesDataEvents(t *testing.T) {
+	raw := "data: {\"error\":{\"code\":6004,\"message\":\"rate limited\"}}\n\n"
+	dc := &dummyCloser{Reader: strings.NewReader(raw)}
+	checked, err := PrecheckStream(dc)
+	if err != nil {
+		t.Fatalf("expected data frame to pass precheck, got: %v", err)
+	}
+	defer checked.Close()
 }

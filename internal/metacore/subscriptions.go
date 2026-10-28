@@ -22,8 +22,18 @@ func subscriptionURL(raw string) (*url.URL, error) {
 		return nil, ErrInvalid
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Fragment != "" || u.Opaque != "" || u.Port() != "" && u.Port() != "443" {
-		return nil, errors.New("subscription requires a public HTTPS URL on port 443")
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Fragment != "" || u.Opaque != "" {
+		return nil, errors.New("subscription requires a public HTTP or HTTPS URL")
+	}
+	port := u.Port()
+	if port != "" {
+		want := "80"
+		if u.Scheme == "https" {
+			want = "443"
+		}
+		if port != want {
+			return nil, errors.New("subscription URL uses an invalid port")
+		}
 	}
 	if strings.ContainsAny(u.Hostname(), "\\%\x00\r\n ") {
 		return nil, ErrInvalid

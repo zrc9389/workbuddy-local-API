@@ -24,10 +24,16 @@ func (p *Service) Scan(ctx context.Context) (ScanResult, error) {
 			wg.Wait()
 			return ScanResult{}, err
 		}
+		generation, admitted := p.beginScan(st.UID)
+		if !admitted {
+			p.releaseScan()
+			continue
+		}
 		wg.Add(1)
-		go func(i int, uid string) {
+		go func(i int, uid string, generation uint64) {
 			defer wg.Done()
 			defer p.releaseScan()
+			defer p.endScan(uid)
 			a := p.cfg.Pool.AuthByUID(uid)
 			if a == nil {
 				return
@@ -55,6 +61,9 @@ func (p *Service) Scan(ctx context.Context) (ScanResult, error) {
 			// 小程序口径任务（school_season 校园日 / Sequential_Tasks_1 小程序首对话）
 			// 仅在 mp 头列表下发，与默认口径不重叠——合并进待办列表；mp 列表失败
 			// 静默（无 mp 任务的部署/活动结束时零影响）。
+			if !p.scanValid(uid, generation) {
+				return
+			}
 			if mpTasks, err := p.cfg.Upstream.ListTasksMP(a); err == nil {
 				seen := map[string]bool{}
 				for _, t := range it.Growth {
@@ -67,7 +76,7 @@ func (p *Service) Scan(ctx context.Context) (ScanResult, error) {
 					}
 				}
 			}
-		}(i, st.UID)
+		}(i, st.UID, generation)
 	}
 	wg.Wait()
 	pending := 0

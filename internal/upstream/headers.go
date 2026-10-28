@@ -21,6 +21,7 @@ const (
 	// config upstream.cli_version 可覆盖（空 = 内置默认）。
 	defaultCliVersion = "2.137.1"
 
+
 	originRefererCN     = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
 )
@@ -206,7 +207,7 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 	} else {
 		req.Header.Set("X-No-Authorization", "1")
 	}
-	if a.UID != "" {
+	if a != nil && a.UID != "" {
 		req.Header.Set("X-User-Id", a.UID)
 	} else {
 		req.Header.Set("X-No-User-Id", "1")
@@ -238,6 +239,9 @@ func (c *Client) ChatHeaders(req *http.Request, a *auth.Auth, clientIP string, m
 	c.injectDeviceToken(req, a)
 	// 会话头族（对话/请求/消息/B3 链路），见 injectConversationHeaders。
 	c.injectConversationHeaders(req, meta)
+	if a != nil && a.IsGlobal() {
+		req.Header.Set("X-Product", "cloud")
+	}
 }
 
 // injectGlobalChatHeaders global 账号（无企业 ID）的 chat 专属声明头，对齐 intl 项目
@@ -276,6 +280,8 @@ func (c *Client) injectConversationHeaders(req *http.Request, meta ChatMeta) {
 	messageID := session.NewMessageID()
 	if meta.ConversationID != "" {
 		req.Header.Set("X-Conversation-ID", meta.ConversationID)
+	} else {
+		req.Header.Del("X-Conversation-ID")
 	}
 	req.Header.Set("X-Conversation-Request-ID", convReqID)
 	req.Header.Set("X-Conversation-Message-ID", messageID)

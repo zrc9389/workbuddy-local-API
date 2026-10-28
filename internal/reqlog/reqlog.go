@@ -303,6 +303,44 @@ func (r *Recorder) Close() {
 	r.archive.close()
 }
 
+// DeleteAccount removes only rows carrying the exact non-reversible account
+// reference. Legacy rows without a reference are retained for normal expiry;
+// guessing from a nickname or UID prefix could delete another account's data.
+func (r *Recorder) DeleteAccount(uid string) error {
+	if r == nil {
+		return nil
+	}
+	ref := telemetry.AccountReference(uid)
+	if ref == "" {
+		return errors.New("empty account UID")
+	}
+	if r.archive == nil || !r.archive.enabled() {
+		r.mu.Lock()
+		kept := r.recent[:0]
+		for _, e := range r.recent {
+			if e.AccountRef != ref {
+				kept = append(kept, e)
+			}
+		}
+		r.recent = kept
+		r.mu.Unlock()
+		return nil
+	}
+	if err := r.archive.deleteAccount(ref); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	kept := r.recent[:0]
+	for _, e := range r.recent {
+		if e.AccountRef != ref {
+			kept = append(kept, e)
+		}
+	}
+	r.recent = kept
+	r.mu.Unlock()
+	return nil
+}
+
 // WithErrorOnlyPolicy 返回独立持有的错误日志记录器，供 production 组合层使用。
 // 原记录器及其事件流不受影响，避免测试或其他调用方被静默改变语义。
 func (r *Recorder) WithErrorOnlyPolicy() *Recorder {
@@ -333,14 +371,16 @@ func isError(e *Event) bool {
 }
 
 type archiveWriter struct {
-	cfg       Config
-	ch        chan Event
-	stop      chan struct{}
-	done      chan struct{}
-	closeOnce sync.Once
-	dropped   atomic.Uint64
-	lastErrMu sync.Mutex
-	lastErr   string
+	opMu        sync.Mutex
+	deletedRefs map[string]bool
+	cfg         Config
+	ch          chan Event
+	stop        chan struct{}
+	done        chan struct{}
+	closeOnce   sync.Once
+	dropped     atomic.Uint64
+	lastErrMu   sync.Mutex
+	lastErr     string
 
 	file  *os.File
 	buf   *bufio.Writer
@@ -353,13 +393,135 @@ type archiveWriter struct {
 	lastPrune time.Time
 }
 
+func (w *archiveWriter) deleteAccount(ref string) error {
+	if !w.enabled() {
+		return nil
+	}
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+	for {
+		select {
+		case queued := <-w.ch:
+			if err := w.writeEventLocked(queued); err != nil {
+				return err
+			}
+		default:
+			goto drained
+		}
+	}
+drained:
+	select {
+	case <-w.stop:
+		return errors.New("request archive is closed")
+	default:
+	}
+	if w.file != nil {
+		if err := w.buf.Flush(); err != nil {
+			return err
+		}
+		if err := w.file.Sync(); err != nil {
+			return err
+		}
+		if err := w.file.Close(); err != nil {
+			return err
+		}
+		w.file, w.buf = nil, nil
+	}
+	files, err := archiveNames(w.cfg.Dir)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for _, name := range files {
+		path := filepath.Join(w.cfg.Dir, name)
+		tmp := path + ".delete.tmp"
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+		if err != nil {
+			in.Close()
+			return err
+		}
+		reader := bufio.NewReaderSize(in, 64<<10)
+		writer := bufio.NewWriterSize(out, 64<<10)
+		var buffer []byte
+		fileChanged := false
+		for {
+			line, tooLong, eof, readErr := readArchiveLine(reader, &buffer)
+			if readErr != nil {
+				err = readErr
+				break
+			}
+			if tooLong {
+				err = errors.New("archive record exceeds safe rewrite limit")
+				break
+			}
+			if len(line) > 0 {
+				var e Event
+				if json.Unmarshal(line, &e) == nil {
+					if e.AccountRef == ref {
+						fileChanged = true
+						changed = true
+						if eof {
+							break
+						}
+						continue
+					}
+				}
+				if _, err = writer.Write(line); err == nil {
+					err = writer.WriteByte('\n')
+				}
+			}
+			if err != nil || eof {
+				break
+			}
+		}
+		if closeErr := in.Close(); err == nil {
+			err = closeErr
+		}
+		if flushErr := writer.Flush(); err == nil {
+			err = flushErr
+		}
+		if syncErr := out.Sync(); err == nil {
+			err = syncErr
+		}
+		if closeErr := out.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+		if fileChanged {
+			if err := os.Rename(tmp, path); err != nil {
+				_ = os.Remove(tmp)
+				return err
+			}
+		} else {
+			_ = os.Remove(tmp)
+		}
+	}
+	if changed {
+		if err := w.refreshUsage(); err != nil {
+			return err
+		}
+	}
+	if w.deletedRefs == nil {
+		w.deletedRefs = map[string]bool{}
+	}
+	w.deletedRefs[ref] = true
+	return nil
+}
+
 func newArchiveWriter(cfg Config) *archiveWriter {
 	cfg = normalizeConfig(cfg)
 	if !cfg.Enabled || strings.TrimSpace(cfg.Dir) == "" {
 		return &archiveWriter{cfg: cfg}
 	}
 	if cfg.RetentionDays <= 0 {
-		cfg.RetentionDays = 7
+		cfg.RetentionDays = 1
 	}
 	if cfg.MaxBytes <= 0 {
 		cfg.MaxBytes = 100 << 20
@@ -371,7 +533,7 @@ func newArchiveWriter(cfg Config) *archiveWriter {
 		cfg.QueueSize = defaultQueue
 	}
 	w := &archiveWriter{
-		cfg:  cfg,
+		cfg: cfg, deletedRefs: map[string]bool{},
 		ch:   make(chan Event, cfg.QueueSize),
 		stop: make(chan struct{}),
 		done: make(chan struct{}),
@@ -383,6 +545,12 @@ func newArchiveWriter(cfg Config) *archiveWriter {
 		return w
 	}
 	w.scan()
+	if !cfg.ErrorsOnly {
+		// Apply the rolling window before the first archive read after restart.
+		if err := w.pruneAllEvents(); err != nil {
+			w.setErr(err)
+		}
+	}
 	go w.run()
 	return w
 }
@@ -429,22 +597,32 @@ func (w *archiveWriter) run() {
 }
 
 func (w *archiveWriter) writeEvent(e Event) {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
+	if err := w.writeEventLocked(e); err != nil {
+		w.setErr(err)
+	}
+}
+
+func (w *archiveWriter) writeEventLocked(e Event) error {
+	if e.AccountRef != "" && w.deletedRefs[e.AccountRef] {
+		return nil
+	}
 	if w.cfg.ErrorsOnly && !isError(&e) {
-		return
+		return nil
 	}
 	raw, err := json.Marshal(e)
 	if err != nil {
-		w.setErr(err)
-		return
+		return err
 	}
 	if w.cfg.ErrorsOnly {
 		if int64(len(raw))+1 > w.cfg.MaxEventBytes {
 			w.dropped.Add(1)
-			return
+			return nil
 		}
 		if !w.makeRoom(int64(len(raw)) + 1) {
 			w.dropped.Add(1)
-			return
+			return nil
 		}
 	}
 	now := e.Time
@@ -454,27 +632,24 @@ func (w *archiveWriter) writeEvent(e Event) {
 	day := now.Format("2006-01-02")
 	if w.file == nil || w.day != day {
 		if err := w.openFile(now, false); err != nil {
-			w.setErr(err)
-			return
+			return err
 		}
 	}
 	if w.size > 0 && w.size+int64(len(raw))+1 > w.cfg.FileMaxBytes {
 		if err := w.openFile(now, true); err != nil {
-			w.setErr(err)
-			return
+			return err
 		}
 	}
 	if _, err := w.buf.Write(raw); err != nil {
-		w.setErr(err)
-		return
+		return err
 	}
 	if err := w.buf.WriteByte('\n'); err != nil {
-		w.setErr(err)
-		return
+		return err
 	}
 	w.size += int64(len(raw)) + 1
 	w.total += int64(len(raw)) + 1
 	w.count++
+	return nil
 }
 
 func (w *archiveWriter) scan() {
@@ -731,6 +906,8 @@ func (w *archiveWriter) closeFile() {
 }
 
 func (w *archiveWriter) prune() {
+	w.opMu.Lock()
+	defer w.opMu.Unlock()
 	if !w.enabled() {
 		return
 	}
@@ -745,6 +922,74 @@ func (w *archiveWriter) prune() {
 		}
 		return
 	}
+	// Request archives use the same rolling 24-hour policy as errors. Do not
+	// use file mtime or delete a whole day file: both can remove fresh rows.
+	if !w.lastPrune.IsZero() && time.Since(w.lastPrune) < time.Minute {
+		return
+	}
+	w.lastPrune = time.Now()
+	if err := w.pruneAllEvents(); err != nil {
+		w.setErr(err)
+	}
+	w.pruneBySizeLegacy()
+}
+
+func eventTimeFromJSON(line []byte) (time.Time, bool) {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(line, &raw) != nil {
+		return time.Time{}, false
+	}
+	value, ok := raw["time"]
+	if !ok {
+		return time.Time{}, false
+	}
+	var t time.Time
+	if json.Unmarshal(value, &t) != nil || t.IsZero() {
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+func (w *archiveWriter) pruneAllEvents() error {
+	w.flush()
+	cutoff := time.Now().Add(-24 * time.Hour)
+	names, err := archiveNames(w.cfg.Dir)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		path := filepath.Join(w.cfg.Dir, name)
+		changed := false
+		tmp := path + ".retention.tmp"
+		err := rewriteArchiveLines(path, tmp, func(line []byte) (bool, bool) {
+			at, known := eventTimeFromJSON(line)
+			if known && at.Before(cutoff) {
+				changed = true
+				return false, false
+			}
+			// Unknown or malformed records are retained for forensic safety.
+			return true, false
+		})
+		if err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+		if !changed {
+			_ = os.Remove(tmp)
+			continue
+		}
+		if w.path == path {
+			w.closeFile()
+		}
+		if err := os.Rename(tmp, path); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+	}
+	return w.refreshUsage()
+}
+
+func (w *archiveWriter) pruneBySizeLegacy() {
 	entries, err := os.ReadDir(w.cfg.Dir)
 	if err != nil {
 		w.setErr(err)
@@ -757,7 +1002,7 @@ func (w *archiveWriter) prune() {
 	}
 	items := make([]item, 0, len(entries))
 	var total int64
-	cutoff := time.Now().AddDate(0, 0, -w.cfg.RetentionDays)
+	cutoff := time.Time{}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "requests-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			continue
@@ -802,7 +1047,15 @@ func (w *archiveWriter) pruneErrors() error {
 		tmp := path + ".tmp"
 		err := rewriteArchiveLines(path, tmp, func(line []byte) (bool, bool) {
 			var e Event
-			if json.Unmarshal(line, &e) != nil || !isError(&e) || e.Time.Before(cutoff) {
+			if json.Unmarshal(line, &e) != nil {
+				// Damaged legacy rows have no trustworthy timestamp; preserve them.
+				return true, false
+			}
+			if e.Time.IsZero() {
+				return true, false
+			}
+			clearlySuccess := e.OK || (e.Status >= 200 && e.Status < 300 && e.Outcome == OutcomeSuccess)
+			if clearlySuccess || e.Time.Before(cutoff) {
 				changed = true
 				return false, false
 			}

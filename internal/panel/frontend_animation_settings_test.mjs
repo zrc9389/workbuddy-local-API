@@ -79,9 +79,9 @@ test('four animation styles share one lifecycle and expose distinct visuals', ()
   assert.equal(animation.normalizeAnimationStyle(undefined), 'names');
 });
 
-test('startup animation honors 8s target and 12s hard limit by default', () => {
+test('startup animation honors 8s target and 20s hard limit by default', () => {
   assert.equal(animation.TARGET_MS, 8000);
-  assert.equal(animation.HARD_LIMIT_MS, 12000);
+  assert.equal(animation.HARD_LIMIT_MS, 20000);
   const scheduled = [];
   const player = animation.startStartupAnimation({
     schedule: (fn, ms) => { scheduled.push({ fn, ms }); return scheduled.length; },
@@ -90,7 +90,7 @@ test('startup animation honors 8s target and 12s hard limit by default', () => {
     cancelRepeat: () => {},
   });
   assert.ok(scheduled.some(entry => entry.ms === 8000), 'phase switch waits for the 8s minimum');
-  assert.ok(scheduled.some(entry => entry.ms === 12000), 'hard limit stays at 12s');
+  assert.ok(scheduled.some(entry => entry.ms === 20000), 'hard limit stays at 20s');
   player.destroy();
 });
 

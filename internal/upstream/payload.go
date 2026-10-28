@@ -10,6 +10,9 @@ import (
 	"strings"
 )
 
+// LargePayloadThreshold 超过 256KB 的大请求判定阈值
+const LargePayloadThreshold = 256 * 1024
+
 // PrepareBodyOpt 单 pass 改写；sanitize=false 时行为完全还原（仅强制 stream + 归一化 tool_choice）。
 func PrepareBodyOpt(src []byte, sanitize bool) []byte {
 	return PrepareBodyOptWithEffortsAndDefault(src, sanitize, nil, nil)
@@ -30,6 +33,9 @@ func PrepareBodyOptWithEfforts(src []byte, sanitize bool, efforts map[string][]s
 func PrepareBodyOptWithEffortsAndDefault(src []byte, sanitize bool, efforts map[string][]string, defaultEfforts map[string]string) []byte {
 	if len(src) == 0 {
 		return src
+	}
+	if len(src) > LargePayloadThreshold {
+		return prepareLargePayloadFast(src, sanitize, efforts, defaultEfforts)
 	}
 	var obj map[string]any
 	if err := json.Unmarshal(src, &obj); err != nil {
@@ -436,4 +442,163 @@ func unescapePatternLiteralEscapes(node any) {
 			unescapePatternLiteralEscapes(v)
 		}
 	}
+}
+
+// prepareLargePayloadFast 针对超过 256KB 的大请求执行轻量 RawMessage 快速通道：
+// 仅展开顶层结构进行必要改写（stream/max_tokens/stream_options），庞大的 messages 与 tools 保持原始字节切片引用，
+// 严禁展开为海量 map[string]any DOM 树，杜绝堆内存多倍膨胀与 GC 惊群。
+// 坚决遵循无损原则：绝不截断上下文、绝不插入默认摘要、绝不注入 \u200B 零宽空格。
+func prepareLargePayloadFast(src []byte, sanitize bool, efforts map[string][]string, defaultEfforts map[string]string) []byte {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(src, &obj); err != nil {
+		return src
+	}
+
+	// 1. 强制 stream: true
+	obj["stream"] = json.RawMessage([]byte("true"))
+
+	// 2. 补全 stream_options
+	if _, has := obj["stream_options"]; !has {
+		obj["stream_options"] = json.RawMessage([]byte(`{"include_usage":true}`))
+	}
+
+	// 3. 翻译 max_completion_tokens -> max_tokens
+	if mct, has := obj["max_completion_tokens"]; has && len(mct) > 0 {
+		if _, hasMt := obj["max_tokens"]; !hasMt {
+			obj["max_tokens"] = mct
+		}
+		delete(obj, "max_completion_tokens")
+	}
+
+	// 4. normalizeToolChoiceFast: 顶层工具选择规整（字符串直接透传；若是对象则转为标准字符串）
+	if tcRaw, has := obj["tool_choice"]; has {
+		var tcStr string
+		if json.Unmarshal(tcRaw, &tcStr) == nil {
+			if strings.EqualFold(strings.TrimSpace(tcStr), "none") {
+				delete(obj, "tool_choice")
+				delete(obj, "tools")
+				delete(obj, "functions")
+			}
+		} else {
+			var tcObj map[string]any
+			if json.Unmarshal(tcRaw, &tcObj) == nil {
+				typ, _ := tcObj["type"].(string)
+				typ = strings.ToLower(strings.TrimSpace(typ))
+				switch typ {
+				case "none":
+					delete(obj, "tool_choice")
+					delete(obj, "tools")
+					delete(obj, "functions")
+				case "auto", "required":
+					b, _ := json.Marshal(typ)
+					obj["tool_choice"] = json.RawMessage(b)
+				case "function":
+					fnName := ""
+					if fn, ok := tcObj["function"].(map[string]any); ok {
+						fnName, _ = fn["name"].(string)
+					}
+					if fnName == "" {
+						fnName, _ = tcObj["name"].(string)
+					}
+					fnName = strings.TrimSpace(fnName)
+					if fnName != "" {
+						b, _ := json.Marshal(fnName)
+						obj["tool_choice"] = json.RawMessage(b)
+					} else {
+						obj["tool_choice"] = json.RawMessage([]byte(`"auto"`))
+					}
+				default:
+					delete(obj, "tool_choice")
+				}
+			}
+		}
+	}
+
+	// 5. 确保首条消息存在 system（若已有 messages 且前缀不为 system，前置中性 system）
+	if rawMsgs, has := obj["messages"]; has && len(rawMsgs) > 0 {
+		trimmed := strings.TrimSpace(string(rawMsgs))
+		if strings.HasPrefix(trimmed, "[") && !strings.Contains(trimmed[:minVal(len(trimmed), 1024)], `"role":"system"`) && !strings.Contains(trimmed[:minVal(len(trimmed), 1024)], `"role": "system"`) {
+			prefix := `[{"role":"system","content":"You are a helpful assistant."},`
+			newMsgs := prefix + strings.TrimPrefix(trimmed, "[")
+			obj["messages"] = json.RawMessage([]byte(newMsgs))
+		}
+	}
+
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return src
+	}
+	return out
+}
+
+// IsPayloadUnmodified 快速检查请求体是否已经完全合规而无需任何修改（支持未改写零拷贝流式发送）
+func IsPayloadUnmodified(src []byte) bool {
+	if len(src) == 0 {
+		return false
+	}
+	var peek struct {
+		Stream              bool            `json:"stream"`
+		StreamOptions       json.RawMessage `json:"stream_options"`
+		MaxCompletionTokens json.RawMessage `json:"max_completion_tokens"`
+		PromptCacheKey      string          `json:"prompt_cache_key"`
+	}
+	if err := json.Unmarshal(src, &peek); err == nil {
+		if !peek.Stream || len(peek.StreamOptions) == 0 || len(peek.MaxCompletionTokens) > 0 {
+			return false
+		}
+		return true
+	}
+	// Peek 可能只是前缀；JSON 不完整时不能宣称整个请求已规整。
+	return false
+}
+
+func minVal(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// StripConversationID 剥除请求体中的顶层 conversation_id、conversationId 以及 metadata 中的会话标识，
+// 防止跨账号重试时发生会话串号污染。
+func StripConversationID(src []byte) []byte {
+	if len(src) == 0 {
+		return src
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(src, &obj); err != nil {
+		return src
+	}
+	modified := false
+	if _, ok := obj["conversation_id"]; ok {
+		delete(obj, "conversation_id")
+		modified = true
+	}
+	if _, ok := obj["conversationId"]; ok {
+		delete(obj, "conversationId")
+		modified = true
+	}
+	if meta, ok := obj["metadata"].(map[string]any); ok {
+		metaModified := false
+		if _, ok := meta["conversation_id"]; ok {
+			delete(meta, "conversation_id")
+			metaModified = true
+		}
+		if _, ok := meta["conversationId"]; ok {
+			delete(meta, "conversationId")
+			metaModified = true
+		}
+		if metaModified {
+			obj["metadata"] = meta
+			modified = true
+		}
+	}
+	if !modified {
+		return src
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return src
+	}
+	return out
 }

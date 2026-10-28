@@ -46,7 +46,7 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
-	realmOK := func(e *entry) bool { return realm == "" || e.a.Realm() == realm }
+	realmOK := func(e *entry) bool { return realm == "" || (e.a != nil && e.a.Realm() == realm) }
 	healthyOf := func(e *entry) bool { return realmOK(e) && e.healthy(now) }
 	if reqModel != "" {
 		healthyOf = func(e *entry) bool { return realmOK(e) && e.healthyForModel(now, reqModel) }
@@ -301,7 +301,7 @@ func (p *Pool) pickEarliestExpiryLocked(tried map[string]bool, now time.Time, re
 		if tried != nil && tried[uid] {
 			continue
 		}
-		if realm != "" && e.a.Realm() != realm {
+		if realm != "" && (e.a == nil || e.a.Realm() != realm) {
 			continue // 域过滤：池内跨 realm 的冷却账号不参与本 realm 兜底
 		}
 		if e.manualDisabled || e.balanceBlocked() || e.disabled || e.paused {

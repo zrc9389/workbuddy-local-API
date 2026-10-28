@@ -48,6 +48,13 @@ const appVersion = "0.2.0-local"
 // 这样 config 里改 state_file 时用量数据跟着走，不需要额外配置项。
 func usagePathFor(stateFile string) string { return stateSibling(stateFile, "usage.json") }
 
+func optionalBodyLimit(megabytes int) int64 {
+	if megabytes <= 0 {
+		return 0
+	}
+	return int64(megabytes) << 20
+}
+
 // stateSibling 返回与 state 文件同目录的指定文件名路径（相对路径场景回落当前目录）。
 // usage.json（用量记录）与 output_probes.json（模型上限探测）共用本规则。
 func stateSibling(stateFile, name string) string {
@@ -69,7 +76,7 @@ func main() {
 // shared runtime state and sidecar cleanup are still deferred inside run.
 func run() error {
 	cfgPath := flag.String("config", "config.json", "配置文件路径（默认当前目录 config.json；不存在时自动生成推荐配置）")
-	resetPassword := flag.Bool("reset-password", false, "离线重置管理密码为 123456 后退出")
+	resetPassword := flag.Bool("reset-password", false, "离线清除管理密码并要求下次启动时重新设置")
 	demoMode := flag.Bool("demo", false, "隔离演示数据与模拟上游，不读取真实账号")
 	flag.Parse()
 	if *demoMode && *cfgPath == "config.json" {
@@ -108,7 +115,7 @@ func run() error {
 		if err := localauth.Reset(passwordPath); err != nil {
 			log.Fatal(err)
 		}
-		log.Print("管理密码已重置为 123456")
+		log.Print("管理密码已清除；下次登录必须设置新的非空密码")
 		return nil
 	}
 	localAuth, err := localauth.New(passwordPath)
@@ -271,7 +278,7 @@ func run() error {
 		// 保号类四任务是否覆盖禁用账号（缺省 false = 禁用即跳过，保持既有行为）。
 		IncludeDisabledInTasks: cfg.Schedule.IncludeDisabledInTasks,
 	})
-	log.Print("维护任务仅由任务页统一手动执行；旧定时排程和自动余额刷新不会启动")
+	log.Print("维护任务按 schedule 配置定时执行；余额刷新按配置间隔运行")
 
 	// 管理面板日志镜像：标准 log（stderr）与 chat 表格日志（stdout）双路复制进
 	// 面板环形缓冲，供 /panel/api/logs 读取；控制台输出行为完全不变。
@@ -284,7 +291,7 @@ func run() error {
 	// 用量记录器：与 state 文件同目录，随 state_file 配置一起搬移。
 	// datapath 由 state 文件路径推出，避免再加一个配置项。
 	usagePath := usagePathFor(cfg.StateFile)
-	rec := usage.New(usagePath)
+	rec := usage.NewWithRetention(usagePath, cfg.RetentionWindowDur)
 	rec.Start()
 	defer rec.Stop()
 	log.Printf("[usage] 逐请求用量记录已启用: %s (%s)", usagePath, rec.Describe())
@@ -320,21 +327,37 @@ func run() error {
 			fmt.Fprintf(os.Stderr, "Meta shutdown incomplete (active traffic preserved): %v\n", e)
 		}
 	}()
+	diskQueue, err := spool.Open(spool.Options{Dir: stateSibling(cfg.StateFile, "spool")})
+	if err != nil {
+		log.Fatalf("spool: %v", err)
+	}
 	pn := panel.New(panel.Config{
+		ModelPolicy: modelPolicy,
 		Meta:        metaManager,
 		Maintenance: maint,
 		Demo:        *demoMode,
 		Tasks:       taskService,
 		Pool:        p,
 		Usage:       rec,
-		RequestLog:  requestLog,
-		Upstream:    up,
-		Scheduler:   sch,
-		AuthDir:     cfg.AuthDir,
-		RedisMode:   redisMode,
-		StickyCount: sessCount,
-		Version:     appVersion,
-		Live:        live,
+		SessionCleanup: func(uid string) error {
+			if sessRouter != nil {
+				return sessRouter.DeleteAccount(uid)
+			}
+			return nil
+		},
+		DeletionJournalPath:     stateSibling(cfg.StateFile, "account-deletions.json"),
+		RequestLog:              requestLog,
+		Spool:                   diskQueue,
+		Upstream:                up,
+		Scheduler:               sch,
+		AuthDir:                 cfg.AuthDir,
+		CredentialQuarantineDir: filepath.Join(cfg.AuthDir, ".deleted-accounts"),
+		RedisMode:               redisMode,
+		StickyCount:             sessCount,
+		Version:                 appVersion,
+		UpdateChecker:           panel.NewUpdateChecker(panel.UpdateSource{GitHubOwner: cfg.Update.GitHubOwner, GitHubRepo: cfg.Update.GitHubRepo, Channel: cfg.Update.Channel}, appVersion),
+		UpdateApplier:           panel.NewUpdateInstaller("", nil),
+		Live:                    live,
 		// 模型上限探测数据（scripts/probe_max_tokens.py --panel-out 写入）：
 		// 与 state 文件同目录，缺省 data/output_probes.json。
 		ProbeFile:  stateSibling(cfg.StateFile, "output_probes.json"),
@@ -346,6 +369,10 @@ func run() error {
 			return saveConfig(raw, *cfgPath, live, p, up, sch)
 		},
 	})
+	if err := pn.PruneCredentialQuarantine(time.Now()); err != nil {
+		log.Printf("panel: credential quarantine cleanup: %v", err)
+	}
+	pn.ResumePendingDeletions()
 	// 成长任务队列每日自动执行（与「执行全部待办」同管线）：Sequential 族零点解锁后
 	// 无需手动扫描；hook 返回即启动（异步执行），已在跑时内部跳过。
 	sch.SetGrowthHook(taskService.RunGrowthQueueOnce)
@@ -355,11 +382,6 @@ func run() error {
 	} else {
 		log.SetOutput(io.Discard)
 		server.SetChatLogOutput(io.Discard)
-	}
-
-	diskQueue, err := spool.Open(spool.Options{Dir: stateSibling(cfg.StateFile, "spool")})
-	if err != nil {
-		log.Fatalf("spool: %v", err)
 	}
 	h := server.NewHandler(server.Config{
 		StrictContext: cfg.Features.StrictContext,
@@ -376,7 +398,7 @@ func run() error {
 		LogsEnabled:     cfg.Logging.Enabled && logservice.Available,
 		ModelPolicy:     modelPolicy,
 		History:         history,
-		MaxBodyBytes:    int64(cfg.Resources.MaxBodyMB) << 20,
+		MaxBodyBytes:    optionalBodyLimit(cfg.Resources.MaxBodyMB),
 		MaxConcurrent:   cfg.Resources.MaxConcurrent,
 		MaxWorkingBytes: int64(cfg.Resources.MaxHeapMB) << 19,
 		Pool:            p,
@@ -397,13 +419,40 @@ func run() error {
 		// handler 侧第三道闸（global realm）：false（显式逃生门）时不列 global: 模型名。
 		GlobalEnabled: cfg.Global.Enabled,
 	})
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	retention := panel.NewRetentionManager()
+	retention.SetWindow(cfg.RetentionWindowDur)
+	retention.Run(ctx, time.Hour, func(now time.Time) error {
+		rec.Rollup(now)
+		return rec.Save()
+	})
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				if err := pn.PruneCredentialQuarantine(now); err != nil {
+					log.Printf("panel: credential quarantine cleanup: %v", err)
+				}
+			}
+		}
+	}()
+	// 订阅缓存默认 48 小时刷新一次；Manager 内部按 provider 的
+	// last_refresh_at 判断到期并串行执行下载与 Mihomo 热加载。
+	metaManager.StartSubscriptionRefresh(ctx, 48*time.Hour)
 	if *demoMode {
 		go demo.Feed(ctx, p, rec, requestLog)
 	}
-	// v0.2 maintenance is manual-only. Do not start the legacy automatic schedulers.
+	// 后台维护任务由 scheduler 统一按配置时点执行；余额刷新独立按分钟间隔运行。
+	// 两个循环都绑定服务 ctx，收到 SIGTERM 时会及时退出。
+	go sch.Run(ctx)
+	if cfg.BalanceRefreshInterval > 0 {
+		sch.StartBalanceRefresh(ctx, cfg.BalanceRefreshInterval)
+	}
 
 	// 启动即预热模型积分倍率表：倍率只在 FetchModels/FetchGlobalModelInfos 成功时
 	// 填充（两者均懒触发），重启后到首次 /v1/models 或面板模型页被访问之前，
@@ -413,21 +462,9 @@ func run() error {
 	// 异步执行：不阻塞监听启动；失败仅记日志（下一轮懒触发或本轮重试仍可补上）。
 	go warmModelRates(ctx, up, p)
 
-	srv := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           localAuth.Wrap(h),
-		ReadHeaderTimeout: 30 * time.Second,
-		// ReadTimeout 覆盖整个请求读取（含 body 上传）：防慢速 body 拖死连接。
-		// 请求体上限由 resources.max_body_mb 控制。缺省 300s（旧固定
-		// 60s 会掐掉大上下文/文件块经反代链的慢速上传，客户端收到
-		// 400 "read body: ... i/o timeout"）；server.read_timeout="0" 显式关闭。
-		// 改动需重启进程。
-		ReadTimeout: cfg.ServerReadTimeoutDur,
-		// IdleTimeout keep-alive 空闲连接回收：配合 chat 出站 ctx 传播防连接泄漏堆积。
-		// 注意：SSE 流式响应期间连接非空闲，不受此项掐断；不设全局 WriteTimeout
-		// （长流式生成合法时长可达数分钟，全局 WriteTimeout 会误杀在途 SSE）。
-		IdleTimeout: 120 * time.Second,
-	}
+	// 使用统一加固的安全服务器工厂构造实例（配置防 Slowloris、MaxHeaderBytes、IdleTimeout）
+	log.SetOutput(os.Stderr)
+	srv := NewHardenedServer(cfg.Listen, localAuth.Wrap(h), cfg.ServerReadTimeoutDur)
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", cfg.Listen, err)
@@ -620,8 +657,8 @@ func restartRequiredFields(c *Config) []string {
 		out = append(out, "upstash")
 	}
 	out = append(out, "session_sticky.ttl", "session_sticky.gc_interval", "memory", "resources", "logging.enabled", "logging.request_archive_enabled", "features.strict_context")
-	out = append(out, "logging.request_archive_enabled", "logging.request_retention_days", "logging.request_archive_max_mb")
-	out = append(out, "server.read_timeout")
+	out = append(out, "logging.request_archive_enabled", "logging.request_retention_days", "logging.request_archive_max_mb", "logging.retention_window")
+	out = append(out, "server.read_timeout", "update")
 	return out
 }
 

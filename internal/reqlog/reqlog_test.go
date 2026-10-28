@@ -1,8 +1,10 @@
 package reqlog
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -62,6 +64,34 @@ func TestArchiveRotationReadAndFilter(t *testing.T) {
 	}
 	if len(rows) != 5 || rows[0].RequestID != "multi-l" || rows[4].RequestID != "multi-h" {
 		t.Fatalf("filtered rows = %+v", rows)
+	}
+}
+
+func TestArchiveRollingRetentionKeepsUnknownRows(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "requests-2026-10-27.jsonl")
+	now := time.Now().UTC()
+	old := Event{Time: now.Add(-25 * time.Hour), RequestID: "expired", Status: 200, OK: true, Outcome: OutcomeSuccess}
+	fresh := Event{Time: now.Add(-time.Hour), RequestID: "fresh", Status: 200, OK: true, Outcome: OutcomeSuccess}
+	oldRaw, _ := json.Marshal(old)
+	freshRaw, _ := json.Marshal(fresh)
+	body := append(append(oldRaw, '\n'), freshRaw...)
+	body = append(body, '\n')
+	body = append(body, []byte("{malformed legacy row}\n")...)
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	r := New(Config{Enabled: true, Dir: dir, RetentionDays: 1})
+	if err := r.archive.pruneAllEvents(); err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "expired") || !strings.Contains(string(raw), "fresh") || !strings.Contains(string(raw), "malformed legacy row") {
+		t.Fatalf("retention result = %s", raw)
 	}
 }
 

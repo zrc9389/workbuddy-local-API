@@ -1,0 +1,27 @@
+[Unit]
+Description=WorkBuddy Local loopback-only gateway and control panel
+After=network.target
+
+[Service]
+Type=simple
+User=workbuddy-local
+Group=workbuddy-local
+WorkingDirectory=/opt/workbuddy-local
+ExecStart=/opt/workbuddy-local/wb2api -config /etc/workbuddy-local/config.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+MemoryHigh=256M
+MemoryMax=512M
+
+# 沙箱安全强化指令
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/workbuddy-local /etc/workbuddy-local
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

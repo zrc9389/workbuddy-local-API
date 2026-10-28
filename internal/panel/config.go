@@ -6,6 +6,8 @@
 package panel
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -28,6 +30,7 @@ func (p *Panel) getConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     true,
+		"data":   map[string]any{"path": p.cfg.ConfigPath, "config": cfg},
 		"path":   p.cfg.ConfigPath,
 		"config": cfg,
 	})
@@ -51,6 +54,17 @@ func (p *Panel) saveConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "read body: "+err.Error())
 		return
 	}
+
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		writeErr(w, http.StatusBadRequest, "empty request body")
+		return
+	}
+	if !json.Valid(trimmed) {
+		writeErr(w, http.StatusBadRequest, "malformed JSON: invalid json syntax")
+		return
+	}
+
 	restartRequired, err := p.cfg.SaveConfig(raw)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -61,7 +75,10 @@ func (p *Panel) saveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("panel: 配置已保存（热生效完成；需重启字段 %d 个）", len(restartRequired))
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":               true,
+		"ok": true,
+		"data": map[string]any{
+			"restart_required": restartRequired,
+		},
 		"restart_required": restartRequired,
 	})
 }

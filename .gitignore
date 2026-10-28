@@ -61,3 +61,37 @@ docs/**/*.jpg
 
 # Vendored meta package binaries
 /third_party/meta/bin/
+
+# -----------------------------------------------------------------------------
+# Release hygiene & local scratch files
+# -----------------------------------------------------------------------------
+
+# Editor/tooling numeric backup files (e.g. *.go.<digits>, *.test.<digits>)
+*.[0-9][0-9][0-9]*
+*.go.[0-9]*
+*.test.[0-9]*
+*.json.[0-9]*
+*.js.[0-9]*
+*.mjs.[0-9]*
+*.html.[0-9]*
+*.css.[0-9]*
+*.cmd.[0-9]*
+*.sh.[0-9]*
+*.md.[0-9]*
+
+# Local dev scratch, bypass copies, and patches
+/work/
+/panel-assets/
+/logs/
+/spool/
+/state/
+/usage/
+*.patch
+.patch
+
+# Test binaries and profiles
+*.test
+*.test.exe
+*.prof
+*.out
+coverage.out

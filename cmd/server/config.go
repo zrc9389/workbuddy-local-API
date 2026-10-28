@@ -17,6 +17,11 @@ import (
 
 // Config 顶层配置。
 type Config struct {
+	Update struct {
+		GitHubOwner string `json:"github_owner"`
+		GitHubRepo  string `json:"github_repo"`
+		Channel     string `json:"channel"`
+	} `json:"update"`
 	Memory struct {
 		Persistent bool `json:"persistent"`
 		MaxEntries int  `json:"max_entries"`
@@ -44,7 +49,7 @@ type Config struct {
 		Enabled bool `json:"enabled"`
 		// RequestArchiveEnabled 请求元数据 JSONL 归档开关，缺省 true。
 		RequestArchiveEnabled bool `json:"request_archive_enabled"`
-		// RequestRetentionDays 归档保留天数，缺省 7；<=0 回落默认。
+		// RequestRetentionDays 归档保留天数，缺省 1 天；<=0 回落默认。
 		RequestRetentionDays int `json:"request_retention_days"`
 		// RequestArchiveMaxMB 归档总上限（MiB），缺省 100；<=0 回落默认。
 		RequestArchiveMaxMB int `json:"request_archive_max_mb"`
@@ -55,7 +60,8 @@ type Config struct {
 		// 但它比 token 计数敏感（IP 属个人信息），共享部署/多租户场景可能需要
 		// 关掉。关闭后 Event.ClientIP/UserAgent 保持为空，归档里不出现该字段。
 		// 热生效（经 livecfg 快照），无需重启。
-		RequestClientInfo bool `json:"request_client_info"`
+		RequestClientInfo bool   `json:"request_client_info"`
+		RetentionWindow   string `json:"retention_window"`
 	} `json:"logging"`
 
 	Server struct {
@@ -243,6 +249,7 @@ type Config struct {
 	CostExploreIntervalDur time.Duration `json:"-"`
 	// ServerReadTimeoutDur 解析后的入站请求读取上限（issue #100）；0 = 不限制。
 	ServerReadTimeoutDur time.Duration `json:"-"`
+	RetentionWindowDur   time.Duration `json:"-"`
 }
 
 // Default 默认配置。
@@ -259,11 +266,12 @@ func Default() *Config {
 	c.Panel.PackageDetailLimit = 5
 	c.Logging.Enabled = true
 	c.Logging.RequestArchiveEnabled = true
-	c.Logging.RequestRetentionDays = 7
+	c.Logging.RequestRetentionDays = 1
 	c.Logging.RequestArchiveMaxMB = 100
 	// 缺省 true 靠显式赋值实现（同 Schedule 开关）：JSON 里键缺席时字段保留此值，
 	// 只有显式 false 才关闭来源记录。
 	c.Logging.RequestClientInfo = true
+	c.Logging.RetentionWindow = "24h"
 	c.Schedule.CheckinHours = []int{9, 21}
 	c.Schedule.TravelHours = []int{9, 21}
 	c.Schedule.ActivityHours = []int{10}
@@ -294,7 +302,7 @@ func Default() *Config {
 	c.Memory.MaxMB = 32
 	c.Memory.TTLHours = 24
 	c.Resources.MaxConcurrent = 4
-	c.Resources.MaxBodyMB = 16
+	c.Resources.MaxBodyMB = 0 // disabled unless an operator opts into the request-body guard
 	c.Resources.MaxHeapMB = 384
 	c.Prompt.Mode = "passthrough" // 缺省 passthrough：透传客户端原始 system（对齐上游；custom 由用户显式选择）
 	c.Pool.CreditFloor = 100
@@ -484,7 +492,7 @@ func (c *Config) normalize() error {
 	if c.Memory.MaxEntries < 1 || c.Memory.MaxEntries > 4096 || c.Memory.MaxMB < 1 || c.Memory.MaxMB > 256 || c.Memory.TTLHours < 1 || c.Memory.TTLHours > 720 {
 		return fmt.Errorf("memory limits: entries 1–4096, MB 1–256, TTL hours 1–720")
 	}
-	if c.Resources.MaxConcurrent < 1 || c.Resources.MaxConcurrent > 64 || c.Resources.MaxBodyMB < 1 || c.Resources.MaxBodyMB > 128 || c.Resources.MaxHeapMB < 64 {
+	if c.Resources.MaxConcurrent < 1 || c.Resources.MaxConcurrent > 64 || c.Resources.MaxBodyMB < 0 || c.Resources.MaxBodyMB > 128 || c.Resources.MaxHeapMB < 64 {
 		return fmt.Errorf("invalid resource limits")
 	}
 
@@ -497,10 +505,16 @@ func (c *Config) normalize() error {
 		c.Panel.PackageDetailLimit = 5
 	}
 	if c.Logging.RequestRetentionDays <= 0 {
-		c.Logging.RequestRetentionDays = 7
+		c.Logging.RequestRetentionDays = 1
 	}
 	if c.Logging.RequestArchiveMaxMB <= 0 {
 		c.Logging.RequestArchiveMaxMB = 100
+	}
+	if c.Logging.RetentionWindow == "" {
+		c.Logging.RetentionWindow = "24h"
+	}
+	if c.RetentionWindowDur, err = time.ParseDuration(c.Logging.RetentionWindow); err != nil || c.RetentionWindowDur <= 0 {
+		return fmt.Errorf("logging.retention_window must be a positive duration")
 	}
 	// 入站读取上限（issue #100）：空值回落默认 300s；"0" 合法（不限制）；
 	// 负值无语义，fail fast（静默钳 0 会把保护悄悄关掉）。
