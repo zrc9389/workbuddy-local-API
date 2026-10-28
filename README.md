@@ -1,3 +1,5 @@
+> WorkBuddy local backend.
+
 # WorkBuddy Local v0.2 · Linux服务器多账号池
 
 **仅本机使用，首次启动时设置管理密码，聊天不需要 API key。** 此版是在 v0.1 基础上的改造；原 v0.1 发布包保留。请在新目录解压，不要直接覆盖含凭证的旧目录。
