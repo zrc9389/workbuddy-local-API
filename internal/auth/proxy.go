@@ -96,5 +96,8 @@ func (a *Auth) documentLocked() map[string]any {
 func (a *Auth) ExportJSON() (json.RawMessage, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return json.Marshal(a.documentLocked())
+	doc := a.documentLocked()
+	doc["region"] = ResolveRealm(a.realm, a.Domain)
+	doc["proxy_url"] = a.ProxyURL
+	return json.Marshal(doc)
 }

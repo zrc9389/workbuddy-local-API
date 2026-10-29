@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,6 +38,7 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/server"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/session"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/tasks"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/telemetry"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
 )
@@ -301,14 +303,26 @@ func run() error {
 	defer requestLog.Close()
 	rs := requestLog.Snapshot().Archive
 	if rs.Enabled {
-		log.Printf("[reqlog] 请求指标已启用；JSONL 归档 %s（保留 %d 天，上限 %d MiB）",
-			rs.Dir, cfg.Logging.RequestRetentionDays, cfg.Logging.RequestArchiveMaxMB)
+		log.Printf("[reqlog] 请求指标已启用；错误 JSONL 归档 %s（24 小时窗口，上限 16 MiB）", rs.Dir)
 	} else {
 		log.Printf("[reqlog] 请求指标已启用；JSONL 归档已关闭")
 	}
 
 	taskService := tasks.New(tasks.Config{Pool: p, Upstream: up})
-	maint := maintenance.New(p, maintenance.UpstreamAction(p, up))
+	maintenanceAction := maintenance.UpstreamAction(p, up)
+	maint := maintenance.New(p, func(ctx context.Context, step, uid string) (string, error) {
+		message, err := maintenanceAction(ctx, step, uid)
+		if err != nil && step == "token" {
+			if status, ok := p.Status(uid); ok && status.Blocked {
+				requestLog.Begin()
+				requestLog.Record(telemetry.Event{Time: time.Now(), RequestID: fmt.Sprintf("maintenance-token-%d", time.Now().UnixNano()), Path: "maintenance/token", AccountRef: telemetry.AccountReference(uid), Status: 401, Outcome: "token_isolated"})
+			}
+		}
+		return message, err
+	})
+	if err := maint.SetStorage(stateSibling(cfg.StateFile, "maintenance-status.json")); err != nil {
+		log.Printf("maintenance: restore failed: %v", err)
+	}
 	metaManager, err := metacore.New(metacore.Options{Dir: stateSibling(cfg.StateFile, "meta"), Demo: *demoMode})
 	if err != nil {
 		log.Fatalf("meta: %v", err)
@@ -331,6 +345,7 @@ func run() error {
 	if err != nil {
 		log.Fatalf("spool: %v", err)
 	}
+	var configSaveMu sync.Mutex
 	pn := panel.New(panel.Config{
 		ModelPolicy: modelPolicy,
 		Meta:        metaManager,
@@ -346,6 +361,7 @@ func run() error {
 			return nil
 		},
 		DeletionJournalPath:     stateSibling(cfg.StateFile, "account-deletions.json"),
+		ModelsCachePath:         stateSibling(cfg.StateFile, "panel-models-cache.json"),
 		RequestLog:              requestLog,
 		Spool:                   diskQueue,
 		Upstream:                up,
@@ -366,7 +382,17 @@ func run() error {
 			return Load(*cfgPath)
 		},
 		SaveConfig: func(raw []byte) ([]string, error) {
-			return saveConfig(raw, *cfgPath, live, p, up, sch)
+			configSaveMu.Lock()
+			defer configSaveMu.Unlock()
+			restart, err := saveConfig(raw, *cfgPath, live, p, up, sch)
+			if err == nil {
+				updated, loadErr := Load(*cfgPath)
+				if loadErr != nil {
+					return restart, loadErr
+				}
+				metaManager.SetSubscriptionRefreshInterval(time.Duration(updated.Panel.SubscriptionRefreshHours) * time.Hour)
+			}
+			return restart, err
 		},
 	})
 	if err := pn.PruneCredentialQuarantine(time.Now()); err != nil {
@@ -423,27 +449,29 @@ func run() error {
 	defer stop()
 	retention := panel.NewRetentionManager()
 	retention.SetWindow(cfg.RetentionWindowDur)
-	retention.Run(ctx, time.Hour, func(now time.Time) error {
+	retention.Run(ctx, time.Minute, func(now time.Time) error {
 		rec.Rollup(now)
-		return rec.Save()
+		if err := rec.SaveDirty(); err != nil {
+			return err
+		}
+		return maint.Prune(now)
 	})
+	pn.RunCredentialQuarantine(ctx)
+	// Restore persisted proxy listeners and provider nodes after a service restart.
+	// Startup is asynchronous so a broken provider does not prevent the panel from opening.
 	go func() {
-		ticker := time.NewTicker(time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case now := <-ticker.C:
-				if err := pn.PruneCredentialQuarantine(now); err != nil {
-					log.Printf("panel: credential quarantine cleanup: %v", err)
-				}
-			}
+		if len(metaManager.Subscriptions()) == 0 && len(metaManager.Nodes().Bindings) == 0 {
+			return
+		}
+		startCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		if err := metaManager.EnsureStarted(startCtx); err != nil && ctx.Err() == nil {
+			log.Printf("metacore: startup restore failed: %v", err)
 		}
 	}()
 	// 订阅缓存默认 48 小时刷新一次；Manager 内部按 provider 的
 	// last_refresh_at 判断到期并串行执行下载与 Mihomo 热加载。
-	metaManager.StartSubscriptionRefresh(ctx, 48*time.Hour)
+	metaManager.StartSubscriptionRefresh(ctx, time.Duration(cfg.Panel.SubscriptionRefreshHours)*time.Hour)
 	if *demoMode {
 		go demo.Feed(ctx, p, rec, requestLog)
 	}

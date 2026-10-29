@@ -3,6 +3,7 @@ package metacore
 import (
 	"context"
 	"errors"
+	"log"
 	"net/url"
 	"sync"
 	"time"
@@ -31,6 +32,18 @@ func (m *Manager) CancelTests() TestJob {
 	return m.job
 }
 func (m *Manager) StartTests(ctx context.Context) (TestJob, error) {
+	return m.startTests(ctx, "")
+}
+
+// StartNodeTest uses the same serialized job and cancellation rules as a batch.
+func (m *Manager) StartNodeTest(ctx context.Context, nodeID string) (TestJob, error) {
+	if nodeID == "" {
+		return TestJob{}, ErrInvalid
+	}
+	return m.startTests(ctx, nodeID)
+}
+
+func (m *Manager) startTests(ctx context.Context, nodeID string) (TestJob, error) {
 	if err := m.lock(); err != nil {
 		return TestJob{}, err
 	}
@@ -45,6 +58,16 @@ func (m *Manager) StartTests(ctx context.Context) (TestJob, error) {
 		return TestJob{}, err
 	}
 	nodes := m.Nodes().Nodes
+	if nodeID != "" {
+		selected := make([]Node, 0, 1)
+		for _, node := range nodes {
+			if node.ID == nodeID {
+				selected = append(selected, node)
+				break
+			}
+		}
+		nodes = selected
+	}
 	if len(nodes) == 0 {
 		return TestJob{}, ErrInvalid
 	}
@@ -91,6 +114,14 @@ send:
 	close(queue)
 	workers.Wait()
 	m.mu.Lock()
+	state := m.snapshotLocked()
+	m.mu.Unlock()
+	// 写入一份包含所有工作线程结果的快照，避免并发线程先后落盘时
+	// 较旧快照覆盖较新的节点历史。写盘期间 job 仍保持 running。
+	if err := m.persist(state); err != nil {
+		log.Printf("metacore: persist node history: %v", err)
+	}
+	m.mu.Lock()
 	m.job.Running = false
 	if ctx.Err() != nil {
 		m.job.Cancelled = true
@@ -100,7 +131,12 @@ send:
 }
 func (m *Manager) testNode(ctx context.Context, n Node) {
 	m.mu.Lock()
-	current := m.nodes[n.ID]
+	current, exists := m.nodes[n.ID]
+	if !exists {
+		m.job.Completed++
+		m.mu.Unlock()
+		return
+	}
 	current.Status = "testing"
 	m.nodes[n.ID] = current
 	m.mu.Unlock()
@@ -113,8 +149,12 @@ func (m *Manager) testNode(ctx context.Context, n Node) {
 	err := m.core.Request(one, "GET", path, nil, &result)
 	now := time.Now().UTC()
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	current = m.nodes[n.ID]
+	current, exists = m.nodes[n.ID]
+	if !exists {
+		m.job.Completed++
+		m.mu.Unlock()
+		return
+	}
 	current.TestedAt = &now
 	current.DelayMS = nil
 	current.Status = "ok"
@@ -129,10 +169,15 @@ func (m *Manager) testNode(ctx context.Context, n Node) {
 		delay := result.Delay
 		current.DelayMS = &delay
 	}
-	current.History = append(current.History, History{Delay: result.Delay, Time: now})
+	current.History = append(current.History, History{Delay: result.Delay, Time: now, Status: current.Status})
 	if len(current.History) > 10 {
 		current.History = append([]History{}, current.History[len(current.History)-10:]...)
 	}
 	m.nodes[n.ID] = current
+	if m.state.NodeHistory == nil {
+		m.state.NodeHistory = make(map[string][]History)
+	}
+	m.state.NodeHistory[n.ID] = append([]History(nil), current.History...)
 	m.job.Completed++
+	m.mu.Unlock()
 }

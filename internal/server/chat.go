@@ -32,6 +32,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	payload, err := h.readPayload(r)
 	if err != nil {
 		if errors.Is(err, errRequestBodyTooLarge) {
+			if r.Context().Value(unknownBudgetKey{}) != nil {
+				writeOpenAIError(w, 413, "working_budget_exceeded", "unknown-length request exceeds the configured working budget; content was not dispatched")
+				return
+			}
 			writeOpenAIError(w, 413, "request_body_too_large", h.bodyLimitMessage())
 			return
 		}
@@ -90,6 +94,12 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Responses consumes the upstream stream through its aggregation observer.
+	// The on-wire request is streaming, but this internal handler must not take
+	// the ordinary Chat passthrough branch.
+	if r.Context().Value(internalResponsesKey{}) != nil {
+		peek.Stream = false
+	}
 	if h.cfg.StrictContext {
 		if payload.IsSpool {
 			ra, closer, rerr := payload.OpenReaderAt()
@@ -732,7 +742,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			rc.Close()
 			return
 		}
-		resp, responseSpool, err := upstream.AggregateSpool(rc)
+		var observer func(string) error
+		if sink, ok := w.(interface{ observeResponseText(string) error }); ok {
+			observer = sink.observeResponseText
+		}
+		resp, responseSpool, err := upstream.AggregateSpoolObserved(rc, observer)
 		if sink, ok := w.(interface{ acceptResponseSpool(*upstream.ResponseSpool) }); ok && responseSpool != nil {
 			sink.acceptResponseSpool(responseSpool)
 			responseSpool = nil

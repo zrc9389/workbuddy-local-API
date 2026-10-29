@@ -241,7 +241,13 @@ func (pm *PreloadManager) Unlock(ip, password string) (string, error) {
 	}
 
 	// 2. 常量时间校验密码
-	if pm.auth == nil || !pm.auth.matches(password) {
+	valid := false
+	if pm.auth != nil && len(password) <= 1024 {
+		pm.auth.mu.Lock()
+		valid = !pm.auth.record.Default && pm.auth.matches(password)
+		pm.auth.mu.Unlock()
+	}
+	if !valid {
 		pm.noteIPAttemptResult(ip, false)
 		return "", ErrIncorrectPassword
 	}

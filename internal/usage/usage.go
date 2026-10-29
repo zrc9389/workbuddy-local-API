@@ -47,33 +47,35 @@ const fileVersion = 4
 // bucket 一个 (时间片, realm, uid, model, rate) 的累计量。
 // JSON 字段名刻意取短，因为桶数量会随时间增长。
 type bucket struct {
-	Scope    string    `json:"s"` // "h:2006-01-02T15" 或 "d:2006-01-02"
-	LastSeen time.Time `json:"last_seen,omitempty"`
-	Realm    string    `json:"r"`            // cn / global
-	UID      string    `json:"u"`            // 账号 uid
-	Model    string    `json:"m"`            // 上游裸模型名
-	Rate     string    `json:"x,omitempty"`  // 请求时生效积分倍率（规范化数值；旧桶为空）
-	Req      int64     `json:"q"`            // 请求数（含失败）
-	Err      int64     `json:"e"`            // 失败数
-	PT       int64     `json:"p"`            // prompt tokens
-	CT       int64     `json:"c"`            // completion tokens
-	TT       int64     `json:"t"`            // total tokens（上游给什么用什么的合计）
-	LatMs    int64     `json:"l"`            // 延迟累计（ms）
-	LatN     int64     `json:"ln"`           // 延迟样本数
-	TPS      float64   `json:"v"`            // 吐字速率累计
-	TPSN     int64     `json:"vn"`           // 速率样本数
-	CR       float64   `json:"cr,omitempty"` // usage.credit 累计（仅明确存在的观测）
-	CRN      int64     `json:"cn,omitempty"` // usage.credit 样本数（区分缺字段与真实 0）
-	CRT      int64     `json:"ct,omitempty"` // 同时具备 credit 与 token 的 Token 合计
-	CH       int64     `json:"ch,omitempty"` // 前缀缓存命中 token 累计（上游回该维度才累计）
-	CM       int64     `json:"cm,omitempty"` // 前缀缓存未命中 token 累计
+	Extra    map[string]json.RawMessage `json:"-"`
+	Scope    string                     `json:"s"` // "h:2006-01-02T15" 或 "d:2006-01-02"
+	LastSeen time.Time                  `json:"last_seen,omitempty"`
+	Realm    string                     `json:"r"`            // cn / global
+	UID      string                     `json:"u"`            // 账号 uid
+	Model    string                     `json:"m"`            // 上游裸模型名
+	Rate     string                     `json:"x,omitempty"`  // 请求时生效积分倍率（规范化数值；旧桶为空）
+	Req      int64                      `json:"q"`            // 请求数（含失败）
+	Err      int64                      `json:"e"`            // 失败数
+	PT       int64                      `json:"p"`            // prompt tokens
+	CT       int64                      `json:"c"`            // completion tokens
+	TT       int64                      `json:"t"`            // total tokens（上游给什么用什么的合计）
+	LatMs    int64                      `json:"l"`            // 延迟累计（ms）
+	LatN     int64                      `json:"ln"`           // 延迟样本数
+	TPS      float64                    `json:"v"`            // 吐字速率累计
+	TPSN     int64                      `json:"vn"`           // 速率样本数
+	CR       float64                    `json:"cr,omitempty"` // usage.credit 累计（仅明确存在的观测）
+	CRN      int64                      `json:"cn,omitempty"` // usage.credit 样本数（区分缺字段与真实 0）
+	CRT      int64                      `json:"ct,omitempty"` // 同时具备 credit 与 token 的 Token 合计
+	CH       int64                      `json:"ch,omitempty"` // 前缀缓存命中 token 累计（上游回该维度才累计）
+	CM       int64                      `json:"cm,omitempty"` // 前缀缓存未命中 token 累计
 }
 
 // file 落盘结构。
 type file struct {
-	Version int      `json:"version"`
-	Saved   string   `json:"saved"`
-	Buckets []bucket `json:"buckets"`
+	Extra   map[string]json.RawMessage `json:"-"`
+	Version int                        `json:"version"`
+	Saved   string                     `json:"saved"`
+	Buckets []bucket                   `json:"buckets"`
 }
 
 // Recorder 并发安全的用量记录器。
@@ -84,6 +86,8 @@ type Recorder struct {
 	dirty     bool
 	started   time.Time
 	retention time.Duration
+	loadErr   error
+	fileExtra map[string]json.RawMessage
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -99,6 +103,11 @@ func (r *Recorder) DeleteAccount(uid string) (int, error) {
 		return 0, nil
 	}
 	r.mu.Lock()
+	if r.loadErr != nil {
+		err := r.loadErr
+		r.mu.Unlock()
+		return 0, fmt.Errorf("usage file is write-protected: %w", err)
+	}
 	removed := 0
 	deleted := make(map[string]bucket)
 	for key, b := range r.buckets {
@@ -112,7 +121,7 @@ func (r *Recorder) DeleteAccount(uid string) (int, error) {
 		r.dirty = true
 	}
 	path := r.path
-	snap := file{Version: fileVersion, Saved: time.Now().Format(time.RFC3339), Buckets: make([]bucket, 0, len(r.buckets))}
+	snap := file{Extra: r.fileExtra, Version: fileVersion, Saved: time.Now().Format(time.RFC3339), Buckets: make([]bucket, 0, len(r.buckets))}
 	if removed > 0 && path != "" {
 		for _, b := range r.buckets {
 			snap.Buckets = append(snap.Buckets, *b)
@@ -183,7 +192,9 @@ func NewWithRetention(path string, retention time.Duration) *Recorder {
 	}
 	if path != "" {
 		if err := r.load(); err != nil {
-			log.Printf("[usage] 读取 %s 失败（从零开始）: %v", path, err)
+			r.buckets = make(map[string]*bucket)
+			r.loadErr = err
+			log.Printf("[usage] 读取 %s 失败，原文件已禁止覆盖: %v", path, err)
 		}
 	}
 	return r
@@ -259,6 +270,12 @@ func (r *Recorder) Add(now time.Time, realm, uid, model string, d Delta, ok bool
 		b = &bucket{Scope: scope, Realm: realm, UID: uid, Model: model, Rate: d.ModelRate}
 		r.buckets[key] = b
 	}
+	// A legacy bucket can contain events anywhere in its time slice.
+	if b.LastSeen.IsZero() && b.Req > 0 {
+		if end, ok := bucketScopeEnd(b.Scope); ok {
+			b.LastSeen = end.UTC()
+		}
+	}
 	if now.After(b.LastSeen) {
 		b.LastSeen = now.UTC()
 	}
@@ -318,7 +335,7 @@ func (r *Recorder) Rollup(now time.Time) {
 	removed := 0
 	for k, b := range r.buckets {
 		ts, ok := bucketExpiryTime(b)
-		if ok && !ts.After(cutoff) {
+		if ok && len(b.Extra) == 0 && !ts.After(cutoff) {
 			delete(r.buckets, k)
 			removed++
 		}
@@ -339,17 +356,31 @@ func (r *Recorder) load() error {
 		}
 		return err
 	}
+	if err := validateUniqueJSON(raw); err != nil {
+		return err
+	}
 	var f file
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return err
 	}
+	if f.Version > fileVersion {
+		return fmt.Errorf("unsupported usage version %d", f.Version)
+	}
+	r.fileExtra = f.Extra
+	seen := make(map[string]bool, len(f.Buckets))
 	for i := range f.Buckets {
 		b := f.Buckets[i]
-		if ts, ok := bucketExpiryTime(&b); ok && !ts.After(time.Now().Add(-r.retention)) {
+		key := b.Scope + "|" + b.Realm + "|" + b.UID + "|" + b.Model + "|" + b.Rate
+		if seen[key] {
+			return fmt.Errorf("duplicate usage bucket")
+		}
+		seen[key] = true
+		// Unknown bucket fields may carry data whose retention we cannot infer.
+		if ts, ok := bucketExpiryTime(&b); ok && len(b.Extra) == 0 && !ts.After(time.Now().Add(-r.retention)) {
 			r.dirty = true
 			continue
 		}
-		r.buckets[b.Scope+"|"+b.Realm+"|"+b.UID+"|"+b.Model+"|"+b.Rate] = &b
+		r.buckets[key] = &b
 	}
 	log.Printf("[usage] 已恢复 %d 个用量桶（%s）", len(r.buckets), r.path)
 	if r.dirty {
@@ -364,10 +395,13 @@ func (r *Recorder) flush(force bool) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.loadErr != nil {
+		return fmt.Errorf("usage file is write-protected: %w", r.loadErr)
+	}
 	if !r.dirty && !force {
 		return nil
 	}
-	snap := file{Version: fileVersion, Saved: time.Now().Format(time.RFC3339), Buckets: make([]bucket, 0, len(r.buckets))}
+	snap := file{Extra: r.fileExtra, Version: fileVersion, Saved: time.Now().Format(time.RFC3339), Buckets: make([]bucket, 0, len(r.buckets))}
 	for _, b := range r.buckets {
 		snap.Buckets = append(snap.Buckets, *b)
 	}
@@ -396,6 +430,9 @@ func (r *Recorder) flush(force bool) error {
 
 // Save 立即落盘（面板「刷新」或关闭前调用）。
 func (r *Recorder) Save() error { return r.flush(true) }
+
+// SaveDirty persists pending changes without rewriting an unchanged file.
+func (r *Recorder) SaveDirty() error { return r.flush(false) }
 
 // ---------------------------------------------------------------- 聚合 ----
 
@@ -572,24 +609,35 @@ func bucketTime(scope string) (time.Time, bool) {
 		ts, err := time.ParseInLocation(hourLayout, strings.TrimPrefix(scope, "h:"), time.Local)
 		return ts, err == nil
 	}
+	if !strings.HasPrefix(scope, "d:") {
+		return time.Time{}, false
+	}
 	ts, err := time.ParseInLocation(dayLayout, strings.TrimPrefix(scope, "d:"), time.Local)
 	return ts, err == nil
 }
 
-func bucketExpiryTime(b *bucket) (time.Time, bool) {
-	if !b.LastSeen.IsZero() {
-		return b.LastSeen, true
-	}
-	ts, ok := bucketTime(b.Scope)
+func bucketScopeEnd(scope string) (time.Time, bool) {
+	ts, ok := bucketTime(scope)
 	if !ok {
 		return time.Time{}, false
 	}
 	// 旧格式只有时间片起点；按时间片末端作为最后可能事件时间，
 	// 宁可多保留一个时间片，也不能提前删除记录。
-	if strings.HasPrefix(b.Scope, "h:") {
+	if strings.HasPrefix(scope, "h:") {
 		return ts.Add(time.Hour), true
 	}
 	return ts.AddDate(0, 0, 1), true
+}
+
+func bucketExpiryTime(b *bucket) (time.Time, bool) {
+	end, ok := bucketScopeEnd(b.Scope)
+	if !ok {
+		return time.Time{}, false
+	}
+	if !b.LastSeen.IsZero() {
+		return b.LastSeen, true
+	}
+	return end, true
 }
 
 // Snapshot 聚合**所选窗口内**的桶，产出面板一次拉取的全部用量视图数据。
@@ -629,7 +677,11 @@ func (r *Recorder) SnapshotWindow(w Window, nicks map[string]string, currentRate
 
 	r.mu.Lock()
 	bs := make([]bucket, 0, len(r.buckets))
+	cutoff := time.Now().Add(-r.retention)
 	for _, b := range r.buckets {
+		if ts, ok := bucketExpiryTime(b); !ok || !ts.After(cutoff) {
+			continue
+		}
 		bs = append(bs, *b)
 	}
 	r.mu.Unlock()

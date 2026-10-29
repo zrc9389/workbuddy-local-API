@@ -94,7 +94,12 @@ func (c *Client) FetchGlobalModels(a *auth.Auth) []string {
 // → nil（调用方按 ID 名单输出裸条目，不编造字段）。
 // 账号因 GlobalEnabled 开关回落 cn 时不探测（globalOn 兜底，零上游调用）。
 func (c *Client) FetchGlobalModelInfos(a *auth.Auth) []ModelInfo {
-	_, infos := c.fetchGlobalModelsOnce(a)
+	return c.FetchGlobalModelInfosRefresh(a, false)
+}
+
+// FetchGlobalModelInfosRefresh bypasses the successful and failure caches for an explicit refresh.
+func (c *Client) FetchGlobalModelInfosRefresh(a *auth.Auth, force bool) []ModelInfo {
+	_, infos := c.fetchGlobalModels(a, force)
 	return infos
 }
 
@@ -102,32 +107,32 @@ func (c *Client) FetchGlobalModelInfos(a *auth.Auth) []ModelInfo {
 // 纯动态：成功 = 并集结果去重；一切失败 = nil（不回落静态）。
 // infos 仅对象形态成功探测时非 nil。
 func (c *Client) fetchGlobalModelsOnce(a *auth.Auth) (names []string, infos []ModelInfo) {
+	return c.fetchGlobalModels(a, false)
+}
+
+func (c *Client) fetchGlobalModels(a *auth.Auth, force bool) (names []string, infos []ModelInfo) {
 	if !c.globalOn(a) {
 		// 逃生门兜底：账号不路由 global 上游 → 不探测（零上游调用）。
 		return nil, nil
 	}
 
 	c.globalModels.Lock()
-	if len(c.globalModels.names) > 0 && time.Since(c.globalModels.fetched) < globalModelsTTL {
+	defer c.globalModels.Unlock()
+	if !force && len(c.globalModels.names) > 0 && time.Since(c.globalModels.fetched) < globalModelsTTL {
 		names, infos := c.globalModels.names, c.globalModels.infos
-		c.globalModels.Unlock()
 		return names, infos
 	}
-	if !c.globalModels.lastFail.IsZero() && time.Since(c.globalModels.lastFail) < globalModelsFailCooldown {
+	if !force && !c.globalModels.lastFail.IsZero() && time.Since(c.globalModels.lastFail) < globalModelsFailCooldown {
 		// 负缓存冷却期内：避免反复打上游，直接按失败处理（无静态回落）。
-		c.globalModels.Unlock()
 		return nil, nil
 	}
-	c.globalModels.Unlock()
 
 	names, infos, efforts, defaults, err := c.probeGlobalModels(a)
 	if err != nil || len(names) == 0 {
 		// 探测失败：负缓存 + 返回 nil（effort 桶不写，prepareBody 走 globalEffortMap 静态兜底）。
-		c.globalModels.Lock()
 		c.globalModels.lastFail = time.Now()
 		c.globalModels.names = nil
 		c.globalModels.infos = nil
-		c.globalModels.Unlock()
 		return nil, nil
 	}
 	// global 域 effort 能力：探测下发的 supportedEfforts/defaultEffort 权威写入 global 桶
@@ -150,12 +155,10 @@ func (c *Client) fetchGlobalModelsOnce(a *auth.Auth) (names []string, infos []Mo
 		merged = append(merged, id)
 	}
 
-	c.globalModels.Lock()
 	c.globalModels.names = merged
 	c.globalModels.infos = infos
 	c.globalModels.fetched = time.Now()
 	c.globalModels.lastFail = time.Time{}
-	c.globalModels.Unlock()
 	return merged, infos
 }
 

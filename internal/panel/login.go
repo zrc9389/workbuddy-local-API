@@ -16,6 +16,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -168,10 +169,17 @@ func (p *Panel) loginPoll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "unknown or expired state（请重新发起添加账号）")
 		return
 	}
+	if time.Since(sess.created) > loginTTL {
+		p.loginMu.Lock()
+		delete(p.logins, state)
+		p.loginMu.Unlock()
+		writeErr(w, http.StatusNotFound, "authorization expired; restart login")
+		return
+	}
 	_, epToken, epAcct, origin := loginEndpoints(sess.realm)
 
 	// auth/token 是权威登录状态端点：pending 时业务 code 非 0（"login ing"）。
-	tokRaw, _, err := doJSON(http.MethodGet, epToken+state, "", nil, origin)
+	tokRaw, _, err := doJSON(http.MethodGet, epToken+url.QueryEscape(state), "", nil, origin)
 	if err != nil {
 		// pending / 未完成：面板前端继续轮询。
 		writeJSON(w, http.StatusOK, map[string]any{"done": false, "message": err.Error()})
@@ -194,7 +202,7 @@ func (p *Panel) loginPoll(w http.ResponseWriter, r *http.Request) {
 		EnterpriseID string `json:"enterpriseId"`
 		Nickname     string `json:"nickname"`
 	}
-	if acctRaw, _, err := doJSON(http.MethodGet, epAcct+state, tok.AccessToken, nil, origin); err == nil {
+	if acctRaw, _, err := doJSON(http.MethodGet, epAcct+url.QueryEscape(state), tok.AccessToken, nil, origin); err == nil {
 		_ = json.Unmarshal(acctRaw, &acct)
 	}
 	if acct.UID == "" {
@@ -206,6 +214,30 @@ func (p *Panel) loginPoll(w http.ResponseWriter, r *http.Request) {
 	// UID 是腾讯侧账号标识，实测为 UUID（十六进制与连字符），故只放行 [A-Za-z0-9_-]。
 	if !validUID(acct.UID) {
 		writeErr(w, http.StatusBadGateway, "上游返回的 uid 含非法字符，拒绝落盘（防路径穿越）")
+		return
+	}
+
+	select {
+	case accountMutationSlots <- struct{}{}:
+		defer func() { <-accountMutationSlots }()
+	default:
+		writeErr(w, http.StatusConflict, "another account mutation is running")
+		return
+	}
+	if p.deletions != nil {
+		unlock := p.deletions.lockFor(acct.UID)
+		defer unlock()
+		if _, pending := p.deletions.journal.get(acct.UID); pending {
+			writeErr(w, http.StatusConflict, "account deletion is pending")
+			return
+		}
+	}
+
+	p.loginMu.Lock()
+	currentSession, stillPending := p.logins[state]
+	p.loginMu.Unlock()
+	if !stillPending || currentSession.created != sess.created {
+		writeErr(w, http.StatusConflict, "authorization already completed or expired")
 		return
 	}
 
@@ -245,9 +277,16 @@ func (p *Panel) loginPoll(w http.ResponseWriter, r *http.Request) {
 		// CN 也显式补 realm 键（幂等），让 auth 文件形态统一（与 LoadDir 存量迁移对齐）。
 		_, _ = a.BackfillRealm()
 	}
-	if err := a.SaveAtomic(); err != nil {
-		writeErr(w, http.StatusInternalServerError, "save auth: "+err.Error())
-		return
+	if old := p.cfg.Pool.AuthByUID(acct.UID); old != nil {
+		if safeCredentialPath(p.cfg.AuthDir, old.FilePath) != nil || old.ImportCredentialsAndSave(a, true) != nil {
+			writeErr(w, http.StatusInternalServerError, "could not save credentials")
+			return
+		}
+	} else {
+		if safeCredentialPath(p.cfg.AuthDir, a.FilePath) != nil || a.SaveAtomic() != nil {
+			writeErr(w, http.StatusInternalServerError, "could not save credentials")
+			return
+		}
 	}
 	p.cfg.Pool.Add(a)
 	p.cfg.Pool.Revive(acct.UID) // 全新登录 = 人工恢复口径：清掉旧号遗留的禁用/冷却/熔断

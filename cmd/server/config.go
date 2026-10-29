@@ -40,7 +40,8 @@ type Config struct {
 	StateFile string `json:"state_file"` // ./data/state.json
 
 	Panel struct {
-		Theme string `json:"theme"`
+		Theme                    string `json:"theme"`
+		SubscriptionRefreshHours int    `json:"subscription_refresh_hours"`
 		// PackageDetailLimit 积分构成页单账号默认展示的最近到期包数；<=0 回落 5。
 		PackageDetailLimit int `json:"package_detail_limit"`
 	} `json:"panel"`
@@ -288,6 +289,7 @@ func Default() *Config {
 	c.Schedule.BlackcatEnabled = true
 	c.Schedule.BalanceRefreshEnabled = true
 	c.Schedule.BalanceRefreshMinutes = 5
+	c.Panel.SubscriptionRefreshHours = 48
 	c.Upstream.TimeoutSeconds = 120
 	// HeaderTimeoutSeconds/IdleTimeoutSeconds 默认 0（未设置态），回落见 normalize()。
 	c.Upstream.HeaderTimeoutSeconds = 0
@@ -483,6 +485,12 @@ func applyEnv(c *Config) {
 }
 
 func (c *Config) normalize() error {
+	if c.Panel.SubscriptionRefreshHours == 0 {
+		c.Panel.SubscriptionRefreshHours = 48
+	}
+	if c.Panel.SubscriptionRefreshHours < 1 || c.Panel.SubscriptionRefreshHours > 8760 {
+		return fmt.Errorf("subscription_refresh_hours must be between 1 and 8760")
+	}
 	if c.Panel.Theme == "" {
 		c.Panel.Theme = "dark"
 	}

@@ -124,7 +124,7 @@ func TestAppScriptServed(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
 		t.Errorf("Content-Type=%q want javascript", ct)
 	}
-	if !strings.Contains(rec.Body.String(), "'use strict'") {
+	if !strings.Contains(rec.Body.String(), "./assets/geometric.js") {
 		t.Error("app.js body looks wrong")
 	}
 }

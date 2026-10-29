@@ -69,6 +69,10 @@ func (m *Manager) AcquireAccount(ctx context.Context, uid string) (func(), error
 	bound := false
 	for _, b := range m.state.Bindings {
 		if b.UID == uid {
+			if m.state.PendingDelete == b.Provider {
+				m.mu.Unlock()
+				return nil, ErrBusy
+			}
 			bound = true
 			break
 		}

@@ -48,3 +48,12 @@ func TestRingWriteStripsTimestamp(t *testing.T) {
 		t.Errorf("stale ts: %v", es[0].TS)
 	}
 }
+
+func TestRingSnapshotHidesExpiredEntry(t *testing.T) {
+	r := NewRing(5)
+	r.entries = []LogEntry{{TS: time.Now().Add(-25 * time.Hour), Text: "expired"}, {TS: time.Now(), Text: "fresh"}}
+	got := r.Snapshot()
+	if len(got) != 1 || got[0].Text != "fresh" {
+		t.Fatalf("entries=%+v", got)
+	}
+}

@@ -51,10 +51,8 @@ type Config struct {
 	// GrowthDisabled 显式关闭成长任务自动排程（schedule.growth_enabled=false）。
 	GrowthDisabled bool
 
-	// IncludeDisabledInTasks 让「保号类」四任务（签到 / 活跃上报 / token 保活 / 余额刷新）
-	// 对已禁用（disabled）的账号也执行（schedule.include_disabled_in_tasks）。
-	// 缺省 false = 保持「禁用的跳过」既有语义；打开后禁用号照常签到保号，但**仍不参与
-	// 选号**——pool.pick 侧的 disabled 过滤与本开关无关。
+	// IncludeDisabledInTasks 控制余额刷新是否包含手动停用账号；签到、活跃、续期与旅行
+	// 始终尝试维护全部账号。停用账号始终不参与 API 选号。
 	IncludeDisabledInTasks bool
 
 	// GrowthHook 成长任务队列执行回调（panel.RunGrowthQueueOnce：扫描全部账号
@@ -86,13 +84,14 @@ type Scheduler struct {
 	// The pool may contain many accounts, but a small fixed window avoids a burst
 	// of upstream requests and keeps memory/connection pressure predictable.
 	balanceSlots chan struct{}
-	balanceMu sync.Mutex
+	balanceMu    sync.Mutex
 }
 
 type BalanceRefreshResult struct {
 	Total     int `json:"total"`
 	Completed int `json:"completed"`
 	Failed    int `json:"failed"`
+	Isolated  int `json:"isolated"`
 }
 
 // New 构建。
@@ -119,6 +118,13 @@ func New(cfg Config) *Scheduler {
 		rearmBalance:  make(chan struct{}, 1),
 		balanceSlots:  make(chan struct{}, 3),
 	}
+}
+
+// FourTasksEnabled reports the four account maintenance schedules together.
+func (s *Scheduler) FourTasksEnabled() bool {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return !s.cfg.CheckinDisabled && !s.cfg.TravelDisabled && !s.cfg.ActivityDisabled && !s.cfg.KeepaliveDisabled
 }
 
 // ExpiringSoonWindow 返回当前快过期路由窗口（读取时与热配置写在 schedMu 下同步）。
@@ -454,20 +460,15 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 }
 
 // RunCheckinNow 立即对所有账号执行签到 + 余额刷新 + 解冻。
-// 冷却中的账号也参与（签到就是为了解冻它们）；禁用账号默认跳过——
-// 若 schedule.include_disabled_in_tasks 打开则一并执行（禁用只关选号，不停保号）。
+// 冷却、停用和隔离账号都参与；停用只控制 API 选号。
 // 旅行已从签到剥离为独立排程（travel_hours），不再搭签到便车。
 // 末尾追加连登管家（streak.go）：可兑换档位自动兑换 + 抽奖次数自动抽完——
 // 连登兑换按天数解锁，挂在每日签到后即「到天数那天自动完成兑换→抽奖闭环」。
 func (s *Scheduler) RunCheckinNow() {
 	expiringSoon := s.ExpiringSoonWindow()
-	includeDisabled := s.includeDisabledInTasks()
 	for _, st := range s.cfg.Pool.List() {
-		if st.Disabled && !includeDisabled {
-			continue
-		}
 		a := s.cfg.Pool.AuthByUID(st.UID)
-		if a == nil || a.RefreshTokenValue() == "" {
+		if a == nil {
 			continue
 		}
 		// D4 门控：realm=global 账号无签到体系，直接跳过（不发起任何上游调用，避免风控）。
@@ -510,8 +511,7 @@ func (s *Scheduler) RunCheckinNow() {
 }
 
 // RunActivityNow 立即对池内所有可用账号执行一次对话活跃上报。
-// 禁用账号默认跳过（schedule.include_disabled_in_tasks 打开时一并上报）；
-// 无 AccessToken 的跳过；账号间限速 activityAccountDelay。
+// 停用或隔离账号仍尝试上报；账号间限速 activityAccountDelay。
 // CN 与 global 账号**都上报**（PR #45 实测国际版 /v2/report 在 workbuddy.ai 上
 // code=0 OK，点亮连登）；一条上报同时点亮 growth 连登 + 解锁 first_buddy 任务。
 // 上报成功后续跑 streak 自检（checkActivityStreak）：回读连登天数，发现
@@ -525,13 +525,9 @@ func (s *Scheduler) RunActivityNow() {
 // runActivity 活跃上报遍历，随 ctx 取消立即退出。
 func (s *Scheduler) runActivity(ctx context.Context) {
 	first := true
-	includeDisabled := s.includeDisabledInTasks()
 	for _, st := range s.cfg.Pool.List() {
-		if st.Disabled && !includeDisabled {
-			continue
-		}
 		a := s.cfg.Pool.AuthByUID(st.UID)
-		if a == nil || a.AccessTokenValue() == "" {
+		if a == nil {
 			continue
 		}
 		// 企业版跳过活跃上报：/v2/report 本身返回 200（不报错），但它唯一的作用是
@@ -583,20 +579,15 @@ func (s *Scheduler) checkActivityStreak(a *auth.Auth) bool {
 }
 
 // RunKeepaliveNow 立即对所有账号刷新 token；session 死亡的自动禁用。
-// 禁用账号默认跳过；若 schedule.include_disabled_in_tasks 打开，禁用号也会续期 token
-// （这是轮换用法下把闲置号保持可用的关键），但**不再对已禁用的号重复计数 12153**——
+// 停用和隔离账号仍尝试续期，但**不再对已禁用的号重复计数 12153**——
 // 它已经是终态，再计一次只会打出一行「— 禁用」的误导日志。
 // 12153 禁用走 Pool.NoteSessionDead 的**连续计数**语义：一次刷新失败不再立即杀号，
 // 连续 sessionDeadThreshold 次（3 次）才禁用（P0-1：13 个 disabled 号全是历史误判）。
 // 刷新成功 → ClearSessionDead 清计数（错误判定的账号有复活路径）。
 func (s *Scheduler) RunKeepaliveNow() {
-	includeDisabled := s.includeDisabledInTasks()
 	for _, st := range s.cfg.Pool.List() {
-		if st.Disabled && !includeDisabled {
-			continue
-		}
 		a := s.cfg.Pool.AuthByUID(st.UID)
-		if a == nil || a.RefreshTokenValue() == "" {
+		if a == nil {
 			continue
 		}
 		if err := s.cfg.Upstream.RefreshToken(a); err != nil {
@@ -632,6 +623,12 @@ func (s *Scheduler) RunBalanceRefreshNow() BalanceRefreshResult {
 	expiringSoon := s.ExpiringSoonWindow()
 	includeDisabled := s.includeDisabledInTasks()
 	for _, st := range s.cfg.Pool.List() {
+		if st.Blocked {
+			resultMu.Lock()
+			result.Isolated++
+			resultMu.Unlock()
+			continue
+		}
 		if st.Disabled && !includeDisabled {
 			continue
 		}
@@ -648,12 +645,24 @@ func (s *Scheduler) RunBalanceRefreshNow() BalanceRefreshResult {
 			remain, total, expiring, earliestAt, earliestRemaining, err := s.cfg.Upstream.UserResourceDetailedWithExpiry(a, expiringSoon)
 			if err != nil {
 				log.Printf("balance %s: %v", logfmt.Label(uid, a.Nickname), err)
-				resultMu.Lock(); result.Failed++; resultMu.Unlock()
+				var ue *upstream.Error
+				if errors.As(err, &ue) && ue.Status == 401 {
+					s.cfg.Pool.NoteUnauthorized(uid, "UNAUTHORIZED: token expired, re-login required")
+					resultMu.Lock()
+					result.Isolated++
+					resultMu.Unlock()
+					return
+				}
+				resultMu.Lock()
+				result.Failed++
+				resultMu.Unlock()
 				return
 			}
 			s.cfg.Pool.ReenableIfCredits(uid, remain, total)
 			s.cfg.Pool.SetCreditsDetailed(uid, remain, total, expiring, earliestAt, earliestRemaining)
-			resultMu.Lock(); result.Completed++; resultMu.Unlock()
+			resultMu.Lock()
+			result.Completed++
+			resultMu.Unlock()
 		}(a, st.UID)
 	}
 	wg.Wait()

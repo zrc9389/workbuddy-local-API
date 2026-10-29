@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,13 +27,9 @@ func subscriptionURL(raw string) (*url.URL, error) {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.Fragment != "" || u.Opaque != "" {
 		return nil, errors.New("subscription requires a public HTTP or HTTPS URL")
 	}
-	port := u.Port()
-	if port != "" {
-		want := "80"
-		if u.Scheme == "https" {
-			want = "443"
-		}
-		if port != want {
+	if port := u.Port(); port != "" {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
 			return nil, errors.New("subscription URL uses an invalid port")
 		}
 	}
@@ -63,6 +61,54 @@ func publicIP(ip netip.Addr) bool {
 	}
 	return true
 }
+
+// resolvePublicDoH bypasses Clash Fake-IP DNS without allowing a private
+// destination. The resolver itself is pinned to Cloudflare's public address.
+func resolvePublicDoH(ctx context.Context, host string) ([]netip.Addr, error) {
+	tr := &http.Transport{Proxy: nil, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}, DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, "1.1.1.1:443")
+	}}
+	defer tr.CloseIdleConnections()
+	client := &http.Client{Transport: tr, Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("DNS redirect rejected") }}
+	var all []netip.Addr
+	for _, typ := range []string{"A", "AAAA"} {
+		endpoint := "https://cloudflare-dns.com/dns-query?name=" + url.QueryEscape(host) + "&type=" + typ
+		req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/dns-json")
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, errors.New("public DNS unavailable")
+		}
+		var data struct {
+			Status int `json:"Status"`
+			Answer []struct {
+				Type int    `json:"type"`
+				Data string `json:"data"`
+			} `json:"Answer"`
+		}
+		err = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&data)
+		resp.Body.Close()
+		if err != nil || resp.StatusCode != http.StatusOK || data.Status != 0 {
+			return nil, errors.New("public DNS failed")
+		}
+		for _, a := range data.Answer {
+			if a.Type == 1 || a.Type == 28 {
+				ip, err := netip.ParseAddr(a.Data)
+				if err != nil || !publicIP(ip) {
+					return nil, errors.New("public DNS resolves to a reserved address")
+				}
+				all = append(all, ip)
+			}
+		}
+	}
+	if len(all) == 0 {
+		return nil, errors.New("public DNS returned no addresses")
+	}
+	return all, nil
+}
 func publicDial(ctx context.Context, network, address string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
@@ -71,6 +117,20 @@ func publicDial(ctx context.Context, network, address string) (net.Conn, error) 
 	ips, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil || len(ips) == 0 {
 		return nil, errors.New("subscription DNS failed")
+	}
+	fakePrefix := netip.MustParsePrefix("198.18.0.0/15")
+	allFake := len(ips) > 0
+	for _, ip := range ips {
+		if !fakePrefix.Contains(ip.Unmap()) {
+			allFake = false
+			break
+		}
+	}
+	if allFake {
+		ips, err = resolvePublicDoH(ctx, host)
+		if err != nil {
+			return nil, err
+		}
 	}
 	for _, ip := range ips {
 		if !publicIP(ip) {
@@ -113,7 +173,10 @@ func fetchSubscription(ctx context.Context, raw string) ([]byte, error) {
 		return nil, errors.New("subscription download failed")
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 || resp.ContentLength > maxSubscriptionBytes || resp.Header.Get("Content-Encoding") != "" && resp.Header.Get("Content-Encoding") != "identity" {
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("subscription server returned HTTP %d", resp.StatusCode)
+	}
+	if resp.ContentLength > maxSubscriptionBytes || resp.Header.Get("Content-Encoding") != "" && resp.Header.Get("Content-Encoding") != "identity" {
 		return nil, errors.New("subscription response rejected")
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxSubscriptionBytes+1))
@@ -133,8 +196,8 @@ func (m *Manager) AddSubscriptionNamed(ctx context.Context, raw, name string) (S
 	if name != "" && !validSubscriptionName(name) {
 		return SubscriptionResult{}, ErrInvalid
 	}
-	// URL and all embedded tokens are only used by this downloader, never passed
-	// to native provider/config APIs, reflected to clients, or retained on disk.
+	// The URL is stored in private state for refresh, but never passed to the
+	// native provider/config APIs or reflected to clients.
 	if _, err := subscriptionURL(raw); err != nil {
 		return SubscriptionResult{}, err
 	}
@@ -156,6 +219,7 @@ func (m *Manager) AddSubscriptionNamed(ctx context.Context, raw, name string) (S
 		return SubscriptionResult{}, err
 	}
 	defer m.unlock()
+	name = uniqueSubscriptionName(m.snapshot().Providers, id, name)
 	if !m.core.Available() {
 		return SubscriptionResult{}, ErrUnavailable
 	}
@@ -282,6 +346,38 @@ func validSubscriptionName(name string) bool {
 	return true
 }
 
+func uniqueSubscriptionName(providers []provider, id, name string) string {
+	name = strings.TrimSpace(name)
+	used := func(candidate string) bool {
+		for _, p := range providers {
+			if p.ID != id && strings.EqualFold(strings.TrimSpace(p.Name), candidate) {
+				return true
+			}
+		}
+		return false
+	}
+	if !used(name) {
+		return name
+	}
+	for n := 2; ; n++ {
+		suffix := fmt.Sprintf(" (%d)", n)
+		// The import form uses this exact placeholder. Keep its generated
+		// names compact and predictable for users (…订阅2, …订阅3), while
+		// preserving the established parenthesized format for custom names.
+		if name == "新增专线订阅" {
+			suffix = fmt.Sprintf("%d", n)
+		}
+		prefix := []rune(name)
+		if limit := 64 - utf8.RuneCountInString(suffix); len(prefix) > limit {
+			prefix = prefix[:limit]
+		}
+		candidate := string(prefix) + suffix
+		if !used(candidate) {
+			return candidate
+		}
+	}
+}
+
 func (m *Manager) subscriptionIndexLocked(id string) int {
 	for i, p := range m.state.Providers {
 		if p.ID == id {
@@ -316,6 +412,9 @@ func (m *Manager) UpdateSubscription(ctx context.Context, id string, name *strin
 		return Subscription{}, err
 	}
 	defer m.unlock()
+	if m.Tests().Running {
+		return Subscription{}, ErrBusy
+	}
 	index := m.subscriptionIndexLocked(id)
 	if index < 0 {
 		return Subscription{}, ErrSubscriptionNotFound
@@ -328,7 +427,7 @@ func (m *Manager) UpdateSubscription(ctx context.Context, id string, name *strin
 	p := next.Providers[index]
 	p.Enabled = effectiveProviderEnabled(old.Providers[index])
 	if name != nil {
-		p.Name = *name
+		p.Name = uniqueSubscriptionName(next.Providers, id, *name)
 	}
 	enabledChanged := false
 	if enabled != nil {
@@ -379,6 +478,9 @@ func (m *Manager) RefreshSubscription(ctx context.Context, id string) (Subscript
 		return SubscriptionResult{}, err
 	}
 	defer m.unlock()
+	if m.Tests().Running {
+		return SubscriptionResult{}, ErrBusy
+	}
 	index := m.subscriptionIndexLocked(id)
 	if index < 0 {
 		return SubscriptionResult{}, ErrSubscriptionNotFound
@@ -437,10 +539,17 @@ func (m *Manager) RefreshSubscription(ctx context.Context, id string) (Subscript
 }
 
 func (m *Manager) RemoveSubscription(ctx context.Context, id string) error {
+	return m.RemoveSubscriptionAndUnbind(ctx, id, nil)
+}
+
+// RemoveSubscriptionAndUnbind serializes account admission while the caller
+// switches each affected account to direct access. The callback must compare
+// the current proxy to expected (or accept an already cleared proxy on retry).
+func (m *Manager) RemoveSubscriptionAndUnbind(ctx context.Context, id string, setDirect func(uid, expected string) (func() error, error)) error {
 	if !safeID(id) {
 		return ErrInvalid
 	}
-	if err := m.lock(); err != nil {
+	if err := m.lockOperation(true); err != nil {
 		return err
 	}
 	defer m.unlock()
@@ -448,19 +557,110 @@ func (m *Manager) RemoveSubscription(ctx context.Context, id string) error {
 	if index < 0 {
 		return ErrSubscriptionNotFound
 	}
-	if m.bindingCountLocked(id) > 0 {
+	if m.bindingCountLocked(id) > 0 && setDirect == nil {
 		return ErrSubscriptionInUse
 	}
 	if !m.core.Available() {
 		return ErrUnavailable
 	}
 	old := m.snapshot()
+	if old.PendingDelete != "" && old.PendingDelete != id {
+		return ErrBusy
+	}
 	next := m.snapshot()
+	next.PendingDelete = ""
 	next.Providers = append(next.Providers[:index], next.Providers[index+1:]...)
+	next.Bindings = nil
+	var affected []bindingRecord
+	for _, b := range old.Bindings {
+		if b.Provider == id {
+			affected = append(affected, b)
+		} else {
+			next.Bindings = append(next.Bindings, b)
+		}
+	}
 	if err := m.ensure(ctx); err != nil {
 		return err
 	}
-	if err := m.apply(ctx, old, next); err != nil {
+	m.mu.Lock()
+	busy := m.leases > 0 || m.job.Running
+	m.mu.Unlock()
+	if busy {
+		return ErrBusy
+	}
+	var active connectionsSnapshot
+	if err := m.core.Request(ctx, "GET", "/connections", nil, &active); err != nil {
+		return ErrApply
+	}
+	if len(active.Connections) > 0 {
+		return ErrBusy
+	}
+	expected := func(b bindingRecord) string {
+		u := url.URL{Scheme: "http", Host: fmt.Sprintf("127.0.0.1:%d", b.Port), User: url.UserPassword("workbuddy", b.Password)}
+		return u.String()
+	}
+	pending := old
+	if len(affected) > 0 {
+		pending.PendingDelete = id
+		if err := m.persist(pending); err != nil {
+			return ErrApply
+		}
+		m.mu.Lock()
+		m.state = pending
+		m.mu.Unlock()
+	}
+	clearIntent := func() error {
+		if old.PendingDelete != "" {
+			return nil
+		}
+		old.PendingDelete = ""
+		if err := m.persist(old); err != nil {
+			return ErrRollback
+		}
+		m.mu.Lock()
+		m.state = old
+		m.mu.Unlock()
+		return nil
+	}
+	var undo []func() error
+	restore := func() error {
+		failed := false
+		for i := len(undo) - 1; i >= 0; i-- {
+			if err := undo[i](); err != nil {
+				failed = true
+			}
+		}
+		if failed {
+			return ErrRollback
+		}
+		return clearIntent()
+	}
+	for _, b := range affected {
+		revert, err := setDirect(b.UID, expected(b))
+		if err != nil {
+			if e := restore(); e != nil {
+				return e
+			}
+			return errors.New("account proxy update failed; subscription retained")
+		}
+		if revert == nil {
+			if e := restore(); e != nil {
+				return e
+			}
+			return ErrInvalid
+		}
+		undo = append(undo, revert)
+	}
+	if err := m.apply(ctx, pending, next); err != nil {
+		if errors.Is(err, ErrRollback) {
+			for i := len(undo) - 1; i >= 0; i-- {
+				_ = undo[i]()
+			}
+			return ErrRollback
+		}
+		if e := restore(); e != nil {
+			return e
+		}
 		return err
 	}
 	m.removeProviderFile(old.Providers[index].File, id)

@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WorkBuddy — Local Workspace</title>
     <link rel="stylesheet" href="/panel/assets/tailwind.css">
-    <link rel="stylesheet" href="/panel/assets/styles.css">
     <script type="module" src="/panel/app.js"></script>
     <style>
         :root {
@@ -412,6 +411,15 @@
         .editorial-input:focus {
             border-bottom-color: rgba(255, 255, 255, 0.88);
         }
+        .credential-paste {
+            color: rgba(255, 255, 255, 0.62);
+            padding: 5px 0;
+            resize: none;
+            white-space: pre;
+            overflow-x: auto;
+            -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+            mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+        }
 
         .editorial-text-btn {
             font-size: 10.5px;
@@ -472,8 +480,13 @@
         .editorial-kpi-fade {
             animation: editorialKpiFade 220ms ease-out both;
         }
+        @keyframes taskLineEnter {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+        .task-line-enter { animation: taskLineEnter 360ms ease-out both; }
         @media (prefers-reduced-motion: reduce) {
-            .editorial-soft-swap, .editorial-kpi-fade, .svg-clip-spread-rect, .task-bar-grow, .task-fault-pop {
+            .editorial-soft-swap, .editorial-kpi-fade, .svg-clip-spread-rect, .task-bar-grow, .task-fault-pop, .task-line-enter {
                 animation: none !important;
             }
         }
@@ -671,12 +684,12 @@
         /* 第二个按钮点击瞬间高亮白一下，随后立即变回半透明 */
         #btn-page-ripple {
             background-color: rgba(255, 255, 255, 0.04) !important;
-            border-color: rgba(255, 255, 255, 0.22) !important;
+            border-color: rgba(255, 255, 255, 0.40) !important;
             color: rgba(255, 255, 255, 0.75) !important;
             transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease !important;
         }
         #btn-page-ripple:hover {
-            border-color: rgba(255, 255, 255, 0.65) !important;
+            border-color: rgba(255, 255, 255, 1) !important;
             color: rgba(255, 255, 255, 0.95) !important;
             background-color: rgba(255, 255, 255, 0.08) !important;
         }
@@ -757,195 +770,21 @@
             100% { transform: translateX(0); }
         }
 
+        /* Shared action feedback: button and its row line follow the real result. */
+        .action-feedback-busy { color: #facc15 !important; border-color: #facc15 !important; animation: jsonBtnSlowPulse 1.8s ease-in-out infinite; }
+        .action-feedback-busy, .action-feedback-success, .input-verifying-sway, .input-success-green { transition: color .25s ease, border-color .25s ease, border-bottom-color .25s ease; }
+        .editorial-input.action-feedback-busy { color: inherit !important; animation: verifyingSway 800ms ease-in-out infinite; }
+        .action-feedback-success { color: #4ade80 !important; border-color: #4ade80 !important; }
+        .action-feedback-error { color: #ff5c74 !important; border-color: #ff5c74 !important; animation: jsonBtnFaultShake .45s ease-in-out; }
+        #btn-page-chord.border-amber-400 { border-color: #facc15 !important; }
+        #btn-page-chord.border-emerald-400 { border-color: #4ade80 !important; }
+        #btn-page-chord.border-rose-500 { border-color: #ff5c74 !important; }
+        @media (prefers-reduced-motion: reduce) {
+            .action-feedback-busy, .action-feedback-success, .action-feedback-error { animation: none !important; }
+        }
 </style>
 </head>
 <body class="relative w-screen h-screen overflow-hidden select-none bg-[#050605]">
-<div id="v02-compatibility-layer" style="display:none;" aria-hidden="true">
-<!-- ===== ambient shell: 底色 / 光场 / 细流，z-index 0-2 ===== -->
-<div class="atmosphere" aria-hidden="true"><div class="fluid fluid-one"></div><div class="fluid fluid-two"></div><div class="grain"></div></div>
-<a class="skip-link" href="#content">跳到内容</a>
-<div class="shell" inert>
-  <nav class="nav glass-nav" aria-label="主导航">
-    <a class="brand" href="#overview" data-view="overview" aria-label="WorkBuddy 概览">
-      <span class="brand-mark" aria-hidden="true">W<span>·</span></span>
-      <span class="brand-copy">WorkBuddy<small>本机工作台</small></span>
-    </a>
-    <ul class="nav-list">
-      <li class="nav-item"><a href="#overview" data-view="overview" class="on" aria-current="page">概览</a></li>
-      <li class="nav-item"><a href="#accounts" data-view="accounts">账号池</a></li>
-      <li class="nav-item"><a href="#taskscenter" data-view="taskscenter">账号任务</a></li>
-      <li class="nav-item"><a href="#egress" data-view="egress">账号出口</a></li>
-      <li class="nav-item"><a href="#usage" data-view="usage">积分用量</a></li>
-      <li class="nav-item"><a href="#packages" data-view="packages">积分构成</a></li>
-      <li class="nav-item"><a href="#models" data-view="models">模型查看</a></li>
-      <li id="logsNavItem" class="nav-item"><a href="#logs" data-view="logs">错误记录</a></li>
-      <li class="nav-item"><a href="#config" data-view="config">系统设置</a></li>
-    </ul>
-    <div class="nav-foot"><div><i id="navPulse" class="pulse" aria-hidden="true"></i><span id="navState">等待连接</span></div><span class="mono" id="navVer">本机</span></div>
-  </nav>
-  <main id="content" tabindex="-1">
-    <header class="topbar"><h1 id="ttl" class="sr-only">概览</h1><p class="sr-only" id="subMeta">本机 · 密码保护</p><div class="top-actions"><span id="sessionState" class="session-badge sr-only">尚未登录</span><button id="btnLogout" class="ghost" type="button">退出</button><button id="btnRefresh" type="button" hidden>刷新</button><button id="btnAdd" class="primary" type="button" hidden>添加账号</button></div></header>
-    <div id="demoNotice" class="demo-notice" role="status" hidden><span class="tag warn">DEMO / 演示模式</span><strong>当前为隔离演示数据，不代表真实账号、流量或生产状态。</strong></div>
-    <div id="defaultPasswordNotice" class="security-notice" hidden>仍在使用初始管理密码。请前往 <a href="#config">设置中的管理密码</a> 修改。</div>
-    <!-- ===== view:overview ===== -->
-    <section class="view overview" id="view-overview" aria-label="概览">
-      <header class="view-heading"><h2>概览</h2></header>
-      <div class="overview-grid">
-        <article class="overview-panel overview-stats">
-          <div class="overview-heading"><h2>账号池</h2><p class="overview-status" id="ovStatus">等待概览数据</p></div>
-          <div class="overview-stats-body">
-            <div class="ring-figure" role="img" aria-labelledby="ovRingLabel">
-              <svg class="account-ring" id="ovRing" viewBox="0 0 160 160" aria-hidden="true" focusable="false">
-                <defs><mask id="ovRingReveal" maskUnits="userSpaceOnUse"><circle class="ring-reveal" cx="80" cy="80" r="62" pathLength="100" stroke="#fff" stroke-width="18" fill="none" stroke-dasharray="100 100" stroke-dashoffset="0"></circle></mask></defs>
-                <circle class="ring-track" cx="80" cy="80" r="62"></circle>
-                <g id="ovRingSegments" mask="url(#ovRingReveal)"></g>
-              </svg>
-              <div class="ring-center"><strong id="ovTotal">—</strong><span>账号</span><span id="ovRingLabel" class="sr-only">账号总数为 —</span></div>
-            </div>
-            <div class="overview-legend" aria-label="账号统计">
-              <div class="legend-row total" style="--i:0"><span class="legend-name">总数</span><span class="legend-bar" aria-hidden="true"><i id="ovBarTotal" style="--pct:100%"></i></span><strong id="ovLegendTotal">—</strong></div>
-              <div class="legend-row good" style="--i:1"><span class="legend-name">可用</span><span class="legend-bar" aria-hidden="true"><i id="ovBarHealthy" style="--pct:0%"></i></span><strong id="ovLegendHealthy">—</strong></div>
-              <div class="legend-row warn" style="--i:2"><span class="legend-name">冷却</span><span class="legend-bar" aria-hidden="true"><i id="ovBarCooling" style="--pct:0%"></i></span><strong id="ovLegendCooling">—</strong></div>
-              <div class="legend-row bad" style="--i:3"><span class="legend-name">禁用</span><span class="legend-bar" aria-hidden="true"><i id="ovBarDisabled" style="--pct:0%"></i></span><strong id="ovLegendDisabled">—</strong></div>
-            </div>
-          </div>
-        </article>
-        <aside class="overview-panel overview-side">
-          <button class="daynight" id="ovTheme" type="button" aria-label="切换到浅色主题" aria-pressed="false">
-            <span class="daynight-sky" aria-hidden="true">
-              <span class="daynight-stars"><i></i><i></i><i></i></span>
-              <span class="daynight-orb"></span>
-              <span class="daynight-cloud daynight-cloud-a"></span>
-              <span class="daynight-cloud daynight-cloud-b"></span>
-            </span>
-            <span class="daynight-copy"><strong id="ovThemeLabel">夜间</strong></span>
-          </button>
-          <article class="overview-endpoint" aria-labelledby="ovEndpointTitle">
-            <h3 id="ovEndpointTitle">本机 API</h3>
-            <dl>
-              <dt>Base URL</dt><dd><code id="ovBaseURL">—</code></dd>
-              <dt>接口</dt><dd><code>Chat · Responses</code></dd>
-            </dl>
-          </article>
-        </aside>
-      </div>
-      <span id="localBaseURL" class="sr-only"></span><span id="localChatURL" class="sr-only"></span><span id="localResponsesURL" class="sr-only"></span>
-    </section>
-    <!-- ===== /view:overview ===== -->
-    <!-- ===== view:accounts ===== -->
-    <section class="view" id="view-accounts" aria-label="账号池" hidden>
-      <header class="view-heading"><h2>账号池</h2></header>
-      <div class="stats-row"><article class="stat"><span>账号总数</span><strong id="sTotal">—</strong></article><article class="stat good"><span>可用</span><strong id="sHealthy">—</strong></article><article class="stat warn"><span>冷却</span><strong id="sCooling">—</strong></article><article class="stat bad"><span>凭据 / 手动禁用</span><strong id="sDisabled">—</strong></article></div>
-      <div id="accBody" class="account-grid" aria-live="polite"><div class="empty">正在读取账号…</div></div>
-      <div class="pager"><button id="accPrev" type="button" aria-label="上一页账号">←</button><span id="accPageInfo">1 / 1 页</span><button id="accNext" type="button" aria-label="下一页账号">→</button></div>
-    </section>
-    <!-- ===== /view:accounts ===== -->
-    <!-- ===== view:taskscenter ===== -->
-    <section class="view" id="view-taskscenter" aria-label="任务" hidden>
-      <header class="view-heading"><div><h2>维护任务</h2><p class="hint" id="maintenanceSummary">上次执行：尚无执行记录</p></div><button class="primary" id="btnRunAll" type="button">全部执行</button></header>
-      <p id="maintenanceError" class="error-notice" role="alert" hidden></p><div id="maintenanceJobs" class="job-grid" aria-live="polite"></div>
-    </section>
-    <!-- ===== /view:taskscenter ===== -->
-    <!-- ===== view:egress ===== -->
-    <section class="view" id="view-egress" aria-label="出口" hidden>
-      <header class="view-heading"><h2>账号出口</h2><span id="metaState" class="tag muted">尚未读取</span></header>
-      <p class="error-notice" id="egressError" role="alert" hidden></p><p id="metaError" class="hint"></p>
-      <section class="egress-overview" aria-label="订阅概览">
-        <p id="egressOverviewText" class="egress-overview-text" role="status">正在读取订阅…</p>
-        <div class="egress-overview-actions">
-          <button id="btnEgressImport" type="button">导入订阅</button>
-          <button id="btnSubscriptionDetails" type="button">订阅详情</button>
-          <button id="btnRefreshNodes" type="button" title="手动刷新节点，默认 48h 缓存">刷新节点</button>
-        </div>
-      </section>
-      <p id="egressRefreshHint" class="egress-refresh-hint" role="status"></p>
-      <form id="egressSubscriptionForm" class="egress-import" hidden>
-        <label for="egressSubscriptionURL">订阅地址</label>
-        <input id="egressSubscriptionURL" type="url" autocomplete="off" spellcheck="false" placeholder="https://…" required>
-        <label for="egressSubscriptionName">名称（可选）</label>
-        <input id="egressSubscriptionName" type="text" maxlength="64" autocomplete="off" spellcheck="false" placeholder="例如：主力节点">
-        <div class="egress-import-actions"><button id="btnEgressSubscriptionSave" class="primary" type="submit">导入</button><button id="btnEgressImportCancel" type="button">取消</button></div>
-        <p id="egressSubscriptionNote" class="hint" role="status"></p>
-      </form>
-      <p id="nodeAccount" class="mono hint"></p>
-      <div class="egress-toolbar">
-        <label for="nodeSubscriptionFilter">订阅</label>
-        <select id="nodeSubscriptionFilter"><option value="">全部订阅</option></select>
-        <span id="egressNodeCount" class="hint"></span>
-      </div>
-      <div id="egressAccountBar" class="egress-account-bar" hidden>
-        <label for="egressAccountSelect">绑定到账号</label>
-        <select id="egressAccountSelect"><option value="">选择账号</option></select>
-        <span id="egressAccountHint" class="hint"></span>
-      </div>
-      <p id="egressNodeStatus" class="hint" role="status"></p>
-      <p id="egressNodeError" class="error-text" role="alert"></p>
-      <div id="egressNodeGrid" class="egress-node-grid" aria-live="polite"></div>
-      <div id="egressNodePager"></div>
-      <section class="egress-details" id="egressDetails" aria-label="订阅与节点详情">
-        <div class="egress-detail-col">
-          <h3 class="egress-detail-title">订阅来源</h3>
-          <div class="egress-detail-body" id="egressDetailSubscriptions"></div>
-        </div>
-        <div class="egress-detail-col">
-          <h3 class="egress-detail-title">当前节点</h3>
-          <div class="egress-detail-body" id="egressDetailNode"></div>
-        </div>
-      </section>
-      <details class="egress-metrics">
-        <summary>流量 / 速率</summary>
-        <div class="egress-metric-line"><span>↓ <strong id="trafficDownload">—</strong></span><span>↑ <strong id="trafficUpload">—</strong></span><span>↓ <strong id="rateDownload">—</strong></span><span>↑ <strong id="rateUpload">—</strong></span><span id="metaConnections" class="hint">连接数未知</span><span id="metaSample" class="hint">暂无有效采样</span></div>
-      </details>
-      <details class="egress-bindings">
-        <summary>绑定管理</summary>
-        <div id="egressAccounts" class="route-grid"></div><div id="egressPages"></div>
-      </details>
-      <div class="veil" id="subscriptionVeil" inert><section class="modal subscription-detail-modal" role="dialog" aria-modal="true" aria-labelledby="subscriptionDetailTitle"><div class="card-heading"><h2 id="subscriptionDetailTitle">订阅详情</h2><button id="btnCloseSubscriptions" type="button" class="ghost" data-modal-close aria-label="关闭订阅详情">关闭 ×</button></div><p id="subscriptionDetailNote" class="error-text" role="alert"></p><div id="subscriptionDetailList" class="subscription-detail-list"></div><div id="subscriptionReveal" class="egress-reveal"><span id="subscriptionRevealLabel" class="hint"></span><code id="subscriptionRevealURL" class="mono"></code></div></section></div>
-    </section>
-    <!-- ===== /view:egress ===== -->
-    <!-- ===== view:usage ===== -->
-    <section class="view" id="view-usage" aria-label="用量" hidden>
-      <header class="view-heading"><h2>积分用量</h2></header>
-      <div id="usStats" class="stats-row"></div><article class="surface chart-panel"><div class="card-heading"><h3>Token 时间线</h3></div><div id="usChart"></div><div id="usChartPages"></div></article><div id="usageDetails" class="usage-details"></div>
-    </section>
-    <!-- ===== /view:usage ===== -->
-    <!-- ===== view:packages ===== -->
-    <section class="view" id="view-packages" aria-label="积分构成" hidden>
-      <header class="view-heading"><h2>积分构成</h2><p class="hint" id="pkNote" role="status"></p></header><div id="pkStats" class="stats-row"></div><article class="surface"><div class="card-heading"><h3>到期分布</h3></div><div id="pkChart"></div><div id="pkChartPages"></div></article><div id="pkBody" class="package-grid"></div><div id="pkPages"></div>
-    </section>
-    <!-- ===== /view:packages ===== -->
-    <!-- ===== view:models ===== -->
-    <section class="view" id="view-models" aria-label="模型" hidden>
-      <header class="view-heading"><h2>模型查看</h2><div class="model-status"><span id="mdCache" class="tag muted">缓存状态未知</span><button id="btnModelsRefresh" type="button" class="ghost">刷新</button><span id="mdRefreshWait" class="hint" role="status"></span></div></header><div id="mdBody" class="model-grid"></div><div id="mdPages"></div>
-    </section>
-    <!-- ===== /view:models ===== -->
-    <!-- ===== view:config ===== -->
-    <section class="view" id="view-config" aria-label="系统设置" hidden>
-      <header class="view-heading"><h2>系统设置</h2></header>
-      <div class="settings-grid">
-      <article class="surface"><h3>管理密码</h3><form id="passwordForm"><label for="oldPassword">当前密码</label><input id="oldPassword" type="password" autocomplete="current-password" required><label for="newPassword">新密码</label><input id="newPassword" type="password" autocomplete="new-password" minlength="8" required><label for="confirmPassword">确认新密码</label><input id="confirmPassword" type="password" autocomplete="new-password" minlength="8" required><p class="hint">修改后所有管理会话会退出。</p><button id="btnPasswordSave" type="submit">修改密码</button></form></article>
-      <article class="surface motion-settings"><div class="section-heading"><h3>启动动画</h3></div><label for="animationStyle">动画风格</label><select id="animationStyle" name="animationStyle"><option value="names">名称轮播 · Names</option><option value="orbital">轨道聚合 · Orbital</option><option value="scan">扫描唤醒 · Scan</option><option value="minimal">极简淡入 · Minimal</option></select><div class="form-actions"><button id="animationPreview" type="button">预览动画</button><span id="animationNote" class="hint" role="status"></span></div></article></div>
-    </section>
-    <!-- ===== /view:config ===== -->
-    <!-- ===== view:logs ===== -->
-    <section class="view" id="view-logs" aria-label="运行日志" hidden>
-      <header class="view-heading"><h2>错误记录</h2></header><article class="surface"><div class="card-heading"><h3>请求记录</h3><p id="reqCount" class="hint"></p></div><div id="reqBody" class="request-grid"></div><div id="reqPages"></div></article>
-    </section>
-    <!-- ===== /view:logs ===== -->
-  </main>
-</div>
-<!-- ===== login: auth veil ===== -->
-<div class="veil on" id="authVeil"><section class="modal auth-card" role="dialog" aria-modal="true" aria-labelledby="authTitle"><div class="auth-intro"><span class="auth-mark" aria-hidden="true">W<span>·</span></span><h2 id="authTitle">你的本机工作台</h2><div class="auth-rule" aria-hidden="true"></div><p class="auth-foot">LOCAL / CONTROL</p></div><form id="loginForm" class="auth-form"><label for="loginPassword">管理密码</label><input id="loginPassword" type="password" autocomplete="current-password" placeholder="管理密码" required autofocus><p id="authError" class="error-notice" role="alert" hidden></p><button id="btnLogin" type="submit" class="primary">进入工作台</button></form></section></div>
-<!-- ===== overlays: node / model-context / add-account / request-detail / task-failure ===== -->
-<div class="veil" id="nodeVeil" inert><section class="modal node-modal" role="dialog" aria-modal="true" aria-labelledby="nodeTitle" tabindex="-1"><div class="card-heading"><div><h2 id="nodeTitle">选择账号出口</h2></div><button id="btnCloseNodes" type="button" class="ghost" data-modal-close aria-label="关闭节点选择">关闭 ×</button></div><p id="nodeStatus" class="hint" role="status"></p><p id="nodeError" class="error-text" role="alert"></p><div id="nodeList" class="node-grid"></div><div id="nodePages"></div></section></div>
-
-<div class="veil" id="addVeil" inert><section class="modal" role="dialog" aria-modal="true" aria-labelledby="addTitle"><div class="card-heading"><div><h2 id="addTitle">添加账号</h2></div><button id="btnCloseAdd" type="button" class="ghost" data-modal-close>关闭 ×</button></div><div id="addTabs" class="tabs" aria-label="添加方式"><button class="tab on" type="button" data-tab="login">浏览器授权</button><button class="tab" type="button" data-tab="import">导入 Cockpit 文件</button></div><div id="addTabLogin"><div id="addPick"><fieldset><legend>账号区域</legend><label class="radio"><input type="radio" name="addRealm" value="cn" checked>国内版</label><label class="radio"><input type="radio" name="addRealm" value="global">国际版</label></fieldset></div><p id="addLoad" class="hint" hidden>正在创建授权会话…</p><div id="addReady" hidden><p class="hint">请在浏览器完成授权。</p><p id="addUrl" class="mono auth-url"></p></div><p id="addDone" class="success-text" hidden></p><p id="addErr" class="error-text" role="alert" hidden></p><div class="form-actions"><button id="btnStartLogin" type="button" class="primary">开始授权</button><button id="btnCopyUrl" type="button" hidden>复制链接</button><button id="btnOpenUrl" type="button" hidden>在浏览器打开</button></div></div><div id="addTabImport" hidden><label for="importFile">选择 Cockpit 导出文件</label><input id="importFile" type="file" accept=".json,application/json"><p id="importDone" class="success-text" hidden></p><p id="importErr" class="error-text" role="alert" hidden></p></div></section></div>
-<div class="veil" id="reqDetailVeil" inert><section class="modal req-detail-modal" role="dialog" aria-modal="true" aria-labelledby="reqDetailTitle"><div class="card-heading"><div><h2 id="reqDetailTitle">错误详情</h2></div><button id="btnCloseReqDetail" type="button" class="ghost" data-modal-close>关闭 ×</button></div><div id="reqDetailBody" class="req-detail-body"></div></section></div>
-<div class="veil" id="taskFailureVeil" inert><section class="modal" role="dialog" aria-modal="true" aria-labelledby="taskFailureTitle"><div class="card-heading"><h2 id="taskFailureTitle">失败详情</h2><button id="btnCloseTaskFailures" type="button" class="ghost" data-modal-close>关闭 ×</button></div><div id="taskFailureBody" class="job-accounts"></div></section></div>
-<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
-</div>
-
-
     <!-- ==================== 顶部固定导航栏 ==================== -->
     <header class="fixed top-0 left-0 w-full px-7 py-6 flex justify-between items-start z-50 pointer-events-none">
         <!-- 左上角品牌标识 -->
@@ -1126,15 +965,15 @@
                 <div id="editorial-kpi-strip" class="grid grid-cols-3 gap-6 py-3.5 my-2 border-y border-white/10 max-w-xl text-left h-[84px] min-h-[84px] max-h-[84px] items-center shrink-0">
                     <div class="shrink-0 flex flex-col justify-center min-w-0">
                         <div id="spec-label-1" class="text-[10.5px] uppercase tracking-[0.16em] text-white/40 mb-1.5 leading-tight whitespace-nowrap">可用账号</div>
-                        <div id="page-spec-1" class="text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap">12 / 16</div>
+                        <div id="page-spec-1" class="text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap">—</div>
                     </div>
                     <div id="kpi-col-2" class="shrink-0 flex flex-col justify-center min-w-0 transition-transform duration-200">
                         <div id="spec-label-2" class="text-[10.5px] uppercase tracking-[0.16em] text-white/40 mb-1.5 leading-tight whitespace-nowrap">账号额度</div>
-                        <div id="page-spec-2" class="text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap">30,536</div>
+                        <div id="page-spec-2" class="text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap">—</div>
                     </div>
                     <div class="shrink-0 flex flex-col justify-center min-w-0">
                         <div id="spec-label-3" class="text-[10.5px] uppercase tracking-[0.16em] text-white/40 mb-1.5 leading-tight whitespace-nowrap">实时下行</div>
-                        <div id="page-spec-3" class="text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap">26.4 MB/s</div>
+                        <div id="page-spec-3" class="text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap">—</div>
                     </div>
                 </div>
 
@@ -1145,7 +984,7 @@
                 <!-- 底部操作与左下方页码栏（恒定锁定 36px 高度） -->
                 <div class="flex justify-between items-center gap-3 pt-2 max-w-xl h-[36px] shrink-0">
                     <div class="flex items-center gap-3 shrink-0">
-                        <button id="btn-page-chord" data-scramble="RESOURCE CURVE" class="editorial-action-btn border border-white/40 hover:border-white bg-white/[0.04] text-white/80 hover:text-white transition-colors">
+                        <button id="btn-page-chord" data-scramble="RESOURCE CURVE" class="editorial-action-btn border border-white/20 hover:border-white bg-white/[0.04] text-white/80 hover:text-white transition-colors">
                             <span class="btn-bracket">[</span>
                             <span id="btn-page-chord-mid" class="btn-mid">RESOURCE CURVE</span>
                             <span class="btn-bracket">]</span>

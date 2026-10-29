@@ -8,6 +8,7 @@ package reqlog
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -207,14 +208,11 @@ func (r *Recorder) Snapshot() Snapshot {
 		return Snapshot{}
 	}
 	r.mu.Lock()
-	recent := r.recent
-	if r.errorsOnly {
-		cutoff := time.Now().Add(-errorRetention)
-		recent = make([]Event, 0, len(r.recent))
-		for _, e := range r.recent {
-			if !e.Time.Before(cutoff) {
-				recent = append(recent, e)
-			}
+	cutoff := time.Now().Add(-errorRetention)
+	recent := make([]Event, 0, len(r.recent))
+	for _, e := range r.recent {
+		if e.Time.After(cutoff) {
+			recent = append(recent, e)
 		}
 	}
 	s := Snapshot{
@@ -262,7 +260,7 @@ func (r *Recorder) FindRecent(id string) *Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for i := range r.recent {
-		if !isError(&r.recent[i]) || EventID(r.recent[i]) != id {
+		if !isError(&r.recent[i]) || !r.recent[i].Time.After(time.Now().Add(-errorRetention)) || EventID(r.recent[i]) != id {
 			continue
 		}
 		e := r.recent[i]
@@ -390,7 +388,8 @@ type archiveWriter struct {
 	total int64
 	count int
 
-	lastPrune time.Time
+	lastPrune  time.Time
+	nextExpiry time.Time
 }
 
 func (w *archiveWriter) deleteAccount(ref string) error {
@@ -571,17 +570,42 @@ func (w *archiveWriter) enqueue(e Event) {
 }
 
 func (w *archiveWriter) run() {
+	w.runWithIntervals(time.Second, time.Minute)
+}
+
+func (w *archiveWriter) runWithIntervals(flushInterval, pruneInterval time.Duration) {
 	defer close(w.done)
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(flushInterval)
 	defer ticker.Stop()
+	pruneTicker := time.NewTicker(pruneInterval)
+	defer pruneTicker.Stop()
 	for {
+		w.opMu.Lock()
+		delay := time.Hour
+		if !w.nextExpiry.IsZero() {
+			delay = time.Until(w.nextExpiry)
+			if delay < 0 {
+				delay = 0
+			}
+		}
+		w.opMu.Unlock()
+		timer := time.NewTimer(delay)
 		select {
 		case e := <-w.ch:
+			timer.Stop()
 			w.writeEvent(e)
 		case <-ticker.C:
+			timer.Stop()
+			w.opMu.Lock()
 			w.flush()
+			w.opMu.Unlock()
+		case <-timer.C:
+			w.prune()
+		case <-pruneTicker.C:
+			timer.Stop()
 			w.prune()
 		case <-w.stop:
+			timer.Stop()
 			for {
 				select {
 				case e := <-w.ch:
@@ -649,6 +673,10 @@ func (w *archiveWriter) writeEventLocked(e Event) error {
 	w.size += int64(len(raw)) + 1
 	w.total += int64(len(raw)) + 1
 	w.count++
+	expiry := now.Add(errorRetention)
+	if w.nextExpiry.IsZero() || expiry.Before(w.nextExpiry) {
+		w.nextExpiry = expiry
+	}
 	return nil
 }
 
@@ -682,12 +710,19 @@ func (w *archiveWriter) refreshUsage() error {
 	}
 	var total int64
 	count := 0
+	var next time.Time
 	for _, name := range names {
 		path := filepath.Join(w.cfg.Dir, name)
 		if _, err := os.Stat(path); err != nil {
 			continue
 		}
 		err = scanArchiveLines(path, func(line []byte) bool {
+			if at, ok := eventTimeFromJSON(line); ok {
+				expiry := at.Add(errorRetention)
+				if expiry.After(time.Now()) && (next.IsZero() || expiry.Before(next)) {
+					next = expiry
+				}
+			}
 			var e Event
 			if json.Unmarshal(line, &e) == nil && isError(&e) {
 				total += int64(len(line)) + 1
@@ -701,6 +736,7 @@ func (w *archiveWriter) refreshUsage() error {
 	}
 	w.total = total
 	w.count = count
+	w.nextExpiry = next
 	return nil
 }
 
@@ -750,9 +786,17 @@ func (w *archiveWriter) compactOldestEvent() bool {
 	var oldest candidate
 	for _, name := range names {
 		path := filepath.Join(w.cfg.Dir, name)
+		oversized, err := archiveHasOversizedLines(path)
+		if err != nil {
+			w.setErr(err)
+			continue
+		}
+		if oversized {
+			continue
+		}
 		_ = scanArchiveLines(path, func(line []byte) bool {
-			var e Event
-			if json.Unmarshal(line, &e) != nil || !isError(&e) {
+			e, known := knownArchiveEvent(line)
+			if !known || !isError(&e) {
 				return true
 			}
 			if oldest.raw == "" || e.Time.Before(oldest.at) {
@@ -912,24 +956,15 @@ func (w *archiveWriter) prune() {
 		return
 	}
 	if w.cfg.ErrorsOnly {
-		// 错误归档容量小，但没必要每秒重写目录；分钟级足够满足 24 小时保留。
-		if !w.lastPrune.IsZero() && time.Since(w.lastPrune) < time.Minute {
-			return
-		}
-		w.lastPrune = time.Now()
 		if err := w.pruneErrors(); err != nil {
 			w.setErr(err)
+			w.nextExpiry = time.Time{}
 		}
 		return
 	}
-	// Request archives use the same rolling 24-hour policy as errors. Do not
-	// use file mtime or delete a whole day file: both can remove fresh rows.
-	if !w.lastPrune.IsZero() && time.Since(w.lastPrune) < time.Minute {
-		return
-	}
-	w.lastPrune = time.Now()
 	if err := w.pruneAllEvents(); err != nil {
 		w.setErr(err)
+		w.nextExpiry = time.Time{}
 	}
 	w.pruneBySizeLegacy()
 }
@@ -950,6 +985,30 @@ func eventTimeFromJSON(line []byte) (time.Time, bool) {
 	return t, true
 }
 
+// archiveHasOversizedLines prevents a rewrite or whole-file eviction from
+// discarding a line that the bounded scanner cannot inspect safely.
+func archiveHasOversizedLines(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	reader := bufio.NewReaderSize(f, 64<<10)
+	var buf []byte
+	for {
+		_, tooLong, eof, err := readArchiveLine(reader, &buf)
+		if err != nil {
+			return false, err
+		}
+		if tooLong {
+			return true, nil
+		}
+		if eof {
+			return false, nil
+		}
+	}
+}
+
 func (w *archiveWriter) pruneAllEvents() error {
 	w.flush()
 	cutoff := time.Now().Add(-24 * time.Hour)
@@ -959,11 +1018,18 @@ func (w *archiveWriter) pruneAllEvents() error {
 	}
 	for _, name := range names {
 		path := filepath.Join(w.cfg.Dir, name)
+		oversized, err := archiveHasOversizedLines(path)
+		if err != nil {
+			return err
+		}
+		if oversized {
+			continue
+		}
 		changed := false
 		tmp := path + ".retention.tmp"
-		err := rewriteArchiveLines(path, tmp, func(line []byte) (bool, bool) {
+		err = rewriteArchiveLines(path, tmp, func(line []byte) (bool, bool) {
 			at, known := eventTimeFromJSON(line)
-			if known && at.Before(cutoff) {
+			if known && !at.After(cutoff) {
 				changed = true
 				return false, false
 			}
@@ -1004,7 +1070,7 @@ func (w *archiveWriter) pruneBySizeLegacy() {
 	var total int64
 	cutoff := time.Time{}
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "requests-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
+		if entry.Type() != 0 || !strings.HasPrefix(entry.Name(), "requests-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			continue
 		}
 		path := filepath.Join(w.cfg.Dir, entry.Name())
@@ -1023,12 +1089,45 @@ func (w *archiveWriter) pruneBySizeLegacy() {
 	})
 	for _, it := range items {
 		if it.path != w.path && (it.mtime.Before(cutoff) || total > w.cfg.MaxBytes) {
+			unknown, err := archiveHasOversizedLines(it.path)
+			if err != nil {
+				w.setErr(err)
+				continue
+			}
+			if unknown {
+				continue
+			}
+			if err := scanArchiveLines(it.path, func(line []byte) bool {
+				_, known := eventTimeFromJSON(line)
+				if !known {
+					unknown = true
+					return false
+				}
+				return true
+			}); err != nil {
+				w.setErr(err)
+				continue
+			}
+			if unknown {
+				continue
+			}
 			if err := os.Remove(it.path); err == nil {
 				total -= it.size
 			}
 		}
 	}
 	w.total = total
+}
+
+// knownArchiveEvent retains records with unknown fields or timestamps.
+func knownArchiveEvent(line []byte) (Event, bool) {
+	var e Event
+	dec := json.NewDecoder(bytes.NewReader(line))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&e); err != nil {
+		return e, false
+	}
+	return e, !e.Time.IsZero()
 }
 
 // pruneErrors 按事件时间执行 24 小时保留策略，同时丢弃旧版本遗留的成功记录。
@@ -1043,19 +1142,34 @@ func (w *archiveWriter) pruneErrors() error {
 	}
 	for _, name := range names {
 		path := filepath.Join(w.cfg.Dir, name)
+		oversized, err := archiveHasOversizedLines(path)
+		if err != nil {
+			return err
+		}
+		if oversized {
+			continue
+		}
 		changed, kept := false, 0
 		tmp := path + ".tmp"
-		err := rewriteArchiveLines(path, tmp, func(line []byte) (bool, bool) {
-			var e Event
-			if json.Unmarshal(line, &e) != nil {
+		err = rewriteArchiveLines(path, tmp, func(line []byte) (bool, bool) {
+			// Retention depends on the timestamp, not on whether a newer version
+			// added fields to the record. Otherwise valid old errors live forever.
+			if at, ok := eventTimeFromJSON(line); ok && !at.After(cutoff) {
+				changed = true
+				return false, false
+			}
+			e, known := knownArchiveEvent(line)
+			if !known {
 				// Damaged legacy rows have no trustworthy timestamp; preserve them.
+				kept++
 				return true, false
 			}
 			if e.Time.IsZero() {
+				kept++
 				return true, false
 			}
 			clearlySuccess := e.OK || (e.Status >= 200 && e.Status < 300 && e.Outcome == OutcomeSuccess)
-			if clearlySuccess || e.Time.Before(cutoff) {
+			if clearlySuccess || !e.Time.After(cutoff) {
 				changed = true
 				return false, false
 			}
@@ -1106,10 +1220,7 @@ func (w *archiveWriter) read(limit int, filter Filter) ([]Event, error) {
 	// 顺序——同一秒内连续轮转写出的多个文件 mtime 经常完全相同（Linux 文件时间戳粒度粗），
 	// os.ReadDir 的字典序又会把装着最早事件的基准文件 requests-<day>.jsonl 排在
 	// requests-<day>.N.jsonl 之后；目录被整体拷贝 / 恢复备份后 mtime 更不可信。
-	cutoff := time.Time{}
-	if w.cfg.ErrorsOnly {
-		cutoff = time.Now().Add(-errorRetention)
-	}
+	cutoff := time.Now().Add(-errorRetention)
 	// Only the newest window is retained, so archive memory stays bounded by
 	// the requested limit instead of the number of archived events.
 	keepLimit := limit
@@ -1124,7 +1235,7 @@ func (w *archiveWriter) read(limit int, filter Filter) ([]Event, error) {
 		}
 		err := scanArchiveLines(filepath.Join(w.cfg.Dir, name), func(line []byte) bool {
 			var e Event
-			if json.Unmarshal(line, &e) != nil || w.cfg.ErrorsOnly && !isError(&e) || (!cutoff.IsZero() && e.Time.Before(cutoff)) || !filterMatch(filter, e) {
+			if json.Unmarshal(line, &e) != nil || w.cfg.ErrorsOnly && !isError(&e) || !e.Time.After(cutoff) || !filterMatch(filter, e) {
 				return true
 			}
 			kept = append(kept, e)
@@ -1158,10 +1269,7 @@ func (w *archiveWriter) find(id string) (*Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	cutoff := time.Time{}
-	if w.cfg.ErrorsOnly {
-		cutoff = time.Now().Add(-errorRetention)
-	}
+	cutoff := time.Now().Add(-errorRetention)
 	var found *Event
 	for _, entry := range entries {
 		name := entry.Name()
@@ -1170,7 +1278,7 @@ func (w *archiveWriter) find(id string) (*Event, error) {
 		}
 		err := scanArchiveLines(filepath.Join(w.cfg.Dir, name), func(line []byte) bool {
 			var e Event
-			if json.Unmarshal(line, &e) != nil || w.cfg.ErrorsOnly && !isError(&e) || (!cutoff.IsZero() && e.Time.Before(cutoff)) {
+			if json.Unmarshal(line, &e) != nil || w.cfg.ErrorsOnly && !isError(&e) || !e.Time.After(cutoff) {
 				return true
 			}
 			if EventID(e) != id {
@@ -1219,6 +1327,9 @@ func readArchiveLine(reader *bufio.Reader, buf *[]byte) (line []byte, tooLong, e
 		frag, readErr := reader.ReadSlice('\n')
 		switch {
 		case readErr == nil:
+			if len(*buf)+len(trimArchiveLine(frag)) > maxArchiveLineBytes {
+				return nil, true, false, nil
+			}
 			if len(*buf) == 0 {
 				return trimArchiveLine(frag), false, false, nil
 			}
@@ -1235,6 +1346,9 @@ func readArchiveLine(reader *bufio.Reader, buf *[]byte) (line []byte, tooLong, e
 			}
 			*buf = append(*buf, frag...)
 		case errors.Is(readErr, io.EOF):
+			if len(*buf)+len(trimArchiveLine(frag)) > maxArchiveLineBytes {
+				return nil, true, true, nil
+			}
 			if len(*buf) == 0 {
 				return trimArchiveLine(frag), false, true, nil
 			}
@@ -1353,7 +1467,7 @@ func readFile(path string, filter Filter, cutoff time.Time, errorsOnly bool) ([]
 	var out []Event
 	for scanner.Scan() {
 		var e Event
-		if json.Unmarshal(scanner.Bytes(), &e) != nil || errorsOnly && !isError(&e) || (!cutoff.IsZero() && e.Time.Before(cutoff)) || !filterMatch(filter, e) {
+		if json.Unmarshal(scanner.Bytes(), &e) != nil || errorsOnly && !isError(&e) || (!cutoff.IsZero() && !e.Time.After(cutoff)) || !filterMatch(filter, e) {
 			continue
 		}
 		out = append(out, e)
@@ -1368,7 +1482,7 @@ func archiveNames(dir string) ([]string, error) {
 	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), "requests-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
+		if entry.Type() != 0 || !strings.HasPrefix(entry.Name(), "requests-") || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			continue
 		}
 		names = append(names, entry.Name())

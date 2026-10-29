@@ -186,6 +186,51 @@ func (p *Panel) tasksToggle(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// tasksSchedule controls the daily scheduler gate used by the account-task
+// page. It is distinct from /tasks/toggle, which remains the legacy
+// growth-queue gate, and from /maintenance/pause, which pauses only an
+// already-running four-step maintenance batch.
+// GET returns the current state; POST accepts {`enabled`:true|false}.
+func (p *Panel) tasksSchedule(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.Scheduler == nil {
+		writeErr(w, http.StatusServiceUnavailable, "scheduler unavailable")
+		return
+	}
+	if r.Method == http.MethodPost {
+		var req struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := decodeJSONBodyStrict(w, r, 1024, &req, false); err != nil || req.Enabled == nil {
+			if err == nil {
+				err = errors.New("enabled boolean required")
+			}
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if p.cfg.SaveConfig == nil {
+			writeErr(w, http.StatusServiceUnavailable, "schedule configuration unavailable")
+			return
+		}
+		patch, _ := json.Marshal(map[string]any{"schedule": map[string]any{
+			"checkin_enabled": *req.Enabled, "travel_enabled": *req.Enabled,
+			"activity_enabled": *req.Enabled, "keepalive_enabled": *req.Enabled,
+		}})
+		if _, err := p.cfg.SaveConfig(patch); err != nil {
+			writeErr(w, http.StatusInternalServerError, "could not save task schedule")
+			return
+		}
+	}
+	enabled := p.cfg.Scheduler.FourTasksEnabled()
+	status := "enabled"
+	if !enabled {
+		status = "disabled"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "enabled": enabled, "status": status,
+		"data": map[string]any{"enabled": enabled, "status": status},
+	})
+}
+
 // poolRefresh 账号池状态刷新接口 (/panel/api/pool/refresh)
 // 统一支持可选 JSON 请求体，触发状态/余额全量刷新，并以结构化 JSON 返回最新快照
 func (p *Panel) poolRefresh(w http.ResponseWriter, r *http.Request) {
@@ -251,6 +296,10 @@ func (p *Panel) egressSpeedtest(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusServiceUnavailable, "account pool unavailable")
 			return
 		}
+		if st, ok := p.cfg.Pool.Status(req.UID); ok && st.Blocked {
+			writeErr(w, http.StatusConflict, "account requires reauthorization")
+			return
+		}
 		a := p.cfg.Pool.AuthByUID(req.UID)
 		if a == nil {
 			writeErr(w, http.StatusNotFound, "account not found")
@@ -314,6 +363,9 @@ func (p *Panel) updateCheck(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotImplemented, map[string]any{"ok": false, "code": "not_configured", "error": "update source is not configured"})
 		return
 	}
+	p.updateMu.Lock()
+	defer p.updateMu.Unlock()
+	p.updateArtifact = nil
 	result, err := p.cfg.UpdateChecker(r.Context())
 	if err != nil {
 		code, message, status := "check_failed", "update check failed", http.StatusBadGateway
@@ -333,14 +385,12 @@ func (p *Panel) updateCheck(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]any{"ok": false, "code": code, "error": message, "current_version": result.CurrentVersion})
 		return
 	}
-	p.updateMu.Lock()
 	if result.Artifact != nil && result.Artifact.Verified {
 		a := *result.Artifact
 		p.updateArtifact = &a
 	} else {
 		p.updateArtifact = nil
 	}
-	p.updateMu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "current_version": result.CurrentVersion, "latest_version": result.LatestVersion, "has_update": result.HasUpdate, "data": result})
 }
 
@@ -358,12 +408,12 @@ func (p *Panel) updateApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.updateMu.Lock()
+	defer p.updateMu.Unlock()
 	a := p.updateArtifact
 	if a != nil {
 		c := *a
 		a = &c
 	}
-	p.updateMu.Unlock()
 	if a == nil || !a.Verified {
 		writeErr(w, http.StatusPreconditionFailed, "update check with a verified artifact is required")
 		return
@@ -386,8 +436,6 @@ func (p *Panel) updateApply(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	p.updateMu.Lock()
 	p.updateArtifact = nil
-	p.updateMu.Unlock()
 	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "status": "restart_required"})
 }

@@ -187,7 +187,7 @@ func (p *Panel) globalRefresh(w http.ResponseWriter, r *http.Request) {
 		allOK = false
 	} else {
 		b := p.cfg.Scheduler.RunBalanceRefreshNow()
-		result["balance"] = map[string]any{"ok": b.Failed == 0, "total": b.Total, "completed": b.Completed, "failed": b.Failed}
+		result["balance"] = map[string]any{"ok": b.Failed == 0, "total": b.Total, "completed": b.Completed, "failed": b.Failed, "isolated": b.Isolated}
 		if b.Failed != 0 {
 			allOK = false
 		}
@@ -196,8 +196,12 @@ func (p *Panel) globalRefresh(w http.ResponseWriter, r *http.Request) {
 		result["usage"] = map[string]any{"ok": false, "error": "usage recorder not available"}
 		allOK = false
 	} else {
-		p.cfg.Usage.Save()
-		result["usage"] = map[string]any{"ok": true}
+		if err := p.cfg.Usage.Save(); err != nil {
+			result["usage"] = map[string]any{"ok": false, "error": "usage save failed"}
+			allOK = false
+		} else {
+			result["usage"] = map[string]any{"ok": true}
+		}
 	}
 	if p.cfg.RequestLog == nil {
 		result["errors"] = map[string]any{"ok": false, "error": "request log not available"}

@@ -1,9 +1,9 @@
 package panel
 
 import (
-	"io"
 	"encoding/json"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/maintenance"
+	"io"
 	"net/http"
 	"os"
 )
@@ -56,12 +56,34 @@ func (p *Panel) maintenanceRun(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 202, p.cfg.Maintenance.Status())
 }
+func (p *Panel) maintenancePause(w http.ResponseWriter, r *http.Request) {
+	if p.cfg.Maintenance == nil {
+		writeErr(w, 503, "maintenance unavailable")
+		return
+	}
+	var input struct {
+		Paused *bool `json:"paused"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&input) != nil || input.Paused == nil {
+		writeErr(w, 400, "paused boolean required")
+		return
+	}
+	if !p.cfg.Maintenance.SetPaused(*input.Paused) {
+		writeErr(w, 409, "maintenance not running")
+		return
+	}
+	writeJSON(w, 200, p.cfg.Maintenance.Status())
+}
 func (p *Panel) toggleDisabled(w http.ResponseWriter, r *http.Request) {
 	var v struct {
 		Disabled *bool `json:"disabled"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&v) != nil || v.Disabled == nil {
 		writeErr(w, 400, "disabled boolean required")
+		return
+	}
+	if st, ok := p.cfg.Pool.Status(r.PathValue("uid")); ok && st.Blocked && !*v.Disabled {
+		writeErr(w, http.StatusConflict, "account requires reauthorization")
 		return
 	}
 	if !p.cfg.Pool.SetManualDisabled(r.PathValue("uid"), *v.Disabled) {
@@ -75,6 +97,7 @@ func (p *Panel) toggleDisabled(w http.ResponseWriter, r *http.Request) {
 func (p *Panel) preferencesGet(w http.ResponseWriter, r *http.Request) {
 	theme := "dark"
 	animationStyle := p.savedAnimationStyle()
+	refreshHours := 48
 	if p.cfg.LoadConfig != nil {
 		cfg, e := p.cfg.LoadConfig()
 		if e != nil {
@@ -88,13 +111,17 @@ func (p *Panel) preferencesGet(w http.ResponseWriter, r *http.Request) {
 		}
 		var v struct {
 			Panel struct {
-				Theme            string `json:"theme"`
-				StartupAnimation string `json:"startup_animation"`
+				Theme                    string `json:"theme"`
+				StartupAnimation         string `json:"startup_animation"`
+				SubscriptionRefreshHours int    `json:"subscription_refresh_hours"`
 			} `json:"panel"`
 		}
 		_ = json.Unmarshal(raw, &v)
 		if v.Panel.Theme != "" {
 			theme = v.Panel.Theme
+		}
+		if v.Panel.SubscriptionRefreshHours > 0 {
+			refreshHours = v.Panel.SubscriptionRefreshHours
 		}
 		if v.Panel.StartupAnimation != "" {
 			animationStyle = normalizeAnimationStyle(v.Panel.StartupAnimation)
@@ -108,10 +135,11 @@ func (p *Panel) preferencesGet(w http.ResponseWriter, r *http.Request) {
 	p.customMu.RUnlock()
 
 	res := map[string]any{
-		"credit_guard_low": p.cfg.Pool.BalanceGuard(),
-		"theme":            theme,
-		"animation_style":  animationStyle,
-		"customization":    customCopy,
+		"credit_guard_low":           p.cfg.Pool.BalanceGuard(),
+		"subscription_refresh_hours": refreshHours,
+		"theme":                      theme,
+		"animation_style":            animationStyle,
+		"customization":              customCopy,
 	}
 	writeJSON(w, 200, res)
 }
@@ -134,10 +162,22 @@ func (p *Panel) preferencesSet(w http.ResponseWriter, r *http.Request) {
 
 	var v struct {
 		Low            *int64 `json:"credit_guard_low"`
+		RefreshHours   *int   `json:"subscription_refresh_hours"`
 		Theme          string `json:"theme"`
 		AnimationStyle string `json:"animation_style"`
 	}
-	_ = json.Unmarshal(bodyBytes, &v)
+	if json.Unmarshal(bodyBytes, &v) != nil {
+		writeErr(w, 400, "invalid preferences")
+		return
+	}
+	if v.RefreshHours != nil && (*v.RefreshHours < 1 || *v.RefreshHours > 8760) {
+		writeErr(w, 400, "invalid subscription_refresh_hours")
+		return
+	}
+	if v.RefreshHours != nil && p.cfg.SaveConfig == nil {
+		writeErr(w, 501, "configuration persistence unavailable")
+		return
+	}
 
 	if v.Low != nil && (*v.Low < 1 || *v.Low > 1000000) {
 		writeErr(w, 400, "invalid credit_guard_low")
@@ -155,7 +195,7 @@ func (p *Panel) preferencesSet(w http.ResponseWriter, r *http.Request) {
 	// 将任意个性化/扩展配置持久存储在内存中
 	p.customMu.Lock()
 	for k, val := range rawMap {
-		if k != "credit_guard_low" && k != "theme" && k != "animation_style" {
+		if k != "credit_guard_low" && k != "theme" && k != "animation_style" && k != "subscription_refresh_hours" {
 			p.customData[k] = val
 		}
 	}
@@ -167,6 +207,9 @@ func (p *Panel) preferencesSet(w http.ResponseWriter, r *http.Request) {
 			patch["pool"] = map[string]any{"credit_floor": *v.Low}
 		}
 		panelPatch := map[string]any{}
+		if v.RefreshHours != nil {
+			panelPatch["subscription_refresh_hours"] = *v.RefreshHours
+		}
 		if v.Theme != "" {
 			panelPatch["theme"] = v.Theme
 		}
@@ -174,7 +217,7 @@ func (p *Panel) preferencesSet(w http.ResponseWriter, r *http.Request) {
 			panelPatch["startup_animation"] = v.AnimationStyle
 		}
 		for k, val := range rawMap {
-			if k != "credit_guard_low" && k != "theme" && k != "animation_style" {
+			if k != "credit_guard_low" && k != "theme" && k != "animation_style" && k != "subscription_refresh_hours" {
 				panelPatch[k] = val
 			}
 		}

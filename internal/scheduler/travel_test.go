@@ -355,8 +355,8 @@ func TestRunTravelSkipsDisabledAndFailedAccounts(t *testing.T) {
 	if n := deadCalls.Load(); n != 1 {
 		t.Errorf("dead account calls=%d want 1（401 跳过本轮，不强刷 token）", n)
 	}
-	if n := disabledCalls.Load(); n != 0 {
-		t.Errorf("disabled account calls=%d want 0", n)
+	if n := disabledCalls.Load(); n != 1 {
+		t.Errorf("disabled account calls=%d want 1", n)
 	}
 	// 前列账号失败不应中断遍历：末位 ok 账号照常完成派出。
 	if n := okDepart.Load(); n != 1 {
@@ -372,7 +372,7 @@ func TestRunTravelSkipsDisabledAndFailedAccounts(t *testing.T) {
 }
 
 // TestRunTravelDisabledAccountSkipsAllCalls 禁用账号一个请求都不发。
-func TestRunTravelDisabledAccountSkipsAllCalls(t *testing.T) {
+func TestRunTravelDisabledAccountStillRuns(t *testing.T) {
 	fastTravel(t)
 	stub := &travelStub{buddy: "null"}
 	srv := stub.server()
@@ -382,8 +382,8 @@ func TestRunTravelDisabledAccountSkipsAllCalls(t *testing.T) {
 	p.Disable("u1", "test")
 	s.RunTravelNow()
 
-	if n := stub.infoCalls.Load(); n != 0 {
-		t.Errorf("info calls=%d want 0（禁用账号应跳过）", n)
+	if n := stub.infoCalls.Load(); n != 1 {
+		t.Errorf("info calls=%d want 1（禁用账号仍参与任务）", n)
 	}
 }
 

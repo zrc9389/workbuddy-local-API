@@ -28,7 +28,7 @@ test('index.html must have exactly one script tag pointing to /panel/app.js and 
 test('index.html preserves allowed stylesheet links and inline style configurations', () => {
     // 允许且必须保留样式表
     assert.match(html, /<link rel="stylesheet" href="\/panel\/assets\/tailwind\.css">/);
-    assert.match(html, /<link rel="stylesheet" href="\/panel\/assets\/styles\.css">/);
+    assert.doesNotMatch(html, /\/panel\/assets\/styles\.css/, "旧工作台样式不能进入新版页面");
     assert.match(html, /<style>[\s\S]*<\/style>/, 'allowed inline styles must be preserved');
 });
 

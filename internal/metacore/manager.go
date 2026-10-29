@@ -26,6 +26,7 @@ var (
 	ErrUnavailable          = errors.New("verified Mihomo kernel unavailable")
 	ErrBusy                 = errors.New("meta operation already running")
 	ErrInvalid              = errors.New("invalid meta request")
+	ErrNodeTimeout          = errors.New("node timed out; test it again before binding")
 	ErrApply                = errors.New("meta configuration not applied; previous binding retained")
 	ErrRollback             = errors.New("meta rollback failed; sidecar stopped to prevent misrouting")
 	ErrSubscriptionInUse    = errors.New("subscription has bound accounts; unbind them first")
@@ -71,20 +72,29 @@ type provider struct {
 	LastError     string    `json:"last_error,omitempty"`
 }
 type diskState struct {
-	Version   int             `json:"version"`
-	Providers []provider      `json:"providers"`
-	Bindings  []bindingRecord `json:"bindings"`
+	PendingDelete string          `json:"pending_delete,omitempty"`
+	Version       int             `json:"version"`
+	Providers     []provider      `json:"providers"`
+	Bindings      []bindingRecord `json:"bindings"`
+	// NodeHistory stores the last latency samples independently of the live
+	// Mihomo inventory.  Keeping it in the durable state makes the chart
+	// survive a service restart and lets a removed node be pruned atomically
+	// with its provider state.
+	NodeHistory map[string][]History `json:"node_history,omitempty"`
 }
 type History struct {
-	Delay int       `json:"delay"`
-	Time  time.Time `json:"time"`
+	Delay  int       `json:"delay"`
+	Time   time.Time `json:"time"`
+	Status string    `json:"status,omitempty"`
 }
 type Node struct {
 	ID           string     `json:"id"`
 	Name         string     `json:"name"`
+	DisplayName  string     `json:"display_name"`
 	Type         string     `json:"type"`
 	Provider     string     `json:"provider"`
 	ProviderName string     `json:"provider_name,omitempty"`
+	BindingCount int        `json:"binding_count"`
 	Status       string     `json:"status"`
 	DelayMS      *int       `json:"delay_ms,omitempty"`
 	TestedAt     *time.Time `json:"tested_at,omitempty"`
@@ -162,7 +172,10 @@ type Manager struct {
 	prevConnections                  map[string]connection
 	lastCoreUpload, lastCoreDownload int64
 	lastSample                       time.Time
+	refreshInterval                  time.Duration
+	refreshWake                      chan struct{}
 	fetchURL                         func(context.Context, string) ([]byte, error)
+	persistMu                        sync.Mutex
 }
 
 func (m *Manager) setFetcher(fetch func(context.Context, string) ([]byte, error)) {
@@ -205,8 +218,8 @@ func newManager(o Options, e engine) (*Manager, error) {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &Manager{opts: o, op: make(chan struct{}, 1), nodes: map[string]Node{}, controller: addr, secret: secret, ctx: ctx, cancel: cancel, lastUse: time.Now(), prevConnections: map[string]connection{}, fetchURL: fetchSubscription}
-	m.state = diskState{Version: 2, Providers: []provider{}, Bindings: []bindingRecord{}}
+	m := &Manager{opts: o, op: make(chan struct{}, 1), nodes: map[string]Node{}, controller: addr, secret: secret, ctx: ctx, cancel: cancel, lastUse: time.Now(), prevConnections: map[string]connection{}, refreshWake: make(chan struct{}, 1), fetchURL: fetchSubscription}
+	m.state = diskState{Version: 2, Providers: []provider{}, Bindings: []bindingRecord{}, NodeHistory: map[string][]History{}}
 	var b []byte
 	err = os.ErrNotExist
 	if !o.Demo {
@@ -238,6 +251,9 @@ func newManager(o Options, e engine) (*Manager, error) {
 			cancel()
 			return nil, errors.New("invalid persisted meta state")
 		}
+		if m.state.NodeHistory == nil {
+			m.state.NodeHistory = map[string][]History{}
+		}
 	} else if !os.IsNotExist(err) {
 		cancel()
 		return nil, errors.New("cannot read meta state")
@@ -258,14 +274,22 @@ func newManager(o Options, e engine) (*Manager, error) {
 	return m, nil
 }
 func (m *Manager) lock() error {
+	return m.lockOperation(false)
+}
+func (m *Manager) lockOperation(allowPending bool) error {
 	select {
 	case m.op <- struct{}{}:
 		m.mu.Lock()
 		closed := m.closed
+		pending := m.state.PendingDelete != ""
 		m.mu.Unlock()
 		if closed {
 			<-m.op
 			return ErrUnavailable
+		}
+		if pending && !allowPending {
+			<-m.op
+			return ErrBusy
 		}
 		return nil
 	default:
@@ -276,9 +300,15 @@ func (m *Manager) unlock() { <-m.op }
 func (m *Manager) snapshot() diskState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.snapshotLocked()
+}
+
+// snapshotLocked clones durable state. The caller must hold m.mu.
+func (m *Manager) snapshotLocked() diskState {
 	s := m.state
 	s.Providers = append([]provider(nil), s.Providers...)
 	s.Bindings = append([]bindingRecord(nil), s.Bindings...)
+	s.NodeHistory = cloneHistoryMap(s.NodeHistory)
 	return s
 }
 func (m *Manager) Status() Status {
@@ -370,17 +400,44 @@ func (m *Manager) IsBound(uid string) bool {
 	return false
 }
 
+// ExportAccountBinding is only for explicit, authenticated credential exports.
+// Subscription URLs may contain secrets and must not be included in normal listings.
+func (m *Manager) ExportAccountBinding(uid string) (string, string, bool) {
+	if m == nil {
+		return "", "", false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, b := range m.state.Bindings {
+		if b.UID == uid {
+			for _, p := range m.state.Providers {
+				if p.ID == b.Provider {
+					return p.URL, b.Name, true
+				}
+			}
+			return "", b.Name, true
+		}
+	}
+	return "", "", false
+}
+
 func (m *Manager) Nodes() NodesResponse {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r := NodesResponse{Demo: m.opts.Demo, Nodes: []Node{}, Bindings: []Binding{}}
 	providerNames := make(map[string]string, len(m.state.Providers))
+	bindingCounts := make(map[string]int, len(m.state.Bindings))
+	for _, b := range m.state.Bindings {
+		bindingCounts[b.Node]++
+	}
 	for _, p := range m.state.Providers {
 		providerNames[p.ID] = p.Name
 	}
 	for _, n := range m.nodes {
 		n.History = append([]History{}, n.History...)
+		n.BindingCount = bindingCounts[n.ID]
 		n.ProviderName = providerNames[n.Provider]
+		n.DisplayName = nodeDisplayName(n.Name, n.Provider)
 		r.Nodes = append(r.Nodes, n)
 	}
 	sort.Slice(r.Nodes, func(i, j int) bool { return r.Nodes[i].ID < r.Nodes[j].ID })
@@ -389,6 +446,14 @@ func (m *Manager) Nodes() NodesResponse {
 	}
 	r.Total = len(r.Nodes)
 	return r
+}
+
+func nodeDisplayName(name, provider string) string {
+	prefix := provider + "/"
+	if provider != "" && strings.HasPrefix(name, prefix) && len(name) > len(prefix) {
+		return strings.TrimPrefix(name, prefix)
+	}
+	return name
 }
 func (m *Manager) EnsureStarted(ctx context.Context) error {
 	if err := m.lock(); err != nil {
@@ -402,13 +467,43 @@ func (m *Manager) EnsureStarted(ctx context.Context) error {
 // data is older than interval. The loop is owned by Manager so every refresh
 // uses the same serialized operation gate and Mihomo apply/rollback path as a
 // manual refresh. It stops with ctx and never overlaps another refresh.
+func (m *Manager) SetSubscriptionRefreshInterval(interval time.Duration) {
+	if m == nil || interval <= 0 {
+		return
+	}
+	m.mu.Lock()
+	if m.refreshInterval == interval {
+		m.mu.Unlock()
+		return
+	}
+	m.refreshInterval = interval
+	m.mu.Unlock()
+	select {
+	case m.refreshWake <- struct{}{}:
+	default:
+	}
+}
+
 func (m *Manager) StartSubscriptionRefresh(ctx context.Context, interval time.Duration) {
 	if m == nil || interval <= 0 {
 		return
 	}
+	m.mu.Lock()
+	m.refreshInterval = interval
+	m.mu.Unlock()
 	go func() {
+		retryAfter := make(map[string]time.Time)
 		refreshDue := func() {
+			m.mu.Lock()
+			interval := m.refreshInterval
+			m.mu.Unlock()
 			for _, sub := range m.Subscriptions() {
+				if ctx.Err() != nil {
+					return
+				}
+				if time.Now().Before(retryAfter[sub.ID]) {
+					continue
+				}
 				if !sub.Enabled || !sub.HasURL || (!sub.LastRefreshAt.IsZero() && time.Since(sub.LastRefreshAt) < interval) {
 					continue
 				}
@@ -416,19 +511,26 @@ func (m *Manager) StartSubscriptionRefresh(ctx context.Context, interval time.Du
 				_, err := m.RefreshSubscription(refreshCtx, sub.ID)
 				cancel()
 				if err != nil && !errors.Is(err, context.Canceled) {
+					retryAfter[sub.ID] = time.Now().Add(interval)
 					log.Printf("metacore: scheduled subscription refresh %s failed: %v", sub.ID, err)
+				} else {
+					delete(retryAfter, sub.ID)
 				}
 			}
 		}
 		// Recover providers that were already stale when the process started.
 		refreshDue()
-		t := time.NewTicker(interval)
+		// Re-evaluate at most a minute after a subscription becomes due.
+		t := time.NewTicker(time.Minute)
 		defer t.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				refreshDue()
+			case <-m.refreshWake:
+				clear(retryAfter)
 				refreshDue()
 			}
 		}
@@ -495,6 +597,10 @@ func (m *Manager) Bind(ctx context.Context, uid, nodeID string, saveProxy func(s
 		return Binding{}, err
 	}
 	defer m.unlock()
+	return m.bindLocked(ctx, uid, nodeID, saveProxy)
+}
+
+func (m *Manager) bindLocked(ctx context.Context, uid, nodeID string, saveProxy func(string) error) (Binding, error) {
 	if err := m.ensure(ctx); err != nil {
 		return Binding{}, err
 	}
@@ -507,6 +613,9 @@ func (m *Manager) Bind(ctx context.Context, uid, nodeID string, saveProxy func(s
 	}
 	if testing {
 		return Binding{}, ErrBusy
+	}
+	if n.Status == "timeout" {
+		return Binding{}, ErrNodeTimeout
 	}
 	old := m.snapshot()
 	next := m.snapshot()
@@ -562,7 +671,7 @@ func (m *Manager) Bind(ctx context.Context, uid, nodeID string, saveProxy func(s
 }
 func (m *Manager) apply(ctx context.Context, old, next diskState) error {
 	m.mu.Lock()
-	leased := m.leases > 0
+	leased := m.leases > 0 || m.job.Running
 	m.mu.Unlock()
 	if leased {
 		return ErrBusy
@@ -594,7 +703,18 @@ func (m *Manager) apply(ctx context.Context, old, next diskState) error {
 			err = m.verifyBindings(ctx, next)
 		}
 	}
+	// Carry latency history into the candidate state before persisting it.
+	// Persisting first would silently drop the history on every subscription
+	// refresh or binding update, so a restart would lose the chart samples.
 	if err == nil {
+		next.NodeHistory = make(map[string][]History, len(nodes))
+		for id, n := range nodes {
+			if h := old.NodeHistory[id]; len(h) > 0 {
+				next.NodeHistory[id] = append([]History(nil), h...)
+			} else if len(n.History) > 0 {
+				next.NodeHistory[id] = append([]History(nil), n.History...)
+			}
+		}
 		err = m.persist(next)
 	}
 	if err != nil {
@@ -619,6 +739,20 @@ func (m *Manager) apply(ctx context.Context, old, next diskState) error {
 	m.lastError = ""
 	m.mu.Unlock()
 	return nil
+}
+
+func cloneHistoryMap(in map[string][]History) map[string][]History {
+	out := make(map[string][]History, len(in))
+	for id, h := range in {
+		if len(h) == 0 {
+			continue
+		}
+		if len(h) > 10 {
+			h = h[len(h)-10:]
+		}
+		out[id] = append([]History(nil), h...)
+	}
+	return out
 }
 func (m *Manager) rollback(s diskState) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
@@ -656,6 +790,8 @@ func (m *Manager) persist(s diskState) error {
 	if m.opts.Demo {
 		return nil
 	}
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
 	b, err := json.Marshal(s)
 	if err != nil {
 		return err
@@ -685,7 +821,27 @@ func (m *Manager) readNodes(ctx context.Context, s diskState) (map[string]Node, 
 			if _, ok := result[id]; ok {
 				return nil, ErrInvalid
 			}
-			result[id] = Node{ID: id, Name: n.Name, Type: n.Type, Provider: p.ID, Status: "untested", History: []History{}}
+			history := append([]History(nil), s.NodeHistory[id]...)
+			if len(history) > 10 {
+				history = history[len(history)-10:]
+			}
+			node := Node{ID: id, Name: n.Name, Type: n.Type, Provider: p.ID, Status: "untested", History: history}
+			if len(history) > 0 {
+				last := history[len(history)-1]
+				if !last.Time.IsZero() {
+					tested := last.Time
+					node.TestedAt = &tested
+					if last.Delay > 0 {
+						delay := last.Delay
+						node.Status, node.DelayMS = "ok", &delay
+					} else if last.Status == "timeout" {
+						node.Status = "timeout"
+					} else {
+						node.Status = "error"
+					}
+				}
+			}
+			result[id] = node
 			if len(result) > maxNodes {
 				return nil, errors.New("node limit exceeded")
 			}
@@ -779,6 +935,9 @@ func validState(s diskState) bool {
 		if effectiveProviderEnabled(p) {
 			enabled[p.ID] = true
 		}
+	}
+	if s.PendingDelete != "" && !ids[s.PendingDelete] {
+		return false
 	}
 	uids := map[string]bool{}
 	ports := map[int]bool{}

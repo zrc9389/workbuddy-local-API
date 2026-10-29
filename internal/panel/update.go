@@ -205,7 +205,7 @@ func newUpdateChecker(source UpdateSource, current string, transport http.RoundT
 				if a.SHA256 == "" {
 					for _, asset := range release.Assets {
 						if strings.EqualFold(asset.Name, a.Name+".sha256") || strings.Contains(strings.ToLower(asset.Name), "checksums") {
-							if sum, ok := fetchUpdateChecksum(ctx, client, asset.URL); ok {
+							if sum, ok := fetchUpdateChecksum(ctx, client, asset.URL, a.Name, strings.EqualFold(asset.Name, a.Name+".sha256")); ok {
 								a.SHA256, a.Verified = sum, true
 							}
 							break
@@ -222,7 +222,7 @@ func newUpdateChecker(source UpdateSource, current string, transport http.RoundT
 	}
 }
 
-func fetchUpdateChecksum(ctx context.Context, client *http.Client, rawURL string) (string, bool) {
+func fetchUpdateChecksum(ctx context.Context, client *http.Client, rawURL, name string, single bool) (string, bool) {
 	if rawURL == "" {
 		return "", false
 	}
@@ -245,11 +245,21 @@ func fetchUpdateChecksum(ctx context.Context, client *http.Client, rawURL string
 	if err != nil {
 		return "", false
 	}
-	for _, f := range strings.Fields(string(b)) {
-		f = strings.TrimPrefix(strings.ToLower(f), "sha256:")
-		if len(f) == 64 {
-			if _, err := hex.DecodeString(f); err == nil {
-				return f, true
+	for _, line := range strings.Split(string(b), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) == 1 && !single {
+			continue
+		}
+		if len(fields) > 1 && strings.TrimPrefix(fields[1], "*") != name {
+			continue
+		}
+		sum := strings.TrimPrefix(strings.ToLower(fields[0]), "sha256:")
+		if len(sum) == 64 {
+			if _, err := hex.DecodeString(sum); err == nil {
+				return sum, true
 			}
 		}
 	}
@@ -261,11 +271,19 @@ func selectUpdateAsset(tag string, assets []updateAsset) *UpdateArtifact {
 	var bin updateAsset
 	for _, a := range assets {
 		n := strings.ToLower(a.Name)
-		if strings.HasSuffix(n, ".sha256") || strings.Contains(n, "checksum") {
-			continue
+		// Only explicitly named standalone service executables are installable.
+		// Release packages and unrelated platform assets must never replace the binary.
+		expected := []string{"wb2api-" + platform + "-" + arch, "workbuddy-" + platform + "-" + arch}
+		if platform == "windows" {
+			expected[0] += ".exe"
+			expected[1] += ".exe"
 		}
-		okPlatform := strings.Contains(n, platform) || (platform == "windows" && strings.Contains(n, "win"))
-		okArch := strings.Contains(n, arch) || (arch == "amd64" && strings.Contains(n, "x86_64"))
+		okPlatform, okArch := false, false
+		for _, name := range expected {
+			if n == name {
+				okPlatform, okArch = true, true
+			}
+		}
 		if okPlatform && okArch {
 			bin = a
 			break
@@ -374,10 +392,10 @@ func applyUpdate(ctx context.Context, executable string, a UpdateArtifact, trans
 		return updateError("disk_error", "could not set update permissions")
 	}
 	backup := executable + ".bak"
-	if _, statErr := os.Stat(backup); statErr == nil {
-		if err := os.Remove(backup); err != nil {
-			return updateError("replace_failed", "could not replace existing executable backup")
-		}
+	if _, statErr := os.Lstat(backup); statErr == nil {
+		return updateError("backup_exists", "existing executable backup must be resolved before installing")
+	} else if !os.IsNotExist(statErr) {
+		return updateError("disk_error", "could not inspect executable backup")
 	}
 	if err := os.Rename(executable, backup); err != nil {
 		return updateError("replace_failed", "could not backup current executable")

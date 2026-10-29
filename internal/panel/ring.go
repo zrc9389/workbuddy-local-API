@@ -88,7 +88,12 @@ func (r *Ring) Write(p []byte) (int, error) {
 func (r *Ring) Snapshot() []LogEntry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	out := make([]LogEntry, len(r.entries))
-	copy(out, r.entries)
+	cutoff := time.Now().Add(-24 * time.Hour)
+	out := make([]LogEntry, 0, len(r.entries))
+	for _, entry := range r.entries {
+		if entry.TS.After(cutoff) {
+			out = append(out, entry)
+		}
+	}
 	return out
 }

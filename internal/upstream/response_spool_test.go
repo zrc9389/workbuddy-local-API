@@ -9,6 +9,17 @@ import (
 	"testing"
 )
 
+func TestAggregateSpoolRejectsUpstreamError(t *testing.T) {
+	data := "data: {\"choices\":[{\"delta\":{\"content\":\"" + strings.Repeat("x", responseMemoryThreshold+1) + "\"}}]}\n\ndata: {\"error\":{\"message\":\"sensitive upstream details\"}}\n\n"
+	result, store, err := AggregateSpool(strings.NewReader(data))
+	if err == nil || result != nil || store != nil {
+		t.Fatalf("error event accepted: result=%v store=%v err=%v", result, store, err)
+	}
+	if strings.Contains(err.Error(), "sensitive upstream details") {
+		t.Fatal("upstream error details leaked")
+	}
+}
+
 func TestAggregateSpoolLargeFieldsAndCleanup(t *testing.T) {
 	text := strings.Repeat("abcdef", 200000)
 	var s strings.Builder

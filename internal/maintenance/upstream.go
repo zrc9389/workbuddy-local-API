@@ -45,7 +45,14 @@ func UpstreamAction(p *pool.Pool, up *upstream.Client) Action {
 			if e := up.ReportChatActivity(a, id, id); e != nil {
 				return "", e
 			}
-			return "活跃已上报", nil
+			days, e := up.GrowthStreak(a)
+			if e != nil {
+				return "", fmt.Errorf("活跃上报已接受，但连登回读失败: %w", e)
+			}
+			if days <= 0 {
+				return "", fmt.Errorf("活跃上报已接受，但连登尚未确认")
+			}
+			return fmt.Sprintf("活跃已上报，连登 %d 天", days), nil
 		case "travel":
 			if a.IsGlobal() || a.IsEnterprise() {
 				return "该账号不适用旅行", nil
@@ -72,7 +79,8 @@ func UpstreamAction(p *pool.Pool, up *upstream.Client) Action {
 				if st.DailyLimitReached {
 					return "今日旅行次数已用完", nil
 				}
-				return "已派出旅行", up.TravelDepart(a, 1)
+				// 与每日旅行排程使用相同的地点（古镇客栈）。
+				return "已派出旅行", up.TravelDepart(a, 4)
 			case "traveling":
 				return "旅行中，无需重复派出", nil
 			default:

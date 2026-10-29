@@ -24,7 +24,7 @@ var indexHTML []byte
 //go:embed app.js
 var appJS []byte
 
-//go:embed assets
+//go:embed assets/tailwind.css assets/geometric.js assets/editorial-events.js
 var assetFS embed.FS
 
 // csp 内容安全策略（严格版，无需 unsafe-inline）：

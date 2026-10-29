@@ -99,6 +99,35 @@ func fixtureManager(t *testing.T) (*Manager, *fakeCore) {
 	t.Cleanup(func() { _ = m.Close(context.Background()) })
 	return m, f
 }
+
+func TestNodeDisplayNamePreservesRoutingIdentity(t *testing.T) {
+	m, _ := fixtureManager(t)
+	m.nodes = map[string]Node{
+		"n1": {ID: "n1", Provider: "sub-1", Name: "sub-1/🇺🇸美国/推荐"},
+		"n2": {ID: "n2", Provider: "sub-1", Name: "other/原名"},
+	}
+	nodes := m.Nodes().Nodes
+	if len(nodes) != 2 || nodes[0].Name != "sub-1/🇺🇸美国/推荐" || nodes[0].DisplayName != "🇺🇸美国/推荐" || nodes[0].ID != "n1" {
+		t.Fatalf("bad first node: %+v", nodes)
+	}
+	if nodes[1].Name != "other/原名" || nodes[1].DisplayName != "other/原名" {
+		t.Fatalf("unexpected prefix removal: %+v", nodes[1])
+	}
+}
+
+func TestNodesExposeBindingCounts(t *testing.T) {
+	m, _ := fixtureManager(t)
+	m.nodes = map[string]Node{"n1": {ID: "n1"}, "n2": {ID: "n2"}}
+	m.state.Bindings = []bindingRecord{
+		{Binding: Binding{UID: "a", Node: "n1"}},
+		{Binding: Binding{UID: "b", Node: "n1"}},
+		{Binding: Binding{UID: "c", Node: "n2"}},
+	}
+	nodes := m.Nodes().Nodes
+	if len(nodes) != 2 || nodes[0].BindingCount != 2 || nodes[1].BindingCount != 1 {
+		t.Fatalf("binding counts: %+v", nodes)
+	}
+}
 func TestConfigPerAccountIsolation(t *testing.T) {
 	s := diskState{Providers: []provider{{ID: "fixture", File: "providers/fixture.txt"}}, Bindings: []bindingRecord{{Binding: Binding{UID: "a", Node: "n1", RouteID: "account-a", Port: 19001}, Provider: "fixture", Name: "fixture/one", Password: "p1"}, {Binding: Binding{UID: "b", Node: "n2", RouteID: "account-b", Port: 19002}, Provider: "fixture", Name: "fixture/two", Password: "p2"}}}
 	b, err := renderConfig(s, "127.0.0.1:19999", "test-secret")
@@ -128,7 +157,7 @@ func TestConfigPerAccountIsolation(t *testing.T) {
 	}
 }
 func TestSubscriptionSSRFPolicy(t *testing.T) {
-	for _, raw := range []string{"https://user:pass@example.com/a", "https://127.0.0.1/a", "https://[::1]/a", "https://169.254.169.254/a", "file:///a", "https://example.com:123/a", "http://example.com:443/a", "https://example.com:80/a"} {
+	for _, raw := range []string{"https://user:pass@example.com/a", "https://127.0.0.1/a", "https://[::1]/a", "https://169.254.169.254/a", "file:///a", "https://example.com:0/a", "https://example.com:65536/a"} {
 		if _, err := subscriptionURL(raw); err == nil {
 			t.Fatalf("accepted %s", raw)
 		}
@@ -138,7 +167,7 @@ func TestSubscriptionSSRFPolicy(t *testing.T) {
 			t.Fatal("accepted reserved", ip)
 		}
 	}
-	for _, raw := range []string{"http://example.com/a", "https://example.com/a", "http://example.com:80/a", "https://example.com:443/a"} {
+	for _, raw := range []string{"http://example.com/a", "https://example.com/a", "http://example.com:80/a", "https://example.com:443/a", "https://example.com:2096/a"} {
 		if _, err := subscriptionURL(raw); err != nil {
 			t.Fatalf("accepted protocol URL %s: %v", raw, err)
 		}

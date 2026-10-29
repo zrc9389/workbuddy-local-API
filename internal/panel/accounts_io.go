@@ -1,17 +1,20 @@
 package panel
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/metacore"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
-const maxCredentialImportBytes = 2 << 20
-const maxCredentialImportAccounts = 100
+const maxCredentialImportBytes = 8 << 20
+const maxCredentialImportAccounts = 1000
 const maxCredentialExportBytes = 8 << 20
 
 func safeCredentialPath(dir, path string) error {
@@ -74,12 +77,30 @@ func (p *Panel) AccountsExport(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, "could not export account")
 			return
 		}
+		if url, node, bound := p.cfg.Meta.ExportAccountBinding(st.UID); bound {
+			var doc map[string]any
+			if json.Unmarshal(raw, &doc) != nil {
+				writeErr(w, 500, "could not export account")
+				return
+			}
+			doc["binding"] = map[string]string{"subscription_url": url, "node": node}
+			raw, err = json.Marshal(doc)
+			if err != nil {
+				writeErr(w, 500, "could not export account")
+				return
+			}
+		}
 		size += len(raw) + 1
 		if size > maxCredentialExportBytes {
 			writeErr(w, 413, "credential export exceeds size limit")
 			return
 		}
 		docs = append(docs, raw)
+	}
+	encoded, err := json.Marshal(docs)
+	if err != nil || len(encoded)+1 > maxCredentialExportBytes {
+		writeErr(w, 413, "credential export exceeds size limit")
+		return
 	}
 	w.Header().Set("Content-Disposition", `attachment; filename="workbuddy-accounts.json"`)
 	writeJSON(w, 200, docs)
@@ -113,12 +134,15 @@ func (p *Panel) AccountsImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(docs) == 0 || len(docs) > maxCredentialImportAccounts {
-		writeErr(w, 400, "import requires 1 to 100 accounts")
+		writeErr(w, 400, "import requires 1 to 1000 accounts")
 		return
 	}
 	type item struct {
-		a             *auth.Auth
-		preserveProxy bool
+		a       *auth.Auth
+		binding *struct {
+			URL  string `json:"subscription_url"`
+			Node string `json:"node"`
+		}
 	}
 	items := make([]item, 0, len(docs))
 	seen := make(map[string]bool)
@@ -129,14 +153,9 @@ func (p *Panel) AccountsImport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if seen[a.UID] {
-			writeErr(w, 400, "duplicate account UID")
-			return
+			continue
 		}
 		seen[a.UID] = true
-		var fields map[string]json.RawMessage
-		_ = json.Unmarshal(doc, &fields)
-		_, hasProxy := fields["proxy"]
-		_, hasAlias := fields["proxy_url"]
 		a.FilePath = filepath.Join(p.cfg.AuthDir, "workbuddy-"+a.UID+".json")
 		if old := p.cfg.Pool.AuthByUID(a.UID); old != nil {
 			a.FilePath = old.FilePath
@@ -145,7 +164,19 @@ func (p *Panel) AccountsImport(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "unsafe credential storage path")
 			return
 		}
-		items = append(items, item{a, !hasProxy && !hasAlias})
+		var fields map[string]json.RawMessage
+		_ = json.Unmarshal(doc, &fields)
+		var binding *struct {
+			URL  string `json:"subscription_url"`
+			Node string `json:"node"`
+		}
+		if value, ok := fields["binding"]; ok {
+			if string(value) == "null" || json.Unmarshal(value, &binding) != nil || binding == nil || strings.TrimSpace(binding.URL) == "" || strings.TrimSpace(binding.Node) == "" {
+				writeErr(w, 400, "invalid Meta binding")
+				return
+			}
+		}
+		items = append(items, item{a, binding})
 	}
 	select {
 	case accountMutationSlots <- struct{}{}:
@@ -163,27 +194,64 @@ func (p *Panel) AccountsImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	imported := []string{}
+	retained := []string{}
 	failed := []string{}
+	rollbackFailed := []string{}
+	ctx, cancel := context.WithTimeout(r.Context(), 55*time.Second)
+	defer cancel()
 	for _, it := range items {
-		if r.Context().Err() != nil {
+		if ctx.Err() != nil {
 			failed = append(failed, it.a.UID)
 			continue
 		}
 		a := it.a
+		var unlock func()
+		if p.deletions != nil {
+			unlock = p.deletions.lockFor(a.UID)
+			if _, pending := p.deletions.journal.get(a.UID); pending {
+				unlock()
+				failed = append(failed, a.UID)
+				continue
+			}
+		}
+		if p.cfg.Pool.AuthByUID(a.UID) != nil {
+			if unlock != nil {
+				unlock()
+			}
+			retained = append(retained, a.UID)
+			continue
+		}
+		// A credential file not loaded into the pool is still existing data.
+		if _, statErr := os.Lstat(a.FilePath); statErr == nil {
+			if unlock != nil {
+				unlock()
+			}
+			retained = append(retained, a.UID)
+			continue
+		} else if !os.IsNotExist(statErr) {
+			if unlock != nil {
+				unlock()
+			}
+			failed = append(failed, a.UID)
+			continue
+		}
 		var err error
-		if old := p.cfg.Pool.AuthByUID(a.UID); old != nil {
-			if safeCredentialPath(p.cfg.AuthDir, old.FilePath) != nil {
-				err = errors.New("unsafe credential path")
+		if it.binding != nil {
+			if p.cfg.Meta == nil {
+				err = errors.New("Meta unavailable")
 			} else {
-				err = old.ImportCredentialsAndSave(a, it.preserveProxy)
-				if err == nil {
-					accountEgressService.Forget(old)
-				}
+				err = p.cfg.Meta.RestoreAccountBinding(ctx, a.UID, it.binding.URL, it.binding.Node, a.SetProxyAndSave)
 			}
 		} else {
 			err = a.SaveAtomic()
 		}
 		if err != nil {
+			if errors.Is(err, metacore.ErrRollback) {
+				rollbackFailed = append(rollbackFailed, a.UID)
+			}
+			if unlock != nil {
+				unlock()
+			}
 			failed = append(failed, it.a.UID)
 			continue
 		}
@@ -193,13 +261,16 @@ func (p *Panel) AccountsImport(w http.ResponseWriter, r *http.Request) {
 			p.cfg.Upstream.ForgetTransport(a.UID)
 		}
 		accountEgressService.Forget(a)
+		if unlock != nil {
+			unlock()
+		}
 		imported = append(imported, a.UID)
 	}
 	status := 200
 	if len(failed) > 0 {
 		status = 500
 	}
-	writeJSON(w, status, map[string]any{"ok": len(failed) == 0, "imported": len(imported), "uids": imported, "failed": failed})
+	writeJSON(w, status, map[string]any{"ok": len(failed) == 0, "imported": len(imported), "uids": imported, "retained": retained, "failed": failed, "rollback_failed": rollbackFailed})
 }
 func aUID(a *auth.Auth) string {
 	if a == nil {

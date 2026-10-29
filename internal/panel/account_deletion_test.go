@@ -331,3 +331,47 @@ type countingDeleteSink struct {
 }
 
 func (s *countingDeleteSink) DeleteAccount(string) error { s.calls.Add(1); return nil }
+
+func TestCredentialQuarantineAtBoundaryAndUnknown(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	expired := filepath.Join(dir, "a.json.deleted-20261022T120000.000000000Z")
+	unknown := filepath.Join(dir, "b.json.deleted-unknown")
+	for _, p := range []string{expired, unknown} {
+		if err := os.WriteFile(p, []byte("fake"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := New(Config{CredentialQuarantineDir: dir})
+	if err := p.PruneCredentialQuarantine(now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(expired); !os.IsNotExist(err) {
+		t.Fatalf("boundary not removed: %v", err)
+	}
+	if _, err := os.Stat(unknown); err != nil {
+		t.Fatalf("unknown removed: %v", err)
+	}
+}
+
+func TestCredentialQuarantinePreciseSevenDayBoundary(t *testing.T) {
+	dir := t.TempDir()
+	deleted := time.Date(2026, 10, 22, 12, 0, 0, 123456789, time.UTC)
+	path := filepath.Join(dir, "a.json.deleted-"+deleted.Format("20060102T150405.000000000Z"))
+	if err := os.WriteFile(path, []byte("fake"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	p := New(Config{CredentialQuarantineDir: dir})
+	if err := p.PruneCredentialQuarantine(deleted.Add(7*24*time.Hour - time.Nanosecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("removed early: %v", err)
+	}
+	if err := p.PruneCredentialQuarantine(deleted.Add(7 * 24 * time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("not removed at boundary: %v", err)
+	}
+}

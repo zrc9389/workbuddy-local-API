@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -197,7 +198,7 @@ func TestPanelModelsStaleKeepsOldListOnFailure(t *testing.T) {
 	}
 }
 
-// c/d. 手动刷新：首次允许并打上游；冷却内 ok:false 且不打上游；冷却外再次允许。
+// 手动刷新：冷却内返回缓存，冷却外再次拉取。
 func TestPanelModelsManualRefreshCooldown(t *testing.T) {
 	hits := new(atomic.Int32)
 	p := newModelsCacheTestPanel(t, modelsTestUpstream(hits, true))
@@ -212,11 +213,8 @@ func TestPanelModelsManualRefreshCooldown(t *testing.T) {
 	}
 
 	rec, second := doModelsRequest(t, p, http.MethodPost, "/panel/api/models/refresh")
-	if rec.Code != http.StatusOK || second.OK {
-		t.Fatalf("cooldown refresh: status=%d ok=%v body=%s, want 200 ok=false", rec.Code, second.OK, rec.Body.String())
-	}
-	if second.CooldownSeconds <= 0 || second.CooldownSeconds > int(panelModelsRefreshCool/time.Second) {
-		t.Fatalf("cooldown_seconds=%d, want 1..%d", second.CooldownSeconds, int(panelModelsRefreshCool/time.Second))
+	if rec.Code != http.StatusOK || !second.OK || !second.Cached || len(second.Models) != len(first.Models) {
+		t.Fatalf("cooldown refresh: status=%d body=%s, want cached models", rec.Code, rec.Body.String())
 	}
 	if got := hits.Load(); got != afterFirst {
 		t.Fatalf("upstream hits inside refresh cooldown=%d, want unchanged %d", got, afterFirst)
@@ -231,5 +229,49 @@ func TestPanelModelsManualRefreshCooldown(t *testing.T) {
 	}
 	if got := hits.Load(); got <= afterFirst {
 		t.Fatalf("upstream hits after cooldown=%d, want > %d", got, afterFirst)
+	}
+}
+
+// 上游恢复后，失败的手动刷新不能占用五分钟冷却。
+func TestPanelModelsFailedRefreshCanRetryImmediately(t *testing.T) {
+	hits := new(atomic.Int32)
+	ok := new(atomic.Bool)
+	p := newModelsCacheTestPanel(t, modelsTestUpstreamToggle(hits, ok))
+	rec, _ := doModelsRequest(t, p, http.MethodPost, "/panel/api/models/refresh")
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("first status=%d", rec.Code)
+	}
+	before := hits.Load()
+	ok.Store(true)
+	rec, body := doModelsRequest(t, p, http.MethodPost, "/panel/api/models/refresh")
+	if rec.Code != http.StatusOK || !body.OK || len(body.Models) != 1 || hits.Load() <= before {
+		t.Fatalf("retry status=%d hits=%d body=%s", rec.Code, hits.Load(), rec.Body.String())
+	}
+}
+
+// 上游删除模型后，新快照及持久化重载都不能复活旧模型。
+func TestPanelModelsRefreshRemovesOldModelFromPersistedSnapshot(t *testing.T) {
+	var revision atomic.Int32
+	p := newModelsCacheTestPanel(t, func(w http.ResponseWriter, r *http.Request) {
+		if revision.Load() == 0 {
+			_, _ = w.Write([]byte(`{"code":0,"data":{"models":[{"id":"old","maxOutputTokens":8192},{"id":"keep","maxOutputTokens":8192}],"agents":[{"name":"cli","models":["old","keep"]}]}}`))
+		} else {
+			_, _ = w.Write([]byte(`{"code":0,"data":{"models":[{"id":"keep","maxOutputTokens":8192}],"agents":[{"name":"cli","models":["keep"]}]}}`))
+		}
+	})
+	p.cfg.ModelsCachePath = filepath.Join(t.TempDir(), "models.json")
+	_, first := doModelsRequest(t, p, http.MethodGet, "/panel/api/models")
+	if len(first.Models) != 2 {
+		t.Fatalf("initial: %v", first.Models)
+	}
+	revision.Store(1)
+	rec, fresh := doModelsRequest(t, p, http.MethodPost, "/panel/api/models/refresh")
+	if rec.Code != http.StatusOK || len(fresh.Models) != 1 || fresh.Models[0]["id"] != "cn:keep" {
+		t.Fatalf("refresh: %s", rec.Body.String())
+	}
+	p2 := New(Config{Pool: p.cfg.Pool, Upstream: p.cfg.Upstream, ModelsCachePath: p.cfg.ModelsCachePath})
+	rec, cached := doModelsRequest(t, p2, http.MethodGet, "/panel/api/models")
+	if rec.Code != http.StatusOK || len(cached.Models) != 1 || cached.Models[0]["id"] != "cn:keep" {
+		t.Fatalf("reloaded: %s", rec.Body.String())
 	}
 }

@@ -200,8 +200,8 @@ func localBoundary(w http.ResponseWriter, r *http.Request) bool {
 	}
 	if isWrite(r) {
 		ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if ct != "application/json" {
-			denyRequest(w, r, 415, "application/json required")
+		if ct != "application/json" && !(r.Method == http.MethodPost && r.URL.Path == "/panel/api/music/upload" && strings.HasPrefix(ct, "audio/")) {
+			denyRequest(w, r, 415, "unsupported content type")
 			return false
 		}
 	}
@@ -242,8 +242,15 @@ func (a *Auth) Wrap(next http.Handler) http.Handler {
 		}
 		admin := r.URL.Path == "/status" || strings.HasPrefix(r.URL.Path, "/panel/api/") || strings.HasPrefix(r.URL.Path, "/admin/")
 		if admin {
-			if isWrite(r) {
-				r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+			if isWrite(r) && r.URL.Path != "/panel/api/music/upload" {
+				limit := int64(4 << 20)
+				if r.URL.Path == "/panel/api/accounts/import" {
+					limit = 8 << 20
+				}
+				if r.URL.Path == "/panel/api/import/cockpit" {
+					limit = 9 << 20
+				}
+				r.Body = http.MaxBytesReader(w, r.Body, limit)
 			}
 			a.mu.Lock()
 			s, ok := a.current(r)
@@ -277,6 +284,7 @@ func (a *Auth) serve(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 		Old      string `json:"old_password"`
 		New      string `json:"new_password"`
+		Confirm  string `json:"confirm_password"`
 	}
 	// Read untrusted input outside the state lock; cap slow-body occupancy.
 	controller := http.NewResponseController(w)
@@ -306,26 +314,24 @@ func (a *Auth) serve(w http.ResponseWriter, r *http.Request) {
 		a.attempts = append(a.attempts, now)
 
 		// 严禁无密码登录：输入空密码直接报错拦截
-		pwd := strings.TrimSpace(input.Password)
+		pwd := input.Password
 		if pwd == "" {
 			deny(w, 400, "password cannot be empty")
+			return
+		}
+		if len(pwd) > 1024 {
+			deny(w, 400, "password too long")
 			return
 		}
 
 		if a.record.Default {
 			// 第一次登录（处于初始默认密码状态）：允许输入任意密码并自动记住持久化
-			if a.matches(pwd) {
-				// 首次输入有效密码后立即转正为持久化管理密码
-				_ = a.setPassword(pwd)
-			} else if len(pwd) >= 1 && len(pwd) <= 1024 {
-				// 首次输入任意非空密码，持久化为正式密码并取消默认密码状态
-				if err := a.setPassword(pwd); err != nil {
-					deny(w, 500, "could not save password")
-					return
-				}
+			if err := a.setPassword(pwd); err != nil {
+				deny(w, 500, "could not save password")
+				return
 			}
 		} else {
-			if len(input.Password) > 1024 || !a.matches(input.Password) {
+			if !a.matches(input.Password) {
 				deny(w, 401, "incorrect password")
 				return
 			}
@@ -349,7 +355,7 @@ func (a *Auth) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	// 处于默认密码状态下，允许免登录直接调用保存接口设定密码
 	isDefaultPasswordSetup := a.record.Default && r.URL.Path == "/auth/password"
-	if !authenticated && !isDefaultPasswordSetup {
+	if !authenticated && !isDefaultPasswordSetup && r.URL.Path != "/auth/logout" {
 		deny(w, 401, "login required")
 		return
 	}
@@ -363,8 +369,8 @@ func (a *Auth) serve(w http.ResponseWriter, r *http.Request) {
 		if newPwd == "" && input.Password != "" {
 			newPwd = input.Password
 		}
-		if len(newPwd) < 6 || len(newPwd) > 128 {
-			deny(w, 400, "password must be 6–128 bytes")
+		if newPwd == "" || newPwd != input.Confirm {
+			deny(w, 400, "password must be non-empty and match confirmation")
 			return
 		}
 		// 若处于默认密码模式，免验证旧密码；否则强制比对旧密码

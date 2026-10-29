@@ -56,6 +56,11 @@ func TestRealCoreIsolationAndNativeProviders(t *testing.T) {
 					return
 				}
 				req.Body.Close()
+				if req.URL.Path == "/health" {
+					time.Sleep(10 * time.Millisecond)
+					fmt.Fprint(c, "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+					return
+				}
 				if req.URL.Path == "/stream" {
 					fmt.Fprintf(c, "HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s1", 2*(len(marker)+1), marker)
 					select {
@@ -126,8 +131,51 @@ func TestRealCoreIsolationAndNativeProviders(t *testing.T) {
 	if ba.Port == bb.Port || ba.RouteID == bb.RouteID {
 		t.Fatal("shared route")
 	}
-	accountA := &auth.Auth{UID: "account-a", ProxyURL: proxyA}
-	accountB := &auth.Auth{UID: "account-b", ProxyURL: proxyB}
+	if err := m.RemoveSubscription(ctx, "fixture"); err != ErrSubscriptionInUse {
+		t.Fatalf("delete bound provider: %v", err)
+	}
+	// The loopback proxies intentionally do not implement TLS. A health check
+	// must fail through them, without contacting the real target directly.
+	waitJob := func(job TestJob) TestJob {
+		t.Helper()
+		for m.Tests().Running && ctx.Err() == nil {
+			time.Sleep(20 * time.Millisecond)
+		}
+		result := m.Tests()
+		if result.ID != job.ID || result.Running || result.Cancelled {
+			t.Fatalf("unexpected test job: %+v", result)
+		}
+		return result
+	}
+	job, err := m.StartNodeTest(ctx, one)
+	if err != nil {
+		t.Fatal("single node test", err)
+	}
+	if result := waitJob(job); result.Total != 1 || result.Completed != 1 || result.Failed != 1 {
+		t.Fatalf("single node result: %+v", result)
+	}
+	job, err = m.StartTests(ctx)
+	if err != nil {
+		t.Fatal("batch node test", err)
+	}
+	if result := waitJob(job); result.Total != 2 || result.Completed != 2 || result.Failed != 2 {
+		t.Fatalf("batch result: %+v", result)
+	}
+	for _, n := range m.Nodes().Nodes {
+		if n.Status != "error" && n.Status != "timeout" {
+			t.Fatalf("unexpected node health: %+v", n)
+		}
+	}
+	// Use a local HTTP target to verify the real controller's success response.
+	for _, n := range m.Nodes().Nodes {
+		var delay map[string]int
+		path := "/providers/proxies/" + url.PathEscape(n.Provider) + "/" + url.PathEscape(n.Name) + "/healthcheck?url=" + url.QueryEscape("http://192.0.2.1/health") + "&timeout=5000"
+		if err := m.core.Request(ctx, "GET", path, nil, &delay); err != nil || delay["delay"] <= 0 {
+			t.Fatalf("real healthcheck %s: delay=%v error=%v", n.ID, delay, err)
+		}
+	}
+	accountA := &auth.Auth{UID: "account-a", AccessToken: "fixture-token-a", ProxyURL: proxyA}
+	accountB := &auth.Auth{UID: "account-b", AccessToken: "fixture-token-b", ProxyURL: proxyB}
 	client := upstream.New()
 	client.AccountLease = func(ctx context.Context, account *auth.Auth) (func(), error) {
 		return m.AcquireAccount(ctx, account.UID)
@@ -244,6 +292,14 @@ func TestRealCoreIsolationAndNativeProviders(t *testing.T) {
 	for id, content := range map[string]string{"uri": uri, "base64": base64.StdEncoding.EncodeToString([]byte(uri))} {
 		if _, err = m.importBytes(ctx, id, []byte(content)); err != nil {
 			t.Fatal("native "+id+" provider", err)
+		}
+	}
+	if err = m.RemoveSubscription(ctx, "uri"); err != nil {
+		t.Fatal("delete unbound provider", err)
+	}
+	for _, n := range m.Nodes().Nodes {
+		if n.Provider == "uri" {
+			t.Fatal("deleted provider node remains")
 		}
 	}
 	// A remote configuration's extra keys cannot replace app controller/listeners.

@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -82,6 +83,8 @@ type Config struct {
 	// 写入；空或文件不存在 = model_probes 端点返回空集，面板不显示任何实测标注）。
 	// 只读展示：网关不解析、不依赖其内容做任何路由/出站决策。
 	ProbeFile string
+	// ModelsCachePath 存放模型目录快照；空值禁用持久化。
+	ModelsCachePath string
 
 	// ModelPolicy 模型策略存储器（前端 model-policy 管理用）
 	ModelPolicy *modelpolicy.Store
@@ -97,10 +100,12 @@ type Panel struct {
 	mux     *http.ServeMux
 	started time.Time
 	logs    *Ring
+	cpu     cpuSampler
 
 	// modelsMu 保护 modelsCache 与刷新冷却；面板模型目录按 realm（cn/global）分键。
 	// 与 /v1/models 一致为每域单快照（首个可用账号），不引入账号级差异。
 	modelsMu          sync.Mutex
+	modelsRefreshMu   sync.Mutex
 	modelsCache       map[string]*panelModelsSnapshot
 	modelsRefreshedAt time.Time
 
@@ -118,6 +123,7 @@ type Panel struct {
 	customData     map[string]any
 	updateMu       sync.Mutex
 	updateArtifact *UpdateArtifact
+	quarantineWake chan struct{}
 }
 
 // loginTTL 授权 URL 的最长有效期：超时的 state 直接回收，
@@ -165,12 +171,13 @@ func (p *Panel) modelsDomain(realm string, force bool, fetch func() ([]upstream.
 			p.modelsCache[realm] = snap
 		}
 		if !force {
-			if len(snap.infos) > 0 && time.Since(snap.fetched) < panelModelsTTL {
-				p.modelsMu.Unlock()
-				return panelModelsResult{infos: snap.infos, fromCache: true, age: time.Since(snap.fetched)}
-			}
 			if !snap.lastFail.IsZero() && time.Since(snap.lastFail) < panelModelsFailCooldown {
 				res := panelModelsResult{infos: snap.infos, fromCache: true, stale: len(snap.infos) > 0, age: cacheAge(snap.fetched), err: fmt.Errorf("%s", snap.lastErr)}
+				p.modelsMu.Unlock()
+				return res
+			}
+			if len(snap.infos) > 0 && time.Since(snap.fetched) < panelModelsTTL && snap.lastFail.IsZero() {
+				res := panelModelsResult{infos: snap.infos, fromCache: true, age: time.Since(snap.fetched)}
 				p.modelsMu.Unlock()
 				return res
 			}
@@ -182,8 +189,9 @@ func (p *Panel) modelsDomain(realm string, force bool, fetch func() ([]upstream.
 		}
 		// 旧快照已过成功 TTL：不再阻塞等别人拉，直接按旧列表返回（标 stale）。
 		if len(snap.infos) > 0 {
+			res := panelModelsResult{infos: snap.infos, fromCache: true, stale: true, age: cacheAge(snap.fetched)}
 			p.modelsMu.Unlock()
-			return panelModelsResult{infos: snap.infos, fromCache: true, stale: true, age: cacheAge(snap.fetched)}
+			return res
 		}
 		// 该域已有拉取在途：等它结束后重新判定（命中缓存/负缓存，或紧接着自己拉）。
 		wait := snap.wait
@@ -203,12 +211,14 @@ func (p *Panel) modelsDomain(realm string, force bool, fetch func() ([]upstream.
 		}
 		snap.lastFail = now
 		snap.lastErr = err.Error()
+		p.persistModelsCacheLocked()
 		return panelModelsResult{infos: snap.infos, fromCache: len(snap.infos) > 0, stale: len(snap.infos) > 0, age: cacheAge(snap.fetched), err: err}
 	}
 	snap.infos = infos
 	snap.fetched = now
 	snap.lastFail = time.Time{}
 	snap.lastErr = ""
+	p.persistModelsCacheLocked()
 	return panelModelsResult{infos: infos}
 }
 
@@ -273,6 +283,22 @@ func New(cfg Config) *Panel {
 			"sloganMode": "manual",
 		},
 	}
+	// Read extension fields from raw config, which the typed config ignores.
+	if cfg.ConfigPath != "" {
+		if raw, err := os.ReadFile(cfg.ConfigPath); err == nil {
+			var stored map[string]json.RawMessage
+			if json.Unmarshal(raw, &stored) == nil {
+				var panelData map[string]json.RawMessage
+				if json.Unmarshal(stored["panel"], &panelData) == nil {
+					var customization map[string]any
+					if json.Unmarshal(panelData["customization"], &customization) == nil && customization != nil {
+						p.customData["customization"] = customization
+					}
+				}
+			}
+		}
+	}
+	p.loadModelsCache()
 	if cfg.DeletionJournalPath != "" {
 		coordinator, err := newDeletionCoordinator(cfg.DeletionJournalPath)
 		if err != nil {
@@ -284,6 +310,7 @@ func New(cfg Config) *Panel {
 	if p.modelPolicy == nil {
 		p.modelPolicy, _ = modelpolicy.Open("")
 	}
+	p.quarantineWake = make(chan struct{}, 1)
 	p.routes()
 	return p
 }
@@ -303,7 +330,7 @@ func (p *Panel) PruneCredentialQuarantine(now time.Time) error {
 	}
 	cutoff := now.Add(-7 * 24 * time.Hour)
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.Type() != 0 {
 			continue
 		}
 		parts := strings.SplitN(entry.Name(), ".deleted-", 2)
@@ -314,13 +341,55 @@ func (p *Panel) PruneCredentialQuarantine(now time.Time) error {
 		if err != nil {
 			continue
 		}
-		if deletedAt.Before(cutoff) {
+		if !deletedAt.After(cutoff) {
 			if err := os.Remove(filepath.Join(p.cfg.CredentialQuarantineDir, entry.Name())); err != nil && !os.IsNotExist(err) {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// RunCredentialQuarantine schedules cleanup at the earliest known expiry. A
+// periodic rescan also catches files added externally and retries failures.
+func (p *Panel) RunCredentialQuarantine(ctx context.Context) {
+	go func() {
+		for {
+			if err := p.PruneCredentialQuarantine(time.Now()); err != nil {
+				log.Printf("credential quarantine cleanup failed: %v", err)
+			}
+			delay := time.Minute
+			entries, err := os.ReadDir(p.cfg.CredentialQuarantineDir)
+			if err == nil {
+				for _, entry := range entries {
+					if entry.Type() != 0 {
+						continue
+					}
+					parts := strings.SplitN(entry.Name(), ".deleted-", 2)
+					if len(parts) != 2 {
+						continue
+					}
+					at, err := time.Parse("20060102T150405.000000000Z", parts[1])
+					if err != nil {
+						continue
+					}
+					d := time.Until(at.Add(7 * 24 * time.Hour))
+					if d > 0 && d < delay {
+						delay = d
+					}
+				}
+			}
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-p.quarantineWake:
+				timer.Stop()
+			case <-timer.C:
+			}
+		}
+	}()
 }
 
 // Logs 返回日志环形缓冲（main 经 MultiWriter 镜像 log 与 chat 表格日志进来）。
@@ -427,6 +496,7 @@ func (p *Panel) routes() {
 
 	p.mux.HandleFunc("GET /panel/api/maintenance/status", p.maintenanceStatus)
 	p.mux.HandleFunc("POST /panel/api/maintenance/run", p.maintenanceRun)
+	p.mux.HandleFunc("POST /panel/api/maintenance/pause", p.maintenancePause)
 	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/toggle_disabled", p.toggleDisabled)
 	p.mux.HandleFunc("GET /panel/api/preferences", p.preferencesGet)
 	p.mux.HandleFunc("POST /panel/api/preferences", p.preferencesSet)
@@ -504,6 +574,10 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/packages/refresh", p.packages)
 
 	// 个性化配置专门路由（音乐、文案、主题等）
+	p.mux.HandleFunc("GET /panel/api/music", p.musicGet)
+	p.mux.HandleFunc("POST /panel/api/music/upload", p.musicUpload)
+	p.mux.HandleFunc("POST /panel/api/music/action", p.musicAction)
+	p.mux.HandleFunc("GET /panel/api/music/file/{id}", p.musicFile)
 	p.mux.HandleFunc("GET /panel/api/customization", p.customizationGet)
 	p.mux.HandleFunc("POST /panel/api/customization", p.customizationSet)
 
@@ -514,6 +588,8 @@ func (p *Panel) routes() {
 	// 任务流水线触发与状态启停路由
 	p.mux.HandleFunc("POST /panel/api/tasks/run", p.tasksRun)
 	p.mux.HandleFunc("POST /panel/api/tasks/toggle", p.tasksToggle)
+	p.mux.HandleFunc("GET /panel/api/tasks/schedule", p.tasksSchedule)
+	p.mux.HandleFunc("POST /panel/api/tasks/schedule", p.tasksSchedule)
 
 	// 账号池综合刷新与出口测速路由
 	p.mux.HandleFunc("POST /panel/api/pool/refresh", p.poolRefresh)
@@ -619,6 +695,10 @@ func (p *Panel) expiringSoonWindow() time.Duration {
 
 // overview 总览：池计数 + 每账号状态 + 面板元信息。
 func (p *Panel) overview(w http.ResponseWriter, r *http.Request) {
+	var memory runtime.MemStats
+	runtime.ReadMemStats(&memory)
+	serviceMemory, serviceMemoryAvailable := serviceMemoryBytes()
+	cpuPercent, cpuAvailable := p.cpu.sample(time.Now(), serviceCPUUsage)
 	// 用 WithPaused 而不是 CountsDetailed：后者把暂停号并进 disabled（/status 的
 	// 「不可用」口径），而概况卡片要分开展示（issue #125）。
 	var total, healthy, cooling, disabled, paused, inFlightFull int
@@ -643,44 +723,54 @@ func (p *Panel) overview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	data := map[string]any{
-		"version":         p.cfg.Version,
-		"demo":            p.cfg.Demo,
-		"uptime_sec":      int(time.Since(p.started).Seconds()),
-		"auth_required":   true,
-		"redis_mode":      p.cfg.RedisMode,
-		"sticky_sessions": sticky,
-		"total":           total,
-		"healthy":         healthy,
-		"cooling":         cooling,
-		"disabled":        disabled,
-		"paused":          paused,
-		"in_flight_full":  inFlightFull,
-		"blocked":         blocked,
-		"isolated":        blocked,
-		"unauthorized":    blocked,
-		"accounts":        accounts,
-		"model_locks":     modelLocks,
+		"version":                  p.cfg.Version,
+		"demo":                     p.cfg.Demo,
+		"uptime_sec":               int(time.Since(p.started).Seconds()),
+		"heap_alloc_bytes":         memory.HeapAlloc,
+		"service_memory_bytes":     serviceMemory,
+		"service_memory_available": serviceMemoryAvailable,
+		"service_cpu_percent":      cpuPercent,
+		"service_cpu_available":    cpuAvailable,
+		"auth_required":            true,
+		"redis_mode":               p.cfg.RedisMode,
+		"sticky_sessions":          sticky,
+		"total":                    total,
+		"healthy":                  healthy,
+		"cooling":                  cooling,
+		"disabled":                 disabled,
+		"paused":                   paused,
+		"in_flight_full":           inFlightFull,
+		"blocked":                  blocked,
+		"isolated":                 blocked,
+		"unauthorized":             blocked,
+		"accounts":                 accounts,
+		"model_locks":              modelLocks,
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":              true,
-		"version":         p.cfg.Version,
-		"demo":            p.cfg.Demo,
-		"uptime_sec":      int(time.Since(p.started).Seconds()),
-		"auth_required":   true,
-		"redis_mode":      p.cfg.RedisMode,
-		"sticky_sessions": sticky,
-		"total":           total,
-		"healthy":         healthy,
-		"cooling":         cooling,
-		"disabled":        disabled,
-		"paused":          paused,
-		"in_flight_full":  inFlightFull,
-		"blocked":         blocked,
-		"isolated":        blocked,
-		"unauthorized":    blocked,
-		"accounts":        accounts,
-		"model_locks":     modelLocks,
-		"data":            data,
+		"ok":                       true,
+		"version":                  p.cfg.Version,
+		"demo":                     p.cfg.Demo,
+		"uptime_sec":               int(time.Since(p.started).Seconds()),
+		"heap_alloc_bytes":         memory.HeapAlloc,
+		"service_memory_bytes":     serviceMemory,
+		"service_memory_available": serviceMemoryAvailable,
+		"service_cpu_percent":      cpuPercent,
+		"service_cpu_available":    cpuAvailable,
+		"auth_required":            true,
+		"redis_mode":               p.cfg.RedisMode,
+		"sticky_sessions":          sticky,
+		"total":                    total,
+		"healthy":                  healthy,
+		"cooling":                  cooling,
+		"disabled":                 disabled,
+		"paused":                   paused,
+		"in_flight_full":           inFlightFull,
+		"blocked":                  blocked,
+		"isolated":                 blocked,
+		"unauthorized":             blocked,
+		"accounts":                 accounts,
+		"model_locks":              modelLocks,
+		"data":                     data,
 	})
 }
 
@@ -820,27 +910,33 @@ func (p *Panel) models(w http.ResponseWriter, r *http.Request) {
 	p.serveModels(w, false)
 }
 
-// modelsRefresh 手动刷新模型目录（POST）。5 分钟冷却内直接返回 ok:false，
-// 且不触发任何上游请求；冷却外强制重拉并按同一缓存结构写回。
+// modelsRefresh 手动刷新模型目录（POST）。成功后五分钟内复用缓存；
+// 失败不启动冷却，允许恢复后立即重试。
 func (p *Panel) modelsRefresh(w http.ResponseWriter, r *http.Request) {
+	p.modelsRefreshMu.Lock()
+	defer p.modelsRefreshMu.Unlock()
 	p.modelsMu.Lock()
 	if !p.modelsRefreshedAt.IsZero() {
 		if remaining := panelModelsRefreshCool - time.Since(p.modelsRefreshedAt); remaining > 0 {
-			secs := int((remaining + time.Second - 1) / time.Second)
 			p.modelsMu.Unlock()
-			writeJSON(w, http.StatusOK, map[string]any{"ok": false, "cooldown_seconds": secs})
+			// 冷却内复用目录，重复点击仍得到可用结果。
+			p.serveModels(w, false)
 			return
 		}
 	}
 	p.modelsRefreshedAt = time.Now()
 	p.modelsMu.Unlock()
-	p.serveModels(w, true)
+	if !p.serveModels(w, true) {
+		p.modelsMu.Lock()
+		p.modelsRefreshedAt = time.Time{}
+		p.modelsMu.Unlock()
+	}
 }
 
 // serveModels 读取（force=false）或强制刷新（force=true）两域模型目录。
 // 缓存按 realm 分键、每域单快照，与 /v1/models 的全局缓存口径一致；
 // 失败负缓存期内不打上游，已有旧列表继续返回（不清空）。
-func (p *Panel) serveModels(w http.ResponseWriter, force bool) {
+func (p *Panel) serveModels(w http.ResponseWriter, force bool) bool {
 	out := make([]map[string]any, 0)
 	var fetchErrs []string
 	allCached := true
@@ -856,6 +952,7 @@ func (p *Panel) serveModels(w http.ResponseWriter, force bool) {
 			})
 			if res.err != nil {
 				fetchErrs = append(fetchErrs, "cn: "+res.err.Error())
+				anyStale = true
 			}
 			if !res.fromCache {
 				allCached = false
@@ -876,7 +973,7 @@ func (p *Panel) serveModels(w http.ResponseWriter, force bool) {
 		if uids := p.cfg.Pool.AvailableUIDsForRealm("global"); len(uids) > 0 {
 			if acct := p.cfg.Pool.AuthByUID(uids[0]); acct != nil {
 				res := p.modelsDomain("global", force, func() ([]upstream.ModelInfo, error) {
-					infos := p.cfg.Upstream.FetchGlobalModelInfos(acct)
+					infos := p.cfg.Upstream.FetchGlobalModelInfosRefresh(acct, force)
 					if len(infos) == 0 {
 						return nil, fmt.Errorf("上游未返回可用模型")
 					}
@@ -884,6 +981,7 @@ func (p *Panel) serveModels(w http.ResponseWriter, force bool) {
 				})
 				if res.err != nil {
 					fetchErrs = append(fetchErrs, "global: "+res.err.Error())
+					anyStale = true
 				}
 				if !res.fromCache {
 					allCached = false
@@ -894,7 +992,14 @@ func (p *Panel) serveModels(w http.ResponseWriter, force bool) {
 				}
 				efforts, defaults := p.cfg.Upstream.GlobalEffortSnapshot()
 				for _, mi := range res.infos {
-					out = append(out, panelModelEntry("global", mi, efforts[mi.ID], defaults[mi.ID], p.cfg.Upstream.HTTP))
+					remoteEfforts, remoteDefault := efforts[mi.ID], defaults[mi.ID]
+					if len(remoteEfforts) == 0 {
+						remoteEfforts = mi.Efforts
+					}
+					if remoteDefault == "" {
+						remoteDefault = mi.DefaultEffort
+					}
+					out = append(out, panelModelEntry("global", mi, remoteEfforts, remoteDefault, p.cfg.Upstream.HTTP))
 				}
 			}
 		}
@@ -903,10 +1008,10 @@ func (p *Panel) serveModels(w http.ResponseWriter, force bool) {
 	if len(out) == 0 {
 		if len(fetchErrs) > 0 {
 			writeErr(w, http.StatusBadGateway, "fetch models: "+strings.Join(fetchErrs, "; "))
-			return
+			return false
 		}
 		writeErr(w, http.StatusServiceUnavailable, "没有可用账号：请先在面板添加账号再查询")
-		return
+		return false
 	}
 	body := map[string]any{
 		"ok":                true,
@@ -918,6 +1023,7 @@ func (p *Panel) serveModels(w http.ResponseWriter, force bool) {
 		body["stale"] = true
 	}
 	writeJSON(w, http.StatusOK, body)
+	return !anyStale
 }
 
 // panelModelEntry 构造单个模型条目（两域共用）：id 带 realm 前缀（调用值即显示值），
@@ -1018,8 +1124,13 @@ func (p *Panel) modelProbes(w http.ResponseWriter, r *http.Request) {
 // accountRevive 手动复活：清禁用 + 冷却 + 熔断（运维口径无条件恢复）。
 func (p *Panel) accountRevive(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
-	if _, ok := p.cfg.Pool.Status(uid); !ok {
+	st, ok := p.cfg.Pool.Status(uid)
+	if !ok {
 		writeErr(w, http.StatusNotFound, "account not found")
+		return
+	}
+	if st.Blocked {
+		writeErr(w, http.StatusConflict, "account requires reauthorization")
 		return
 	}
 	p.cfg.Pool.Revive(uid)
@@ -1114,6 +1225,10 @@ func (p *Panel) accountCheckin(w http.ResponseWriter, r *http.Request) {
 // accountBalance 单号余额刷新：更新余额与到期快照，不触碰冷却状态。
 func (p *Panel) accountBalance(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
+	if st, ok := p.cfg.Pool.Status(uid); ok && st.Blocked {
+		writeErr(w, http.StatusConflict, "account requires reauthorization")
+		return
+	}
 	a := p.cfg.Pool.AuthByUID(uid)
 	if a == nil {
 		writeErr(w, http.StatusNotFound, "account not found")
@@ -1230,7 +1345,12 @@ func (p *Panel) accountDeletionStages(uid, credential string, parent context.Con
 		}},
 		{Name: "tasks", Run: func() error {
 			if p.cfg.Tasks != nil {
-				return p.cfg.Tasks.DeleteAccount(uid)
+				if err := p.cfg.Tasks.DeleteAccount(uid); err != nil {
+					return err
+				}
+			}
+			if p.cfg.Maintenance != nil {
+				return p.cfg.Maintenance.DeleteAccount(uid)
 			}
 			return nil
 		}},
@@ -1250,7 +1370,14 @@ func (p *Panel) accountDeletionStages(uid, credential string, parent context.Con
 				return err
 			}
 			name := filepath.Base(credential) + ".deleted-" + time.Now().UTC().Format("20060102T150405.000000000Z")
-			return os.Rename(credential, filepath.Join(p.cfg.CredentialQuarantineDir, name))
+			if err := os.Rename(credential, filepath.Join(p.cfg.CredentialQuarantineDir, name)); err != nil {
+				return err
+			}
+			select {
+			case p.quarantineWake <- struct{}{}:
+			default:
+			}
+			return nil
 		}},
 		{Name: "pool", Run: func() error {
 			if p.cfg.Pool.AuthByUID(uid) != nil {
@@ -1494,7 +1621,7 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":                      true,
 			"accounts":                []any{},
-			"expiring_soon_window":    "72h",
+			"expiring_soon_window":    "24h",
 			"expiring_packages_count": 0,
 			"expiring_credits_total":  0,
 			"earliest_days":           0,
@@ -1503,7 +1630,7 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 			"total_remain_credits":    0,
 			"data": map[string]any{
 				"accounts":                []any{},
-				"expiring_soon_window":    "72h",
+				"expiring_soon_window":    "24h",
 				"expiring_packages_count": 0,
 				"expiring_credits_total":  0,
 				"earliest_days":           0,
@@ -1515,6 +1642,13 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	accts := p.cfg.Pool.List()
+	eligible := accts[:0]
+	for _, account := range accts {
+		if !account.Blocked {
+			eligible = append(eligible, account)
+		}
+	}
+	accts = eligible
 	type row struct {
 		UID              string                   `json:"uid"`
 		Nickname         string                   `json:"nickname"`
@@ -1533,11 +1667,11 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 	filterExpiring := r.URL.Query().Get("filter") == "expiring" ||
 		r.URL.Query().Get("expiring") == "true" ||
 		r.URL.Query().Get("expiring_within") != "" ||
-		r.URL.Query().Get("within") == "72h" ||
-		r.URL.Query().Get("days") == "3"
+		r.URL.Query().Get("within") == "24h" ||
+		r.URL.Query().Get("days") == "1"
 
 	now := time.Now()
-	expiringLimit := now.Add(72 * time.Hour)
+	expiringLimit := now.Add(24 * time.Hour)
 
 	sem := make(chan struct{}, 3)
 	var wg sync.WaitGroup
@@ -1554,6 +1688,11 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 			defer func() { <-sem }()
 
 			it := row{UID: s.UID, Nickname: s.Nickname, Realm: s.Realm, EarliestDays: 999}
+			if current, ok := p.cfg.Pool.Status(s.UID); !ok || current.Blocked {
+				it.Error = "account requires reauthorization"
+				out[i] = it
+				return
+			}
 			a := p.cfg.Pool.AuthByUID(s.UID)
 			if a == nil {
 				it.Error = "account not loaded"
@@ -1588,7 +1727,7 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 			for _, pkg := range packs {
 				var expireTime time.Time
 				if pkg.ExpiresAt > 0 {
-					expireTime = time.Unix(pkg.ExpiresAt, 0)
+					expireTime = time.UnixMilli(pkg.ExpiresAt)
 				} else if pkg.EndTime != "" {
 					layouts := []string{time.RFC3339, "2006-01-02 15:04:05", "2006-01-02T15:04:05", "2006-01-02"}
 					for _, l := range layouts {
@@ -1608,7 +1747,7 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 					if days < minDays {
 						minDays = days
 					}
-					// 3天(72小时)内到期判定：剩余额度>0 且到期时间在当前至72小时以内
+					// 1天(24小时)内到期判定：剩余额度>0 且到期时间在当前至24小时以内
 					if pkg.Remain > 0 && expireTime.After(now) && !expireTime.After(expiringLimit) {
 						expCount++
 						expCredits += pkg.Remain
@@ -1664,7 +1803,7 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 
 	resultData := map[string]any{
 		"accounts":                out,
-		"expiring_soon_window":    "72h",
+		"expiring_soon_window":    "24h",
 		"expiring_packages_count": globalExpiringCount,
 		"expiring_credits_total":  globalExpiringCredits,
 		"earliest_days":           globalEarliestDays,
@@ -1676,7 +1815,7 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                      true,
 		"accounts":                out,
-		"expiring_soon_window":    "72h",
+		"expiring_soon_window":    "24h",
 		"expiring_packages_count": globalExpiringCount,
 		"expiring_credits_total":  globalExpiringCredits,
 		"earliest_days":           globalEarliestDays,

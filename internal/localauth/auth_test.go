@@ -96,7 +96,7 @@ func TestLocalPasswordLifecycle(t *testing.T) {
 	if w = call(r); w.Code != 403 {
 		t.Fatal("missing CSRF allowed", w.Code)
 	}
-	r = localRequest("POST", "/auth/password", `{"old_password":"initial-pass","new_password":"test-password-2"}`)
+	r = localRequest("POST", "/auth/password", `{"old_password":"initial-pass","new_password":"test-password-2","confirm_password":"test-password-2"}`)
 	r.AddCookie(cookie)
 	r.Header.Set("X-CSRF-Token", s.CSRF)
 	if w = call(r); w.Code != 200 {
@@ -115,6 +115,19 @@ func TestLocalPasswordLifecycle(t *testing.T) {
 	b.Wrap(http.NotFoundHandler()).ServeHTTP(rr, localRequest("POST", "/auth/login", `{"password":"test-password-2"}`))
 	if rr.Code != 200 {
 		t.Fatal("password not persistent", rr.Body.String())
+	}
+}
+
+func TestUnconfiguredLoginRejectsOverlongPassword(t *testing.T) {
+	a, err := New(filepath.Join(t.TempDir(), "password.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := a.Wrap(http.NotFoundHandler())
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, localRequest("POST", "/auth/login", `{"password":"`+strings.Repeat("x", 1025)+`"}`))
+	if w.Code != http.StatusBadRequest || len(w.Result().Cookies()) != 0 {
+		t.Fatalf("status %d", w.Code)
 	}
 }
 func TestBoundaryRejectsRemoteAndBrowserCSRF(t *testing.T) {

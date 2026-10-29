@@ -72,7 +72,7 @@ func normalizeAccountImport(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("expected account object or array")
 	}
 	if len(rows) == 0 || len(rows) > maxCredentialImportAccounts {
-		return nil, fmt.Errorf("import requires 1 to 100 accounts")
+		return nil, fmt.Errorf("import requires 1 to 1000 accounts")
 	}
 	canonical := make([]map[string]any, 0, len(rows))
 	for index, value := range rows {

@@ -40,8 +40,9 @@ func (m *RetentionManager) Run(ctx context.Context, interval time.Duration, clea
 			select {
 			case <-ctx.Done():
 				return
-			case now := <-ticker.C:
-				if err := cleanup(now); err != nil {
+			case <-ticker.C:
+				// A slow previous cleanup may leave an old tick queued.
+				if err := cleanup(time.Now()); err != nil {
 					log.Printf("retention cleanup failed: %v", err)
 				}
 			}

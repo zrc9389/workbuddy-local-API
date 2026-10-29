@@ -2,6 +2,7 @@ package panel
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"sort"
@@ -31,7 +32,7 @@ func metaError(w http.ResponseWriter, err error) {
 		status = http.StatusConflict
 	case errors.Is(err, metacore.ErrUnavailable), errors.Is(err, metacore.ErrRollback):
 		status = 503
-	case errors.Is(err, metacore.ErrBusy):
+	case errors.Is(err, metacore.ErrBusy), errors.Is(err, metacore.ErrNodeTimeout):
 		status = 409
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		status = 408
@@ -182,7 +183,51 @@ func (p *Panel) MetaSubscriptions(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, "expected subscription id")
 			return
 		}
-		if err := m.RemoveSubscription(ctx, v.ID); err != nil {
+		select {
+		case accountMutationSlots <- struct{}{}:
+			defer func() { <-accountMutationSlots }()
+		default:
+			metaError(w, metacore.ErrBusy)
+			return
+		}
+		if err := m.RemoveSubscriptionAndUnbind(ctx, v.ID, func(uid, expected string) (func() error, error) {
+			if m.Status().Demo {
+				return func() error { return nil }, nil
+			}
+			if p.cfg.Pool == nil {
+				return nil, errors.New("account pool unavailable")
+			}
+			a := p.cfg.Pool.AuthByUID(uid)
+			if a == nil {
+				return nil, errors.New("bound account unavailable")
+			}
+			current := a.ProxyURLValue()
+			if current != expected && current != "" {
+				return nil, errors.New("account proxy changed")
+			}
+			if current != "" {
+				if err := a.SetProxyAndSave(""); err != nil {
+					return nil, err
+				}
+			}
+			if p.cfg.Upstream != nil {
+				p.cfg.Upstream.ForgetTransport(uid)
+			}
+			accountEgressService.Forget(a)
+			return func() error {
+				if current == "" {
+					return nil
+				}
+				if err := a.SetProxyAndSave(current); err != nil {
+					return err
+				}
+				if p.cfg.Upstream != nil {
+					p.cfg.Upstream.ForgetTransport(uid)
+				}
+				accountEgressService.Forget(a)
+				return nil
+			}, nil
+		}); err != nil {
 			metaError(w, err)
 			return
 		}
@@ -210,17 +255,33 @@ func (p *Panel) MetaTests(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var v struct {
-		Cancel bool `json:"cancel"`
+		Cancel bool            `json:"cancel"`
+		Node   json.RawMessage `json:"node"`
 	}
 	if decodeSingleJSON(w, r, 1024, &v) != nil {
 		writeErr(w, 400, "expected test options object")
+		return
+	}
+	if v.Cancel && v.Node != nil {
+		writeErr(w, 400, "cancel cannot specify a node")
 		return
 	}
 	if v.Cancel {
 		writeJSON(w, 200, m.CancelTests())
 		return
 	}
-	job, err := m.StartTests(r.Context())
+	var job metacore.TestJob
+	var err error
+	if v.Node != nil {
+		var node string
+		if string(v.Node) == "null" || json.Unmarshal(v.Node, &node) != nil || node == "" {
+			writeErr(w, 400, "expected node id")
+			return
+		}
+		job, err = m.StartNodeTest(r.Context(), node)
+	} else {
+		job, err = m.StartTests(r.Context())
+	}
 	if err != nil {
 		metaError(w, err)
 		return

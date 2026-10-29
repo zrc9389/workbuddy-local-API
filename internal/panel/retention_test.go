@@ -41,6 +41,37 @@ func TestRetentionManagerStartupAndPeriodicRetry(t *testing.T) {
 	}
 }
 
+func TestRetentionManagerUsesCurrentTimeAfterSlowCleanup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	second := make(chan time.Time, 1)
+	calls := 0
+	NewRetentionManager().Run(ctx, 10*time.Millisecond, func(now time.Time) error {
+		calls++
+		if calls == 1 {
+			close(started)
+			<-release
+		} else if calls == 2 {
+			second <- now
+		}
+		return nil
+	})
+	<-started
+	time.Sleep(100 * time.Millisecond)
+	beforeRelease := time.Now()
+	close(release)
+	select {
+	case got := <-second:
+		if got.Before(beforeRelease) {
+			t.Fatalf("stale queued tick: %v before %v", got, beforeRelease)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no retry after slow cleanup")
+	}
+}
+
 func TestRetentionManagerPruneJSONFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "usage.json")

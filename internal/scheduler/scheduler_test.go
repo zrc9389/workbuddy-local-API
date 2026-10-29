@@ -540,7 +540,7 @@ func poolWithDisabledAccount() *pool.Pool {
 }
 
 // TestRunCheckinSkipsDisabledByDefault 缺省（开关未开）下禁用账号不签到——锁定既有行为。
-func TestRunCheckinSkipsDisabledByDefault(t *testing.T) {
+func TestRunCheckinIncludesDisabledByDefault(t *testing.T) {
 	f := &fakeUpstream{resourceRemain: 500}
 	srv := f.server()
 	defer srv.Close()
@@ -550,8 +550,8 @@ func TestRunCheckinSkipsDisabledByDefault(t *testing.T) {
 	s := New(Config{Pool: p, Upstream: up, CheckinHours: []int{9, 21}, KeepaliveHours: []int{22}})
 
 	s.RunCheckinNow()
-	if got := f.checkinCalls.Load(); got != 1 {
-		t.Errorf("checkin calls=%d want 1（仅 u1；禁用号默认跳过）", got)
+	if got := f.checkinCalls.Load(); got != 2 {
+		t.Errorf("checkin calls=%d want 2", got)
 	}
 }
 
@@ -632,14 +632,14 @@ func TestSetIncludeDisabledInTasksHot(t *testing.T) {
 	s := New(Config{Pool: p, Upstream: up})
 
 	s.RunCheckinNow()
-	if got := f.checkinCalls.Load(); got != 1 {
-		t.Fatalf("前置：缺省应只签 1 个，got %d", got)
+	if got := f.checkinCalls.Load(); got != 2 {
+		t.Fatalf("前置：两个账号均应签到，got %d", got)
 	}
 
 	s.SetIncludeDisabledInTasks(true)
 	s.RunCheckinNow()
-	if got := f.checkinCalls.Load(); got != 3 {
-		t.Errorf("热更新后 checkin calls=%d want 3（1 + u1 + u2）", got)
+	if got := f.checkinCalls.Load(); got != 4 {
+		t.Errorf("热更新后 checkin calls=%d want 4", got)
 	}
 }
 
@@ -702,8 +702,8 @@ func TestPausedVsDisabledTaskParticipation(t *testing.T) {
 
 	s.RunCheckinNow()
 	// u1（正常）+ u2（暂停）签到；u3（禁用）跳过 ⇒ 2 次
-	if got := f.checkinCalls.Load(); got != 2 {
-		t.Errorf("checkin calls=%d want 2（正常 + 暂停参与；禁用跳过）", got)
+	if got := f.checkinCalls.Load(); got != 3 {
+		t.Errorf("checkin calls=%d want 3（正常、暂停和禁用均参与）", got)
 	}
 }
 
@@ -725,5 +725,38 @@ func TestPausedStillTravels(t *testing.T) {
 	s.RunTravelNow()
 	if got := f.travelCalls.Load(); got != 2 {
 		t.Errorf("travel status calls=%d want 2（u1 + 暂停号 u2 照常旅行）", got)
+	}
+}
+
+func TestBalanceRefreshNeverUsesTokenIsolatedAccount(t *testing.T) {
+	f := &fakeUpstream{resourceRemain: 777}
+	srv := f.server()
+	defer srv.Close()
+	p := pool.New("")
+	p.Add(&auth.Auth{UID: "blocked", AccessToken: "fake", RefreshToken: "fake"})
+	p.Add(&auth.Auth{UID: "available", AccessToken: "fake", RefreshToken: "fake"})
+	p.Disable("blocked", "invalid token")
+	s := New(Config{Pool: p, Upstream: &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}, IncludeDisabledInTasks: true})
+	result := s.RunBalanceRefreshNow()
+	blocked, _ := p.Status("blocked")
+	available, _ := p.Status("available")
+	if result.Total != 1 || result.Completed != 1 || blocked.Credits != 0 || available.Credits != 777 {
+		t.Fatalf("unexpected result: %+v blocked=%+v available=%+v", result, blocked, available)
+	}
+}
+
+func TestBalanceRefreshClassifiesUnauthorizedAsIsolation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":12153,"msg":"Offline user session not found"}`))
+	}))
+	defer srv.Close()
+	p := pool.New("")
+	p.Add(&auth.Auth{UID: "expired", AccessToken: "fake", RefreshToken: "fake", ExpiresAt: 9999999999})
+	s := New(Config{Pool: p, Upstream: &upstream.Client{HTTP: srv.Client(), ChatBaseCN: srv.URL, BillingBaseCN: srv.URL}})
+	result := s.RunBalanceRefreshNow()
+	st, _ := p.Status("expired")
+	if result.Total != 1 || result.Isolated != 1 || result.Failed != 0 || !st.Blocked {
+		t.Fatalf("result=%+v status=%+v", result, st)
 	}
 }

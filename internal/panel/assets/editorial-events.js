@@ -89,6 +89,9 @@ export function handleDataAction(el, ev) {
         case 'refresh-sub':
             if (typeof globalObj.refreshSingleSub === 'function') globalObj.refreshSingleSub(el.dataset.subId);
             return true;
+        case 'toggle-maintenance-pause':
+            if (typeof globalObj.togglePauseAllTasks === 'function') globalObj.togglePauseAllTasks();
+            return true;
         case 'set-task-step':
             if (wb && wb.tasks) wb.tasks.selectedStepCode = el.dataset.stepCode || null;
             if (typeof globalObj.renderEditorialStage === 'function') globalObj.renderEditorialStage(true);
@@ -135,7 +138,9 @@ export function handleDataAction(el, ev) {
             return true;
         case 'trigger-music-input':
             const doc = el?.ownerDocument || (typeof document !== 'undefined' ? document : globalObj.document);
-            doc?.getElementById('custom-music-file-hidden')?.click();
+            const input = doc?.getElementById('custom-music-file-hidden');
+            if (typeof globalObj.openCustomMusicPicker === 'function') globalObj.openCustomMusicPicker(el, input);
+            else input?.click();
             return true;
         case 'trigger-import-json':
             if (typeof globalObj.triggerImportJsonConfig === 'function') globalObj.triggerImportJsonConfig();
@@ -199,7 +204,7 @@ export function initEditorialEventDelegation(targetDoc) {
         }
         const modelEl = ev.target?.closest ? ev.target.closest('[data-hover-model]') : null;
         if (modelEl) {
-            const type = modelEl.dataset.hoverModel;
+            const type = modelEl.dataset.hoverModel.toLowerCase().replace(/model$/, '');
             const idx = parseInt(modelEl.dataset.hoverIdx, 10);
             if (type === 'usage' && typeof globalObj.hoverUsagePoint === 'function') globalObj.hoverUsagePoint(idx);
             else if (type === 'error' && typeof globalObj.hoverErrorModelPoint === 'function') globalObj.hoverErrorModelPoint(idx);
@@ -216,7 +221,7 @@ export function initEditorialEventDelegation(targetDoc) {
         }
         const modelEl = ev.target?.closest ? ev.target.closest('[data-hover-model]') : null;
         if (modelEl && (!ev.relatedTarget || !modelEl.contains(ev.relatedTarget))) {
-            const type = modelEl.dataset.hoverModel;
+            const type = modelEl.dataset.hoverModel.toLowerCase().replace(/model$/, '');
             if (type === 'usage' && typeof globalObj.hoverUsagePoint === 'function') globalObj.hoverUsagePoint(-1);
             else if (type === 'error' && typeof globalObj.hoverErrorModelPoint === 'function') globalObj.hoverErrorModelPoint(-1);
             else if (type === 'package' && typeof globalObj.hoverPackageModelPoint === 'function') globalObj.hoverPackageModelPoint(-1);

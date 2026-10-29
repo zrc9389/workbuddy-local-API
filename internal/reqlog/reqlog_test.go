@@ -205,17 +205,17 @@ func TestArchiveFilterByClientInfo(t *testing.T) {
 func TestArchiveFilterByTimeRange(t *testing.T) {
 	dir := t.TempDir()
 	r := New(Config{Enabled: true, Dir: dir, MaxBytes: 1 << 20, RetentionDays: 30})
-	base := time.Now().Add(-72 * time.Hour).Truncate(time.Minute)
+	base := time.Now().Add(-3 * time.Hour).Truncate(time.Minute)
 	ids := []string{"d3", "d2", "d1", "now"}
 	for i, id := range ids {
 		r.Record(Event{
-			Time: base.Add(time.Duration(i) * 24 * time.Hour), RequestID: id,
+			Time: base.Add(time.Duration(i) * time.Hour), RequestID: id,
 			Status: 200, OK: true, Outcome: OutcomeSuccess,
 		})
 	}
 	r.Close()
 
-	rows, err := r.ReadArchive(10, Filter{From: base.Add(24 * time.Hour), To: base.Add(48 * time.Hour)})
+	rows, err := r.ReadArchive(10, Filter{From: base.Add(time.Hour), To: base.Add(2 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestArchiveFilterByTimeRange(t *testing.T) {
 		t.Fatalf("时间区间过滤 = %v, want [d1 d2]", got)
 	}
 
-	onlyFrom, err := r.ReadArchive(10, Filter{From: base.Add(48 * time.Hour)})
+	onlyFrom, err := r.ReadArchive(10, Filter{From: base.Add(2 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestArchiveFilterByTimeRange(t *testing.T) {
 
 	// 时间区间与其它条件是与关系。
 	combined, err := r.ReadArchive(10, Filter{
-		From: base.Add(24 * time.Hour), To: base.Add(48 * time.Hour), Outcome: OutcomeHTTPError,
+		From: base.Add(time.Hour), To: base.Add(2 * time.Hour), Outcome: OutcomeHTTPError,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -273,7 +273,8 @@ func TestArchivePruneHonorsSize(t *testing.T) {
 	dir := t.TempDir()
 	for i, name := range []string{"requests-2026-09-20.jsonl", "requests-2026-09-21.jsonl", "requests-2026-09-22.jsonl"} {
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), 0o600); err != nil {
+		raw, _ := json.Marshal(Event{Time: time.Now().Add(-time.Hour), RequestID: name})
+		if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		old := time.Now().AddDate(0, 0, -10+i)
@@ -281,7 +282,11 @@ func TestArchivePruneHonorsSize(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	w := &archiveWriter{cfg: Config{Enabled: true, Dir: dir, RetentionDays: 30, MaxBytes: 50}, done: make(chan struct{})}
+	info, err := os.Stat(filepath.Join(dir, "requests-2026-09-22.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &archiveWriter{cfg: Config{Enabled: true, Dir: dir, RetentionDays: 30, MaxBytes: info.Size() + 1}, done: make(chan struct{})}
 	w.prune()
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -289,5 +294,99 @@ func TestArchivePruneHonorsSize(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != "requests-2026-09-22.jsonl" {
 		t.Fatalf("remaining = %+v, want newest file only", entries)
+	}
+}
+
+func TestRetentionReadHidesExpiredBeforeCleanup(t *testing.T) {
+	dir := t.TempDir()
+	r := New(Config{Enabled: true, Dir: dir})
+	r.Close()
+	old := Event{Time: time.Now().Add(-24*time.Hour - time.Second), RequestID: "expired", Status: 500, Outcome: OutcomeHTTPError}
+	fresh := Event{Time: time.Now().Add(-time.Minute), RequestID: "fresh", Status: 500, Outcome: OutcomeHTTPError}
+	a, _ := json.Marshal(old)
+	b, _ := json.Marshal(fresh)
+	path := filepath.Join(dir, "requests-fixture.jsonl")
+	data := append(append(append(a, '\n'), b...), '\n')
+	data = append(data, []byte("{\"request_id\":\"unknown\"}\n")...)
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := r.ReadArchive(10, Filter{})
+	if err != nil || len(rows) != 1 || rows[0].RequestID != "fresh" {
+		t.Fatalf("rows=%+v err=%v", rows, err)
+	}
+	found, err := r.FindArchive(EventID(old))
+	if err != nil || found != nil {
+		t.Fatalf("expired detail=%+v err=%v", found, err)
+	}
+	r.Record(old)
+	if len(r.Snapshot().Recent) != 0 || r.FindRecent(EventID(old)) != nil {
+		t.Fatal("expired memory log was visible")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(raw), "unknown") {
+		t.Fatal("unknown record lost", err)
+	}
+}
+
+func TestErrorPruneKeepsUnknownWhenOnlyExpiredRowsRemoved(t *testing.T) {
+	dir := t.TempDir()
+	r := New(Config{Enabled: true, Dir: dir, ErrorsOnly: true})
+	r.Close()
+	old, _ := json.Marshal(Event{Time: time.Now().Add(-25 * time.Hour), RequestID: "expired", Status: 500, Outcome: OutcomeHTTPError})
+	path := filepath.Join(dir, "requests-fixture.jsonl")
+	body := append(old, '\n')
+	body = append(body, []byte("{broken legacy}\n{\"request_id\":\"unknown\"}\n")...)
+	if err := os.WriteFile(path, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.archive.pruneErrors(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil || strings.Contains(string(raw), "expired") || !strings.Contains(string(raw), "broken legacy") || !strings.Contains(string(raw), "unknown") {
+		t.Fatalf("retained=%s err=%v", raw, err)
+	}
+}
+
+func TestSizePrunePreservesUnknownRows(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "requests-unknown.jsonl")
+	if err := os.WriteFile(path, []byte("{unknown legacy}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	w := &archiveWriter{cfg: Config{Enabled: true, Dir: dir, MaxBytes: 1}, done: make(chan struct{})}
+	w.prune()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("unknown record removed: %v", err)
+	}
+}
+
+func TestRetentionPreservesArchiveWithOversizedLegacyLine(t *testing.T) {
+	for _, errorsOnly := range []bool{false, true} {
+		dir := t.TempDir()
+		r := New(Config{Enabled: true, Dir: dir, ErrorsOnly: errorsOnly, MaxBytes: 1})
+		r.Close()
+		old, _ := json.Marshal(Event{Time: time.Now().Add(-25 * time.Hour), Status: 500, Outcome: OutcomeHTTPError})
+		path := filepath.Join(dir, "requests-large.jsonl")
+		body := append(old, '\n')
+		body = append(body, []byte(strings.Repeat("x", maxArchiveLineBytes+1)+"\n")...)
+		if err := os.WriteFile(path, body, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if errorsOnly {
+			if err := r.archive.pruneErrors(); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if err := r.archive.pruneAllEvents(); err != nil {
+				t.Fatal(err)
+			}
+			r.archive.pruneBySizeLegacy()
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != string(body) {
+			t.Fatalf("errorsOnly=%v archive changed err=%v", errorsOnly, err)
+		}
 	}
 }

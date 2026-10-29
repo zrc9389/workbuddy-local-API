@@ -12,8 +12,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
@@ -112,6 +116,9 @@ func TestResponsesLargePayloadPreservesBodyAndCleansSpool(t *testing.T) {
 	if got, _ := outbound["max_tokens"].(float64); got != 32 {
 		t.Fatalf("max_tokens=%v", outbound["max_tokens"])
 	}
+	if outbound["stream"] != true {
+		t.Fatalf("large upstream request must request SSE: %v", outbound["stream"])
+	}
 	if files, _ := filepath.Glob(filepath.Join(os.TempDir(), "wb_req_spool_*.tmp")); len(files) != 0 {
 		t.Fatalf("spool files leaked: %v", files)
 	}
@@ -158,8 +165,9 @@ func TestResponsesLargePayloadPreservesImageAndTools(t *testing.T) {
 	}
 	msgs := outbound["messages"].([]any)
 	part := msgs[0].(map[string]any)["content"].([]any)[0].(map[string]any)
-	if part["type"] != "image_url" || part["image_url"] != image {
-		t.Fatalf("image part lost: %#v", part)
+	imageObj, ok := part["image_url"].(map[string]any)
+	if part["type"] != "image_url" || !ok || imageObj["url"] != image {
+		t.Fatalf("image part missing or not normalized; type=%v", part["type"])
 	}
 	tools := outbound["tools"].([]any)
 	fn := tools[0].(map[string]any)["function"].(map[string]any)
@@ -343,6 +351,18 @@ func TestLargeResponsesMessageConversionMatchesRegular(t *testing.T) {
 		expected, err := responsesInputMessages(decoded)
 		if err != nil {
 			t.Fatal(err)
+		}
+		for _, msg := range expected {
+			parts, _ := msg["content"].([]any)
+			for _, value := range parts {
+				part, ok := value.(map[string]any)
+				if !ok || part["type"] != "image_url" {
+					continue
+				}
+				if url, ok := part["image_url"].(string); ok && url != "" {
+					part["image_url"] = map[string]any{"url": url}
+				}
+			}
 		}
 		got, err := largeResponsesMessagesAt(strings.NewReader(input), jsonscan.Span{Start: 0, End: int64(len(input))}, nil)
 		if err != nil {
@@ -702,5 +722,133 @@ func TestResponsesSpoolCleanupOnCancelAndWriteFailure(t *testing.T) {
 }
 
 type errorReader struct{}
+
+// Opt-in isolated process measurement. The request source and response sink do
+// not retain the body; the fake upstream consumes it incrementally.
+func TestResponsesMeasuredLargeRequest(t *testing.T) {
+	arg := os.Getenv("WB_MEASURE_BYTES")
+	if arg == "" {
+		t.Skip("measurement is opt-in")
+	}
+	size, err := strconv.Atoi(arg)
+	if err != nil || size < 1 {
+		t.Fatal("invalid measurement size")
+	}
+	var received atomic.Int64
+	up := &upstream.Client{HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n, e := io.Copy(io.Discard, r.Body)
+		if e != nil {
+			return nil, e
+		}
+		received.Store(n)
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(sseOK))}, nil
+	})}, ChatBaseCN: "https://fake.example"}
+	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "measure", AccessToken: "at", ExpiresAt: 9999999999})})
+	h.cfg.Upstream = up
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	baseline := m.HeapAlloc
+	var peak atomic.Uint64
+	peak.Store(baseline)
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				var x runtime.MemStats
+				runtime.ReadMemStats(&x)
+				if x.HeapAlloc > peak.Load() {
+					peak.Store(x.HeapAlloc)
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+	reader := io.MultiReader(strings.NewReader(`{"model":"glm-5.2","input":"`), io.LimitReader(repeatingByte('x'), int64(size)), strings.NewReader(`"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/responses", reader))
+	close(stop)
+	<-stopped
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	if received.Load() < int64(size) {
+		t.Fatalf("truncated upstream: %d", received.Load())
+	}
+	t.Logf("request_bytes=%d upstream_bytes=%d heap_baseline=%d heap_sampled_peak=%d delta=%d", size, received.Load(), baseline, peak.Load(), peak.Load()-baseline)
+}
+
+type repeatingByte byte
+
+func (b repeatingByte) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = byte(b)
+	}
+	return len(p), nil
+}
+
+func TestResponsesStreamsBeforeUpstreamCompletes(t *testing.T) {
+	pr, pw := io.Pipe()
+	up := &upstream.Client{HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		io.Copy(io.Discard, r.Body)
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: pr}, nil
+	})}, ChatBaseCN: "https://fake.example"}
+	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "stream-live", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: up})
+	writer := &notifyingWriter{header: make(http.Header), wrote: make(chan struct{}, 1)}
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(writer, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader("{\"model\":\"glm-5.2\",\"stream\":true,\"input\":\"hi\"}")))
+		close(done)
+	}()
+	go func() { io.WriteString(pw, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n") }()
+	select {
+	case <-writer.wrote:
+	case <-time.After(3 * time.Second):
+		pw.Close()
+		<-done
+		t.Fatal("no event before upstream finished")
+	}
+	pw.Close()
+	<-done
+}
+
+func TestLiveResponsesFailureDoesNotComplete(t *testing.T) {
+	rec := httptest.NewRecorder()
+	l := newLiveResponsesWriter(rec, "model")
+	if err := l.text("hello"); err != nil {
+		t.Fatal(err)
+	}
+	l.fail("history_storage_failed")
+	body := rec.Body.String()
+	if !strings.Contains(body, "response.failed") || strings.Contains(body, "response.completed") {
+		t.Fatal(body)
+	}
+}
+
+type notifyingWriter struct {
+	header http.Header
+	wrote  chan struct{}
+	buf    bytes.Buffer
+}
+
+func (w *notifyingWriter) Header() http.Header { return w.header }
+func (w *notifyingWriter) WriteHeader(int)     {}
+func (w *notifyingWriter) Write(p []byte) (int, error) {
+	w.buf.Write(p)
+	if bytes.Contains(w.buf.Bytes(), []byte("response.output_text.delta")) {
+		select {
+		case w.wrote <- struct{}{}:
+		default:
+		}
+	}
+	return len(p), nil
+}
+func (w *notifyingWriter) Flush() {}
 
 func (errorReader) Read([]byte) (int, error) { return 0, errors.New("upstream read error") }

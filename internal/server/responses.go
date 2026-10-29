@@ -33,6 +33,10 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 	payload, err := h.readPayload(r)
 	if err != nil {
 		if errors.Is(err, errRequestBodyTooLarge) {
+			if r.Context().Value(unknownBudgetKey{}) != nil {
+				writeOpenAIError(w, 413, "working_budget_exceeded", "unknown-length request exceeds the configured working budget; content was not dispatched")
+				return
+			}
 			writeOpenAIError(w, http.StatusRequestEntityTooLarge, "request_body_too_large", h.bodyLimitMessage())
 			return
 		}
@@ -107,6 +111,9 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recorder := newChatCapture()
+	if stream {
+		recorder.live = newLiveResponsesWriter(w, model)
+	}
 	defer recorder.close()
 	chatReq, err := http.NewRequestWithContext(context.WithValue(r.Context(), spoolKey{}, nil), http.MethodPost, "/internal/responses-chat", bytes.NewReader(chatBody))
 	if err != nil {
@@ -117,6 +124,10 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 	chatReq.RemoteAddr = r.RemoteAddr
 	h.chatCompletions(recorder, chatReq)
 	if recorder.Code < 200 || recorder.Code >= 300 {
+		if recorder.live != nil && recorder.live.started {
+			recorder.live.fail("upstream_error")
+			return
+		}
 		copyHTTPResponse(w, recorder)
 		return
 	}
@@ -126,12 +137,19 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	responseID := "resp_" + session.NewMessageID()
+	if recorder.live != nil {
+		responseID = recorder.live.id
+	}
 	response := chatResponseToResponses(chatResp, responseID, model, customTools)
 	if messages, ok := responseChatMessages(chatResp); ok {
 		chatMessages = append(chatMessages, messages...)
 	}
 	historyFile, err := os.CreateTemp("", "wb_responses_saved_*.tmp")
 	if err != nil {
+		if recorder.live != nil && recorder.live.started {
+			recorder.live.fail("history_storage_failed")
+			return
+		}
 		writeOpenAIError(w, 500, "spool_error", err.Error())
 		return
 	}
@@ -141,11 +159,15 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 		err = h.cfg.History.PutReaderContext(r.Context(), responseID, historyFile)
 	}
 	if err != nil {
+		if recorder.live != nil && recorder.live.started {
+			recorder.live.fail("history_storage_failed")
+			return
+		}
 		writeOpenAIError(w, http.StatusInsufficientStorage, "history_storage_failed", "could not retain conversation history: "+err.Error())
 		return
 	}
 	if stream {
-		if err := writeResponsesStream(w, response); err != nil {
+		if err := recorder.live.complete(response); err != nil {
 			return
 		}
 		finishSpool(r, true)
@@ -381,6 +403,17 @@ func writeLargeResponsesMessages(dst io.Writer, ra io.ReaderAt, span jsonscan.Sp
 		if err != nil {
 			return err
 		}
+		if parts, ok := converted[0]["content"].([]any); ok {
+			for _, rawPart := range parts {
+				part, ok := rawPart.(map[string]any)
+				if !ok || part["type"] != "image_url" {
+					continue
+				}
+				if url, ok := part["image_url"].(string); ok && url != "" {
+					part["image_url"] = map[string]any{"url": url}
+				}
+			}
+		}
 		encoded, err := json.Marshal(converted[0])
 		if err != nil {
 			return err
@@ -522,9 +555,9 @@ func largeContentAt(out *bufio.Writer, ra io.ReaderAt, span jsonscan.Span) error
 			return errors.New("content type exceeds safe conversion limit")
 		}
 		typ := readStringAt(ra, fields["type"], 0)
-		if typ == "input_text" || typ == "output_text" || typ == "input_image" {
+		if typ == "input_text" || typ == "output_text" || typ == "input_image" || typ == "image_url" {
 			convertedType := "text"
-			if typ == "input_image" {
+			if typ == "input_image" || typ == "image_url" {
 				convertedType = "image_url"
 			}
 			out.WriteByte('{')
@@ -541,8 +574,22 @@ func largeContentAt(out *bufio.Writer, ra io.ReaderAt, span jsonscan.Span) error
 				} else {
 					field.Start += part.Start
 					field.End += part.Start
+					wrapImage := false
+					if convertedType == "image_url" && field.Key == "image_url" && field.End-field.Start > 2 {
+						var first [1]byte
+						if _, err := ra.ReadAt(first[:], field.Start); err != nil {
+							return err
+						}
+						wrapImage = first[0] == '"'
+					}
+					if wrapImage {
+						out.WriteString(`{"url":`)
+					}
 					if err := jsonscan.CopySpan(out, ra, field); err != nil {
 						return err
+					}
+					if wrapImage {
+						out.WriteByte('}')
 					}
 				}
 			}
@@ -563,7 +610,7 @@ func writeLargeChatBody(dst io.Writer, raw map[string]json.RawMessage, messages,
 	if _, err := io.Copy(out, messages); err != nil {
 		return err
 	}
-	out.WriteString(`,"stream":false`)
+	out.WriteString(`,"stream":true,"stream_options":{"include_usage":true}`)
 	for _, key := range []string{"temperature", "top_p", "frequency_penalty", "presence_penalty", "stop", "parallel_tool_calls", "metadata", "reasoning_effort"} {
 		if key == "reasoning_effort" && len(raw[key]) == 0 && len(raw["reasoning"]) > 0 {
 			var reasoning map[string]json.RawMessage
@@ -661,6 +708,9 @@ func reqBoolRaw(raw map[string]json.RawMessage, key string) bool {
 
 func (h *Handler) forwardLargeResponses(w http.ResponseWriter, r *http.Request, model string, body io.Reader, messages io.ReadSeeker, stream bool, customTools map[string]bool) bool {
 	recorder := newChatCapture()
+	if stream {
+		recorder.live = newLiveResponsesWriter(w, model)
+	}
 	defer recorder.close()
 	chatReq, err := http.NewRequestWithContext(context.WithValue(context.WithValue(r.Context(), spoolKey{}, nil), internalResponsesKey{}, true), http.MethodPost, "/internal/responses-chat", body)
 	if err != nil {
@@ -670,6 +720,10 @@ func (h *Handler) forwardLargeResponses(w http.ResponseWriter, r *http.Request, 
 	chatReq.RemoteAddr = r.RemoteAddr
 	h.chatCompletions(recorder, chatReq)
 	if recorder.Code < 200 || recorder.Code >= 300 {
+		if recorder.live != nil && recorder.live.started {
+			recorder.live.fail("upstream_error")
+			return true
+		}
 		copyHTTPResponse(w, recorder)
 		return true
 	}
@@ -679,10 +733,17 @@ func (h *Handler) forwardLargeResponses(w http.ResponseWriter, r *http.Request, 
 		return true
 	}
 	responseID := "resp_" + session.NewMessageID()
+	if recorder.live != nil {
+		responseID = recorder.live.id
+	}
 	response := chatResponseToResponses(chatResp, responseID, model, customTools)
 	assistant, _ := responseChatMessages(chatResp)
 	historyFile, err := os.CreateTemp("", "wb_responses_saved_*.tmp")
 	if err != nil {
+		if recorder.live != nil && recorder.live.started {
+			recorder.live.fail("history_storage_failed")
+			return true
+		}
 		writeOpenAIError(w, 500, "spool_error", err.Error())
 		return true
 	}
@@ -692,6 +753,10 @@ func (h *Handler) forwardLargeResponses(w http.ResponseWriter, r *http.Request, 
 	}
 	assistantFile, err := os.CreateTemp("", "wb_responses_assistant_*.tmp")
 	if err != nil {
+		if recorder.live != nil && recorder.live.started {
+			recorder.live.fail("history_storage_failed")
+			return true
+		}
 		writeOpenAIError(w, 500, "spool_error", err.Error())
 		return true
 	}
@@ -704,11 +769,15 @@ func (h *Handler) forwardLargeResponses(w http.ResponseWriter, r *http.Request, 
 		err = h.cfg.History.PutReaderContext(r.Context(), responseID, historyFile)
 	}
 	if err != nil {
+		if recorder.live != nil && recorder.live.started {
+			recorder.live.fail("history_storage_failed")
+			return true
+		}
 		writeOpenAIError(w, http.StatusInsufficientStorage, "history_storage_failed", "could not retain conversation history: "+err.Error())
 		return true
 	}
 	if stream {
-		if err := writeResponsesStream(w, response); err != nil {
+		if err := recorder.live.complete(response); err != nil {
 			return true
 		}
 	} else {
@@ -852,15 +921,22 @@ type chatCapture struct {
 	Body     bytes.Buffer
 	response map[string]any
 	spool    *upstream.ResponseSpool
+	live     *liveResponsesWriter
 }
 
 func newChatCapture() *chatCapture {
 	return &chatCapture{Code: http.StatusOK, header: make(http.Header)}
 }
-func (c *chatCapture) Header() http.Header                               { return c.header }
-func (c *chatCapture) WriteHeader(code int)                              { c.Code = code }
-func (c *chatCapture) Write(p []byte) (int, error)                       { return c.Body.Write(p) }
-func (c *chatCapture) acceptChatResponse(value map[string]any)           { c.response = value }
+func (c *chatCapture) Header() http.Header                     { return c.header }
+func (c *chatCapture) WriteHeader(code int)                    { c.Code = code }
+func (c *chatCapture) Write(p []byte) (int, error)             { return c.Body.Write(p) }
+func (c *chatCapture) acceptChatResponse(value map[string]any) { c.response = value }
+func (c *chatCapture) observeResponseText(text string) error {
+	if c.live == nil {
+		return nil
+	}
+	return c.live.text(text)
+}
 func (c *chatCapture) acceptResponseSpool(value *upstream.ResponseSpool) { c.spool = value }
 func (c *chatCapture) close() {
 	if c.spool != nil {
@@ -1217,6 +1293,83 @@ type responseEventWriter struct {
 	err error
 }
 
+// liveResponsesWriter emits text while the upstream is still producing it.
+// Tool calls remain buffered until truncation checks and history commit succeed.
+type liveResponsesWriter struct {
+	w         *responseEventWriter
+	id, model string
+	sequence  int
+	started   bool
+}
+
+func newLiveResponsesWriter(w http.ResponseWriter, model string) *liveResponsesWriter {
+	return &liveResponsesWriter{w: &responseEventWriter{ResponseWriter: w}, id: "resp_" + session.NewMessageID(), model: model}
+}
+func (l *liveResponsesWriter) start() {
+	if l.started {
+		return
+	}
+	l.started = true
+	l.w.Header().Set("Content-Type", "text/event-stream")
+	l.w.Header().Set("Cache-Control", "no-cache")
+	l.w.Header().Set("X-Accel-Buffering", "no")
+	l.w.WriteHeader(http.StatusOK)
+	writeResponsesEvent(l.w, "response.created", map[string]any{"type": "response.created", "sequence_number": l.sequence, "response": map[string]any{"id": l.id, "object": "response", "created_at": time.Now().Unix(), "status": "in_progress", "model": l.model, "output": []any{}, "output_text": ""}})
+	l.sequence++
+}
+func (l *liveResponsesWriter) text(text string) error {
+	l.start()
+	if l.sequence == 1 {
+		writeResponsesEvent(l.w, "response.output_item.added", map[string]any{"type": "response.output_item.added", "sequence_number": l.sequence, "output_index": 0, "item": map[string]any{"id": "msg_" + l.id, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}}})
+		l.sequence++
+		writeResponsesEvent(l.w, "response.content_part.added", map[string]any{"type": "response.content_part.added", "sequence_number": l.sequence, "item_id": "msg_" + l.id, "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}}})
+		l.sequence++
+	}
+	writeResponsesEvent(l.w, "response.output_text.delta", map[string]any{"type": "response.output_text.delta", "sequence_number": l.sequence, "item_id": "msg_" + l.id, "output_index": 0, "content_index": 0, "delta": text, "logprobs": []any{}})
+	l.sequence++
+	return l.w.err
+}
+func (l *liveResponsesWriter) fail(code string) {
+	if l.w.err != nil {
+		return
+	}
+	writeResponsesEvent(l.w, "response.failed", map[string]any{"type": "response.failed", "sequence_number": l.sequence, "response": map[string]any{"id": l.id, "object": "response", "status": "failed", "error": map[string]any{"code": code, "message": "Response could not be completed"}}})
+}
+func (l *liveResponsesWriter) complete(response map[string]any) error {
+	if !l.started {
+		return writeResponsesStream(l.w, response)
+	}
+	// Live text uses index zero. Keep the completed response and later tool
+	// events consistent even when reasoning was produced before the text.
+	if output, ok := response["output"].([]any); ok {
+		for i, v := range output {
+			if item, ok := v.(map[string]any); ok && item["type"] == "message" && i > 0 {
+				copy(output[1:i+1], output[:i])
+				output[0] = v
+				break
+			}
+		}
+	}
+	writeResponsesEvent(l.w, "response.output_text.done", map[string]any{"type": "response.output_text.done", "sequence_number": l.sequence, "item_id": "msg_" + l.id, "output_index": 0, "content_index": 0, "text": response["output_text"], "logprobs": []any{}})
+	l.sequence++
+	if output, ok := response["output"].([]any); ok && len(output) > 0 {
+		item, _ := output[0].(map[string]any)
+		if item != nil && item["type"] == "message" {
+			parts, _ := item["content"].([]any)
+			if len(parts) > 0 {
+				writeResponsesEvent(l.w, "response.content_part.done", map[string]any{"type": "response.content_part.done", "sequence_number": l.sequence, "item_id": "msg_" + l.id, "output_index": 0, "content_index": 0, "part": parts[0]})
+				l.sequence++
+			}
+			writeResponsesEvent(l.w, "response.output_item.done", map[string]any{"type": "response.output_item.done", "sequence_number": l.sequence, "output_index": 0, "item": item})
+			l.sequence++
+		}
+	}
+	if l.w.err != nil {
+		return l.w.err
+	}
+	return writeResponsesStreamTail(l.w, response, l.sequence, true)
+}
+
 func (w *responseEventWriter) Write(p []byte) (int, error) {
 	if w.err != nil {
 		return 0, w.err
@@ -1238,23 +1391,33 @@ func (w *responseEventWriter) Flush() {
 }
 
 func writeResponsesStream(w http.ResponseWriter, response map[string]any) error {
+	return writeResponsesStreamTail(w, response, 0, false)
+}
+
+func writeResponsesStreamTail(w http.ResponseWriter, response map[string]any, sequence int, live bool) error {
 	ew := &responseEventWriter{ResponseWriter: w}
 	w = ew
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
-	sequence := 0
-	created := cloneMap(response)
-	created["status"] = "in_progress"
-	created["output"] = []any{}
-	created["output_text"] = ""
-	writeResponsesEvent(w, "response.created", map[string]any{
-		"type":            "response.created",
-		"sequence_number": sequence,
-		"response":        created,
-	})
-	sequence++
+	if !live {
+		// The created event replaces output entirely; copying its nested tree wastes
+		// memory proportional to the completed response before discarding it.
+		created := make(map[string]any, len(response))
+		for key, value := range response {
+			created[key] = value
+		}
+		created["status"] = "in_progress"
+		created["output"] = []any{}
+		created["output_text"] = ""
+		writeResponsesEvent(w, "response.created", map[string]any{
+			"type":            "response.created",
+			"sequence_number": sequence,
+			"response":        created,
+		})
+		sequence++
+	}
 	id, _ := response["id"].(string)
 	messageID := "msg_" + id
 	messageIndex := 0
@@ -1283,15 +1446,18 @@ func writeResponsesStream(w http.ResponseWriter, response map[string]any) error 
 				sequence++
 				itemID, _ := item["id"].(string)
 				input := item["input"]
-				if textPresent(input) {
+				if err := writeResponseDeltaChunks(input, func(part any) error {
 					writeResponsesEvent(w, "response.custom_tool_call_input.delta", map[string]any{
 						"type":            "response.custom_tool_call_input.delta",
 						"sequence_number": sequence,
 						"item_id":         itemID,
 						"output_index":    outputIndex,
-						"delta":           input,
+						"delta":           part,
 					})
 					sequence++
+					return ew.err
+				}); err != nil {
+					return err
 				}
 				writeResponsesEvent(w, "response.custom_tool_call_input.done", map[string]any{
 					"type":            "response.custom_tool_call_input.done",
@@ -1325,15 +1491,18 @@ func writeResponsesStream(w http.ResponseWriter, response map[string]any) error 
 			itemID, _ := item["id"].(string)
 			arguments := item["arguments"]
 			name, _ := item["name"].(string)
-			if textPresent(arguments) {
+			if err := writeResponseDeltaChunks(arguments, func(part any) error {
 				writeResponsesEvent(w, "response.function_call_arguments.delta", map[string]any{
 					"type":            "response.function_call_arguments.delta",
 					"sequence_number": sequence,
 					"item_id":         itemID,
 					"output_index":    outputIndex,
-					"delta":           arguments,
+					"delta":           part,
 				})
 				sequence++
+				return ew.err
+			}); err != nil {
+				return err
 			}
 			writeResponsesEvent(w, "response.function_call_arguments.done", map[string]any{
 				"type":            "response.function_call_arguments.done",
@@ -1353,17 +1522,22 @@ func writeResponsesStream(w http.ResponseWriter, response map[string]any) error 
 			sequence++
 		}
 	}
-	if text := response["output_text"]; textPresent(text) {
-		writeResponsesEvent(w, "response.output_text.delta", map[string]any{
-			"type":            "response.output_text.delta",
-			"sequence_number": sequence,
-			"item_id":         messageID,
-			"output_index":    messageIndex,
-			"content_index":   0,
-			"delta":           text,
-			"logprobs":        []any{},
-		})
-		sequence++
+	if !live {
+		if err := writeResponseDeltaChunks(response["output_text"], func(part any) error {
+			writeResponsesEvent(w, "response.output_text.delta", map[string]any{
+				"type":            "response.output_text.delta",
+				"sequence_number": sequence,
+				"item_id":         messageID,
+				"output_index":    messageIndex,
+				"content_index":   0,
+				"delta":           part,
+				"logprobs":        []any{},
+			})
+			sequence++
+			return ew.err
+		}); err != nil {
+			return err
+		}
 	}
 	writeResponsesEvent(w, "response.completed", map[string]any{
 		"type":            "response.completed",
@@ -1371,6 +1545,44 @@ func writeResponsesStream(w http.ResponseWriter, response map[string]any) error 
 		"response":        response,
 	})
 	return ew.err
+}
+
+// writeResponseDeltaChunks splits decoded text at UTF-8 boundaries. Completed
+// events remain intact; only delta event boundaries change.
+func writeResponseDeltaChunks(value any, emit func(any) error) error {
+	var reader io.Reader
+	switch v := value.(type) {
+	case string:
+		reader = strings.NewReader(v)
+	case *upstream.SpoolText:
+		reader = v.Reader()
+	default:
+		if textPresent(value) {
+			return emit(value)
+		}
+		return nil
+	}
+	const chunkSize = 16 << 10
+	r := bufio.NewReaderSize(reader, chunkSize)
+	chunk := make([]byte, 0, chunkSize+utf8.UTFMax)
+	for {
+		ch, _, err := r.ReadRune()
+		if err != nil && err != io.EOF {
+			return err
+		}
+		if err == nil {
+			chunk = utf8.AppendRune(chunk, ch)
+		}
+		if len(chunk) >= chunkSize || (err == io.EOF && len(chunk) > 0) {
+			if e := emit(string(chunk)); e != nil {
+				return e
+			}
+			chunk = chunk[:0]
+		}
+		if err == io.EOF {
+			return nil
+		}
+	}
 }
 
 func writeResponsesEvent(w http.ResponseWriter, event string, value any) {

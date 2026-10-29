@@ -11,7 +11,7 @@ test('current geometry frontend exposes only the local session API families', ()
     .map(([, , path]) => path);
   for (const path of [
     '/api/preload-bundle', '/auth/session', '/auth/login', '/auth/logout', '/auth/password',
-    '/panel/api/overview', '/panel/api/egress', '/panel/api/packages',
+    '/panel/api/overview', '/panel/api/meta/nodes', '/panel/api/packages',
     '/panel/api/request_logs', '/panel/api/accounts/',
     '/panel/api/meta/subscriptions', '/panel/api/customization', '/panel/api/update/check',
     '/panel/api/update/apply', '/panel/api/models', '/panel/api/refresh',
@@ -54,10 +54,17 @@ test('runtime inline page uses the documented API paths and methods', () => {
   const expected = [
     ['GET','/api/preload-bundle'], ['GET','/auth/session'], ['POST','/auth/login'],
     ['POST','/auth/logout'], ['POST','/auth/password'], ['GET','/panel/api/overview'],
-    ['GET','/panel/api/egress'], ['GET','/panel/api/packages'], ['GET','/panel/api/request_logs?summary=1&limit=50'], ['GET','/panel/api/customization'],
+    ['GET','/panel/api/meta/nodes'], ['GET','/panel/api/meta/stats'], ['GET','/panel/api/preferences'], ['GET','/panel/api/packages'], ['GET','/panel/api/request_logs?summary=1&limit=50'], ['GET','/panel/api/customization'],
     ['GET','/panel/api/login/poll?state={state}'], ['POST','/panel/api/meta/subscriptions'],
     ['POST','/panel/api/customization'], ['POST','/panel/api/update/check'], ['POST','/panel/api/update/apply'],
-    ['GET','/panel/api/models'], ['POST','/panel/api/refresh'], ['POST','/panel/api/accounts/'],
+    ['GET','/panel/api/models'], ['GET','/panel/api/music'], ['POST','/panel/api/music/upload'], ['POST','/panel/api/music/action'], ['POST','/panel/api/refresh'], ['POST','/panel/api/accounts/'],
+    ['GET','/panel/api/accounts/'], ['GET','/panel/api/accounts/export'], ['GET','/panel/api/meta/accounts/'],
+    ['GET','/panel/api/meta/subscriptions'], ['GET','/panel/api/usage?hours=24'],
+    ['GET','/panel/api/maintenance/status'], ['POST','/panel/api/maintenance/run'],
+    ['GET','/panel/api/meta/tests'], ['POST','/panel/api/accounts/import'], ['POST','/panel/api/meta/tests'], ['POST','/panel/api/login/start'], ['POST','/panel/api/models/refresh'],
+    ['POST','/panel/api/preferences'],
+    ['POST','/panel/api/maintenance/pause'],
+    ['GET','/panel/api/tasks/schedule'], ['POST','/panel/api/tasks/schedule'],
   ];
   for (const [method,path] of expected) {
     assert.ok(found.some(([p,m]) => p === path && m === method), `${method} ${path} missing`);
@@ -68,7 +75,7 @@ test('runtime inline page uses the documented API paths and methods', () => {
 test('runtime page request and response fields stay bound to the contract', () => {
   for (const pattern of [
     /JSON\.stringify\(\{\s*password:\s*entered\s*\}\)/,
-    /JSON\.stringify\(\{\s*old_password:\s*oldVal,\s*new_password:\s*newVal\s*\}\)/,
+    /JSON\.stringify\(\{\s*old_password:\s*oldVal,\s*new_password:\s*newVal,\s*confirm_password:\s*repVal\s*\}\)/,
     /JSON\.stringify\(\{\s*url:\s*urlVal,\s*name:\s*nameVal\s*\}\)/,
     /JSON\.stringify\(\{\s*customization:\s*nextCustomization\s*\}\)/,
     /bundle\.ciphertext\s*\|\|\s*!bundle\.iv/,

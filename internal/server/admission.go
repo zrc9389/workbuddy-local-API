@@ -37,10 +37,13 @@ func (h *Handler) admit(w http.ResponseWriter, r *http.Request) (*http.Request, 
 		return r, noop, false
 	}
 	n := r.ContentLength
+	unknownLimit := int64(0)
 	if n <= 0 {
 		n = h.cfg.MaxBodyBytes
 		if n <= 0 {
-			n = 64 << 10
+			// Unknown length must reserve the same maximum that the reader enforces.
+			n = h.workLimit / 4
+			unknownLimit = n
 		}
 	}
 	if workingCost(n) > h.workLimit {
@@ -48,7 +51,10 @@ func (h *Handler) admit(w http.ResponseWriter, r *http.Request) (*http.Request, 
 		return r, noop, false
 	}
 	if !h.underPressure() && h.reserve(n) {
-		if h.cfg.MaxBodyBytes > 0 {
+		if unknownLimit > 0 {
+			r.Body = http.MaxBytesReader(w, r.Body, unknownLimit)
+			r = r.WithContext(context.WithValue(r.Context(), unknownBudgetKey{}, true))
+		} else if h.cfg.MaxBodyBytes > 0 {
 			r.Body = http.MaxBytesReader(w, r.Body, h.cfg.MaxBodyBytes)
 		}
 		return r, func() { h.release(n) }, true
@@ -62,6 +68,9 @@ func (h *Handler) admit(w http.ResponseWriter, r *http.Request) (*http.Request, 
 	spoolLimit := h.cfg.MaxBodyBytes
 	if spoolLimit <= 0 {
 		spoolLimit = h.cfg.Spool.CapacityRemaining()
+	}
+	if unknownLimit > 0 && spoolLimit > unknownLimit {
+		spoolLimit = unknownLimit
 	}
 	j, e := h.cfg.Spool.Stage(r.Context(), r.Body, spoolLimit)
 	if e != nil {
@@ -104,6 +113,7 @@ func (h *Handler) admit(w http.ResponseWriter, r *http.Request) (*http.Request, 
 }
 
 type spoolKey struct{}
+type unknownBudgetKey struct{}
 
 func finishSpool(r *http.Request, success bool) {
 	if j, ok := r.Context().Value(spoolKey{}).(*spool.Job); ok && success && r.Context().Err() == nil {

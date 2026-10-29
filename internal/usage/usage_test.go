@@ -103,10 +103,10 @@ func TestRollingRetentionUsesLastSeenBoundary(t *testing.T) {
 func TestSaveFailureKeepsDirtyForRetry(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "blocked")
+	r := New(path)
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	r := New(path)
 	r.Add(time.Now(), "cn", "u", "m", Delta{}, true)
 	if err := r.Save(); err == nil {
 		t.Fatal("expected save failure")
@@ -122,6 +122,24 @@ func TestSaveFailureKeepsDirtyForRetry(t *testing.T) {
 	}
 	if r.dirty {
 		t.Fatal("successful retry remained dirty")
+	}
+}
+
+func TestSaveDirtySkipsUnchangedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "usage.json")
+	r := New(path)
+	if err := r.SaveDirty(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("unchanged file written: %v", err)
+	}
+	r.Add(time.Now(), "cn", "u", "m", Delta{}, true)
+	if err := r.SaveDirty(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -179,7 +197,8 @@ func TestFlushLoadRoundtrip(t *testing.T) {
 // 版本 1 文件没有积分字段：按零值恢复，旧 Token 数据保持可见且不产生伪比例。
 func TestLoadLegacyWithoutCredit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "usage.json")
-	legacy := `{"version":1,"saved":"2026-10-27T00:00:00+08:00","buckets":[{"s":"h:2026-10-27T19","r":"cn","u":"u1","m":"glm-5.2","q":1,"p":42,"t":42}]}`
+	now := time.Now()
+	legacy := `{"version":1,"saved":"` + now.Format(time.RFC3339) + `","buckets":[{"s":"h:` + now.Format("2006-01-02T15") + `","r":"cn","u":"u1","m":"glm-5.2","q":1,"p":42,"t":42}]}`
 	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -265,8 +284,8 @@ func TestSnapshotWindowFilter(t *testing.T) {
 	}
 
 	all := r.Snapshot(0, nil)
-	if all.Totals.Requests != 2 || all.Totals.PromptTokens != 8 {
-		t.Fatalf("全部历史 totals = %d/%d, want 2/8", all.Totals.Requests, all.Totals.PromptTokens)
+	if all.Totals.Requests != 1 || all.Totals.PromptTokens != 3 {
+		t.Fatalf("全部历史 totals = %d/%d, want 1/3", all.Totals.Requests, all.Totals.PromptTokens)
 	}
 	// since 是全库数据起点，不受窗口影响。
 	if all.Since == "" || s.Since != all.Since {
@@ -422,5 +441,45 @@ func TestCacheTokensPersistRoundtrip(t *testing.T) {
 	snap := r2.Snapshot(0, nil)
 	if snap.CreditByModel[0].CacheHitRate != 75 {
 		t.Fatalf("恢复后 cache_hit_rate=%v want 75", snap.CreditByModel[0].CacheHitRate)
+	}
+}
+
+func TestSnapshotHidesExpiredAndUnknownWithoutDestroyingThem(t *testing.T) {
+	r := New("")
+	r.Add(time.Now().Add(-25*time.Hour), "cn", "old", "m", Delta{}, true)
+	r.Add(time.Now(), "cn", "fresh", "m", Delta{}, true)
+	r.buckets["unknown"] = &bucket{Scope: "opaque", Req: 3}
+	s := r.Snapshot(0, nil)
+	if s.Totals.Requests != 1 || len(r.buckets) != 3 {
+		t.Fatalf("snapshot=%+v buckets=%d", s.Totals, len(r.buckets))
+	}
+}
+
+func TestRetentionPreservesUnknownScopeWithLastSeen(t *testing.T) {
+	r := New("")
+	r.buckets["unknown"] = &bucket{Scope: "future-format", LastSeen: time.Now().Add(-48 * time.Hour), Req: 1}
+	r.Rollup(time.Now())
+	if len(r.buckets) != 1 {
+		t.Fatal("unknown scope was deleted")
+	}
+	if _, ok := bucketTime("2020-01-01"); ok {
+		t.Fatal("unprefixed scope must remain unknown")
+	}
+}
+
+func TestLegacyBucketUpdatedBeforeEndRetainsFullSlice(t *testing.T) {
+	r := New("")
+	start := time.Now().Truncate(time.Hour).Add(-time.Hour)
+	scope := "h:" + start.Format(hourLayout)
+	key := scope + "|cn|u|m|"
+	r.buckets[key] = &bucket{Scope: scope, Realm: "cn", UID: "u", Model: "m", Req: 1}
+	r.Add(start.Add(time.Minute), "cn", "u", "m", Delta{}, true)
+	r.Rollup(start.Add(24*time.Hour + time.Minute))
+	if r.buckets[key] == nil {
+		t.Fatal("legacy events may extend to the end of the hour")
+	}
+	r.Rollup(start.Add(25 * time.Hour))
+	if r.buckets[key] != nil {
+		t.Fatal("bucket should expire at its conservative boundary")
 	}
 }

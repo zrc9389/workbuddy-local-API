@@ -1,5 +1,28 @@
 import { initEditorialEventDelegation, handleDataAction } from './editorial-events.js';
 'use strict';
+// CN 是模型家族筛选，不改变上游提供的路由域；仅识别明确的模型名前缀。
+export function isChineseModel(model) {
+    const matches = value => {
+        let id = String(value || '').trim().toLowerCase().replace(/^(?:cn|global):/, '');
+        id = id.replace(/^(?:deepseek|moonshotai|moonshot|qwen|alibaba|zhipuai|z-ai|minimax|xiaomi)\//, '');
+        return /^(?:deepseek|kimi|qwen|glm|minimax|mimo|hy|hunyuan|doubao|ernie|baichuan|yi|spark|step|internlm)(?:$|[-_.\s\d])/.test(id);
+    };
+    const vendor = String(model?.vendor || '').trim().toLowerCase();
+    const chineseVendors = new Set(['deepseek', 'moonshot', 'moonshotai', 'alibaba', 'qwen', 'zhipuai', 'z-ai', 'minimax', 'xiaomi', 'tencent', 'bytedance', 'baidu', 'baichuan', '01.ai', 'iflytek', 'stepfun', 'shanghai ai laboratory']);
+    return matches(model?.id) || matches(model?.name) || chineseVendors.has(vendor);
+}
+
+export function modelMatchesFilter(model, filter) {
+    // CN / GLOBAL 表示模型目录来源，而非模型厂商国籍。同名模型可能
+    // 同时出现在两个上游目录，必须按后端记录的 realm 分开。
+    return filter === 'ALL' || String(model?.realm || '').toUpperCase() === filter;
+}
+
+export function expiryTone(days) {
+    if (!Number.isFinite(days) || days <= 0) return 'text-white/50';
+    if (days <= 1) return 'tone-fault';
+    return days <= 7 ? 'tone-guard' : 'text-white/50';
+}
         /* =========================================================================
          * 1. 字符乱码解码工具 (Scramble Text Effect)
          * ========================================================================= */
@@ -225,7 +248,8 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                         if (p.tileRef) {
                             p.tileRef.glow = Math.max(p.tileRef.glow, 0.75);
                         }
-                        disperseTransitionParticles.splice(i, 1);
+                        disperseTransitionParticles[i] = disperseTransitionParticles[disperseTransitionParticles.length - 1];
+                        disperseTransitionParticles.pop();
                         continue;
                     }
 
@@ -277,7 +301,8 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 }
 
                 if (p.age >= p.maxAge || p.x > window.innerWidth + 40 || p.y < -40) {
-                    disperseTransitionParticles.splice(i, 1);
+                    disperseTransitionParticles[i] = disperseTransitionParticles[disperseTransitionParticles.length - 1];
+                    disperseTransitionParticles.pop();
                     continue;
                 }
 
@@ -322,6 +347,11 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 this.isCustomActive = false;    // 当前是否在播放自定义音乐
                 this.fadingAudios = new Set();  // 正在淡出并待 pause 销毁的旧音频集合
                 this.loginAudio = null;        // 浏览器自动播放策略下的登录页兜底音频
+                this.preparedAudio = null;
+                this.preparedAudioURL = '';
+                // 登录成功后的受保护配置异步加载完成前，先暂存用户选择的曲目。
+                // 这样主场景初始化不会抢先播放默认音频，避免默认音频闪入后再被替换。
+                this.pendingAuthenticatedTrack = null;
                 this.noteCount = 0;
                 this.lastNoteTime = 0;
                 this.scaleNotes = [
@@ -351,7 +381,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 if (!AudioCtx) return;
                 this.ctx = new AudioCtx();
                 this.masterGain = this.ctx.createGain();
-                this.masterGain.gain.value = 0.18; // 登录页小音量背景音
+                this.masterGain.gain.value = 0.7 / 3; // 登录页为主场景音量的三分之一
                 this.masterGain.connect(this.ctx.destination);
 
                 this.defaultAmbientGain = this.ctx.createGain();
@@ -364,7 +394,6 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
 
                 this.startRainAmbience();
                 this.startAmbientPadLoop();
-                this.startLoginAudioFallback();
             }
 
             startLoginAudioFallback() {
@@ -376,7 +405,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 audio.loop = true;
                 audio.playsInline = true;
                 audio.muted = true;
-                audio.volume = 0.18;
+                audio.volume = 0.7 / 3;
                 this.loginAudio = audio;
                 // 先以静音状态启动，等待浏览器允许播放后再解除静音；
                 // 直接先解除静音再 play 会被自动播放策略拒绝，留下 paused 音频。
@@ -391,7 +420,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 const audio = this.loginAudio;
                 const start = () => {
                     audio.muted = false;
-                    audio.volume = 0.18;
+                    audio.volume = 0.7 / 3;
                     this.loginAudioReady = true;
                 };
                 // 已经在静音播放时，解除静音不会再次触发被拦截的 play。
@@ -412,7 +441,33 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 this.loginAudio = null;
             }
 
-            init(enableSound = true) {
+            prepareMediaGesture() {
+                this.releasePreparedAudio();
+                const url = generateSyntheticWavUrl(0, 0);
+                if (!url) return;
+                const audio = new Audio(url);
+                audio.muted = true;
+                audio.volume = 0;
+                audio.loop = true;
+                this.preparedAudio = audio;
+                this.preparedAudioURL = url;
+                try {
+                    const play = audio.play();
+                    if (play && typeof play.catch === 'function') play.catch(() => {});
+                } catch (_) {}
+            }
+
+            releasePreparedAudio() {
+                if (this.preparedAudio) {
+                    try { this.preparedAudio.pause(); this.preparedAudio.src = ''; } catch (_) {}
+                }
+                if (this.preparedAudioURL) URL.revokeObjectURL(this.preparedAudioURL);
+                this.preparedAudio = null;
+                this.preparedAudioURL = '';
+            }
+
+            init(enableSound = true, options = {}) {
+                const skipDefault = options && options.skipDefault === true;
                 if (this.isInitialized && this.ctx) {
                     this.setMute(!enableSound);
                     if (this.ctx.state === 'suspended') this.ctx.resume();
@@ -421,7 +476,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                         this.masterGain.gain.cancelScheduledValues(now);
                         this.masterGain.gain.linearRampToValueAtTime(0.7, now + 1.2);
                     }
-                    if (!this.currentCustomUrl && !this.isCustomActive) {
+                    if (!skipDefault && !this.currentCustomUrl && !this.isCustomActive) {
                         this.playCustomBackgroundTrack('', true);
                     }
                     return;
@@ -442,7 +497,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
 
                 this.startRainAmbience();
                 this.startAmbientPadLoop();
-                this.playCustomBackgroundTrack('', true);
+                if (!skipDefault) this.playCustomBackgroundTrack('', true);
             }
 
             setMute(mute) {
@@ -462,14 +517,6 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
 
                 // 全局静音/取消静音联动：静音时统一静音并清理在途循环定时器，取消静音时恢复当前激活轨道的音量与100s调度
                 if (mute) {
-                    if (this._customAudioTimer) {
-                        clearTimeout(this._customAudioTimer);
-                        this._customAudioTimer = null;
-                    }
-                    if (this._defaultAmbientTimer) {
-                        clearTimeout(this._defaultAmbientTimer);
-                        this._defaultAmbientTimer = null;
-                    }
                     if (this.customAudio) {
                         if (this.customAudio._fadeRaf) {
                             cancelAnimationFrame(this.customAudio._fadeRaf);
@@ -480,13 +527,13 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     this.fadingAudios.forEach(aud => {
                         if (aud._fadeRaf) cancelAnimationFrame(aud._fadeRaf);
                         aud.volume = 0.0;
-                        try { aud.pause(); } catch (e) {}
+                        try { aud.pause(); aud.src = ''; if (aud.parentNode) aud.remove(); } catch (e) {}
                     });
                     this.fadingAudios.clear();
                 } else {
                     if (this.isCustomActive && this.customAudio) {
                         this.customAudio.volume = 0.7;
-                        if (this.customAudio.paused) {
+                        if (this.customAudio.paused && !this.customAudio.ended) {
                             this.customAudio.play().catch(() => {});
                         }
                         if (this.defaultAmbientGain && this.ctx) {
@@ -541,16 +588,18 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             }
 
             playCustomBackgroundTrack(url, isDefault = false) {
-                const generation = ++this.audioGeneration;
+                if (!isDefault && url && this.currentCustomUrl === url && this.customAudio && !this.customAudio.paused) return;
                 if (!this.isInitialized) {
                     this.init(!this.isMuted);
                 }
+                const generation = ++this.audioGeneration;
 
                 const fadeMs = 1500;
                 const fadeSec = 1.5;
 
                 // 模式 1：切换为默认环境音 (默认音乐时间设定为 100 秒，播放完后间隔 2 秒继续或随机)
                 if (isDefault || !url) {
+                    this.releasePreparedAudio?.();
                     if (this._customAudioTimer) {
                         clearTimeout(this._customAudioTimer);
                         this._customAudioTimer = null;
@@ -572,6 +621,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                                 oldAudio.pause();
                                 oldAudio.currentTime = 0;
                                 oldAudio.src = '';
+                                if (oldAudio.parentNode) oldAudio.remove();
                             } catch (e) {}
                             this.fadingAudios.delete(oldAudio);
                         });
@@ -589,7 +639,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     const startDefaultCycle = () => {
                         if (this._defaultAmbientTimer) clearTimeout(this._defaultAmbientTimer);
                         this._defaultAmbientTimer = setTimeout(() => {
-                            if (this.isCustomActive) return;
+                            if (generation !== this.audioGeneration || this.isCustomActive) return;
                             // 100 秒期满：淡出默认环境音
                             if (this.defaultAmbientGain && this.ctx) {
                                 const n = this.ctx.currentTime;
@@ -601,7 +651,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                             // 间隔 2 秒后继续播放当前音乐或播放随机音乐
                             if (this._customAudioTimer) clearTimeout(this._customAudioTimer);
                             this._customAudioTimer = setTimeout(() => {
-                                if (this.isCustomActive) return;
+                                if (generation !== this.audioGeneration || this.isCustomActive) return;
                                 const cust = (typeof WBState !== 'undefined' && WBState.customization) ? WBState.customization : null;
                                 if (cust && cust.randomMusic && Array.isArray(cust.musicList) && cust.musicList.length > 0) {
                                     // 随机音乐模式：间隔 2 秒后播放随机音乐
@@ -637,6 +687,10 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     clearTimeout(this._customAudioTimer);
                     this._customAudioTimer = null;
                 }
+                if (this._defaultAmbientTimer) {
+                    clearTimeout(this._defaultAmbientTimer);
+                    this._defaultAmbientTimer = null;
+                }
                 this.currentCustomUrl = url;
                 this.isCustomActive = true;
 
@@ -658,15 +712,33 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                             oldAudio.pause();
                             oldAudio.currentTime = 0;
                             oldAudio.src = '';
+                            if (oldAudio.parentNode) oldAudio.remove();
                         } catch (e) {}
                         this.fadingAudios.delete(oldAudio);
                     });
                 }
 
-                // 3. 实例化新音乐：由 ended / error / timeupdate 多重事件统一控制 2 秒间隔循环，音量从 0 平滑淡入至 0.7
+                // 3. 播放结束后等待 2 秒，再重复或随机选择。
                 try {
-                    const newAudio = new Audio(url);
-                    newAudio.loop = true;
+                    // 使用登录手势里已启动的静音媒体元素，避免认证及配置
+                    // 请求结束后再创建播放器而丢失浏览器的播放授权。
+                    const newAudio = this.preparedAudio || new Audio(url);
+                    // Keep the active media element observable for browser diagnostics.
+                    // It has no controls and does not affect the visual layout.
+                    if (typeof HTMLElement !== 'undefined' && newAudio instanceof HTMLElement && !newAudio.isConnected) {
+                        newAudio.hidden = true;
+                        newAudio.dataset.workbuddyBackgroundAudio = 'active';
+                        document.body.appendChild(newAudio);
+                    }
+                    if (this.preparedAudio) {
+                        const preparedURL = this.preparedAudioURL;
+                        this.preparedAudio = null;
+                        this.preparedAudioURL = '';
+                        newAudio.src = url;
+                        newAudio.muted = false;
+                        if (preparedURL) URL.revokeObjectURL(preparedURL);
+                    }
+                    newAudio.loop = false;
                     newAudio.volume = 0.0;
                     if (generation !== this.audioGeneration) {
                         try { newAudio.pause(); newAudio.src = ''; } catch (e) {}
@@ -674,12 +746,12 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     }
                     let hasTriggeredEnd = false;
                     const onTrackEnd = () => {
-                        if (hasTriggeredEnd) return;
+                        if (hasTriggeredEnd || generation !== this.audioGeneration || this.customAudio !== newAudio) return;
                         hasTriggeredEnd = true;
                         if (this._customAudioTimer) clearTimeout(this._customAudioTimer);
                         // 音乐播放完后：如果选定的是当前音乐，间隔 2 秒后继续重播；如果是随机音乐，间隔 2 秒后播放随机音乐
                         this._customAudioTimer = setTimeout(() => {
-                            if (!this.isCustomActive) return;
+                            if (generation !== this.audioGeneration || !this.isCustomActive) return;
                             const cust = (typeof WBState !== 'undefined' && WBState.customization) ? WBState.customization : null;
                             if (cust && cust.randomMusic && Array.isArray(cust.musicList) && cust.musicList.length > 0) {
                                 const pool = cust.musicList;
@@ -695,6 +767,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                                 if (this.customAudio && this.currentCustomUrl === url && !this.fadingAudios.has(this.customAudio)) {
                                     try {
                                         this.customAudio.currentTime = 0;
+                                        hasTriggeredEnd = false;
                                         const p = this.customAudio.play();
                                         if (p !== undefined) p.catch(() => {});
                                         const targetVol = this.isMuted ? 0.0 : 0.7;
@@ -709,11 +782,8 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     };
 
                     newAudio.addEventListener('ended', onTrackEnd);
-                    newAudio.addEventListener('error', onTrackEnd);
-                    newAudio.addEventListener('timeupdate', () => {
-                        if (newAudio.duration > 0 && newAudio.currentTime >= newAudio.duration - 0.25) {
-                            onTrackEnd();
-                        }
+                    newAudio.addEventListener('error', () => {
+                        if (generation === this.audioGeneration) notifyEditorialStatus('MUSIC // PLAYBACK FAILED');
                     });
                     this.customAudio = newAudio;
                     const targetVol = this.isMuted ? 0.0 : 0.7;
@@ -1281,7 +1351,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
         }
         const MAX_LOADING_WAIT_MS = 6000; // 最长等待 6 秒保底防死锁
 
-        async function safeApiFetch(url, options = {}, timeoutMs = 3000) {
+        async function safeApiFetch(url, options = {}, timeoutMs = 3000, acceptErrorJSON = false) {
             if (!IS_PROD_ENV) return null;
             const controller = new AbortController();
             const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -1296,7 +1366,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 }
                 const res = await fetch(url, { ...options, headers, credentials: 'same-origin', signal: controller.signal });
                 clearTimeout(timer);
-                if (!res.ok) return null;
+                if (!res.ok && !acceptErrorJSON) return null;
                 return await res.json();
             } catch (err) {
                 clearTimeout(timer);
@@ -1307,26 +1377,29 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
         function syncOverviewData(ov) {
             if (!ov) return;
             if (typeof ov.uptime_sec === 'number') WBState.uptimeSec = ov.uptime_sec;
-            if (Array.isArray(ov.accounts) && ov.accounts.length > 0) {
+            WBState.cpuAvailable = ov.service_cpu_available === true;
+            if (WBState.cpuAvailable) WBState.cpuPct = ov.service_cpu_percent;
+            WBState.serviceMemoryAvailable = ov.service_memory_available === true;
+            if (WBState.serviceMemoryAvailable) WBState.memMb = ov.service_memory_bytes / 1048576;
+            if (Array.isArray(ov.accounts)) {
                 const merged = ov.accounts.map((raw, idx) => {
-                    const fallbackEgress = WBState.nodes[idx % WBState.nodes.length]?.name || 'HK-BGP-01';
+                    const previous = WBState.accounts.find(account => account.uid === String(raw.uid));
                     const isCooling = Boolean(raw.cooling);
-                    const isManualOff = Boolean(raw.disabled);
+                    const isManualOff = Boolean(raw.manual_disabled);
                     return {
                         uid: String(raw.uid || ("acc-" + (idx + 1))),
                         name: String(raw.nickname || raw.uid || ("账号-" + (idx + 1))),
                         region: (raw.realm === 'global' ? 'GLOBAL' : 'CN'),
-                        balance: typeof raw.credits === 'number' ? raw.credits : 2000,
-                        quota: typeof raw.credits_total === 'number' ? raw.credits_total : 5000,
+                        balance: typeof raw.credits === 'number' ? raw.credits : 0,
+                        quota: typeof raw.credits_total === 'number' ? raw.credits_total : 0,
                         manualOn: !isManualOff,
                         forceOverride: false,
-                        coolSec: isCooling ? 24 : 0,
-                        state: isCooling ? 'COOLING' : (raw.state || 'HEALTHY'),
-                        egress: fallbackEgress,
+                        coolSec: raw.cool_remaining_sec || 0,
+                        state: raw.blocked ? 'BLOCKED' : (isCooling ? 'COOLING' : (raw.state || 'HEALTHY')),
+                        blocked: Boolean(raw.blocked),
+                        egress: '—',
                         unlimited: false,
-                        packages: [
-                            { name: '标准配额包', seq: '01', used: raw.credits || 2000, total: raw.credits_total || 5000, days: 14 }
-                        ]
+                        packages: raw.blocked ? [] : (previous?.packages || [])
                     };
                 });
                 WBState.accounts = merged;
@@ -1335,37 +1408,219 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
 
         function syncEgressData(eg) {
             if (!eg) return;
-            if (Array.isArray(eg.nodes) && eg.nodes.length > 0) {
+            if (Array.isArray(eg.nodes)) {
                 WBState.nodes = eg.nodes.map((n, i) => ({
                     id: String(n.id || ("node-" + (i + 1))),
-                    subId: String(n.subscription_id || 'sub-1'),
-                    name: String(n.name || ("Node-" + (i + 1))),
-                    ping: typeof n.latency_ms === 'number' ? n.latency_ms : (115 + i * 20),
-                    timeout: Boolean(n.timeout),
-                    trend: Array.isArray(n.history) ? n.history.slice(-7) : [130, 125, 140, 132, 128, 122, 120]
+                    subId: String(n.provider || ''),
+                    name: (() => {
+                        if (typeof n.display_name === 'string' && n.display_name) return n.display_name;
+                        const name = String(n.name || ("Node-" + (i + 1)));
+                        const prefix = n.provider ? String(n.provider) + '/' : '';
+                        return prefix && name.startsWith(prefix) && name.length > prefix.length ? name.slice(prefix.length) : name;
+                    })(),
+                    ping: typeof n.delay_ms === 'number' ? n.delay_ms : 0,
+                    status: n.status || 'untested',
+                    timeout: n.status === 'timeout',
+                    bindingCount: Number.isInteger(n.binding_count) ? n.binding_count : (Array.isArray(eg.bindings) ? eg.bindings.filter(b => b.node === n.id).length : 0),
+                    trend: Array.isArray(n.history) ? n.history.map(item => item.delay || 0).slice(-7) : []
                 }));
+            }
+            if (Array.isArray(eg.bindings)) {
+                for (const account of WBState.accounts) { account.egress = '—'; account.egressNodeId = ''; }
+                for (const binding of eg.bindings) {
+                const account = WBState.accounts.find(item => item.uid === binding.uid);
+                const node = WBState.nodes.find(item => item.id === binding.node);
+                if (account && node) { account.egress = node.name; account.egressNodeId = node.id; }
+                }
             }
         }
 
         function syncPackagesData(pkg) {
-            if (!pkg) return;
+            if (!Array.isArray(pkg?.accounts)) return;
+            for (const row of pkg.accounts) {
+                const account = WBState.accounts.find(item => item.uid === row.uid);
+                if (!account || account.blocked) continue;
+                if (row.error) { account.packages = []; account.packagesError = true; continue; }
+                account.packagesError = false;
+                account.balance = row.remain;
+                account.quota = row.size;
+                account.packages = Array.isArray(row.packages) ? row.packages.map(item => ({
+                    ...item, total: item.size, days: item.expires_at ? Math.ceil((item.expires_at - Date.now()) / 86400000) : null
+                })) : [];
+            }
+        }
+
+        function syncModelsData(result) {
+            if (!Array.isArray(result?.models)) return false;
+            WBState.models = result.models.map(item => ({id: item.id, name: item.name || item.id,
+                realm: String(item.realm || '').toUpperCase(), vendor: item.vendor || '', ctx: String(item.context_length || '—'),
+                maxOut: String(item.max_output_tokens || '—'), ttft: null, trend: []}));
+            WBState.modelCacheHot = result.cached === true;
+            return true;
         }
 
         function syncLogsData(logs) {
             if (!logs) return;
-            if (Array.isArray(logs.entries) && logs.entries.length > 0) {
+            if (Array.isArray(logs.entries)) {
                 WBState.logs = logs.entries.map((item, i) => {
                     const timeStr = item.time ? (item.time.includes('T') ? item.time.split('T')[1].slice(0, 8) : item.time) : '12:00:00';
                     return {
-                        id: "INC-" + (1000 + i),
+                        id: String(item.id || i),
                         time: timeStr,
-                        code: String(item.status_code || 429),
-                        acc: String(item.account_uid || 'Primary-01'),
-                        node: String(item.egress || 'HK-BGP-01'),
-                        desc: String(item.message || item.error || '上游请求处理异常')
+                        code: Number(item.status_code || item.status || 0),
+                        uid: String(item.account_uid || ''),
+                        egress: '',
+                        summary: item.outcome === 'token_isolated' ? '令牌续期失败，账号已隔离，请重新授权' : String(item.message || item.error || item.outcome || '请求记录'),
+                        raw: ''
                     };
                 });
             }
+        }
+
+        function syncUsageData(data) {
+            if (!data) return;
+            WBState.usageCacheHitRate = data.totals?.cache_hit_rate ?? null;
+            WBState.usageByModel = (data.by_model || []).map(item => ({
+                name: item.key, reqs: String(item.requests || 0), prompt: String(item.prompt_tokens || 0),
+                comp: String(item.completion_tokens || 0), credits: String(item.credits || 0)
+            }));
+            const points = Array.isArray(data.series) ? data.series.slice(-24) : [];
+            if (points.length >= 2) {
+                const series = { labels: points.map(point => String(point.t).slice(11, 16)),
+                    inVals: points.map(point => point.prompt_tokens || 0),
+                    outVals: points.map(point => point.completion_tokens || 0) };
+                WBState.usage24h = series;
+                WBState.usage6h = { labels: series.labels.slice(-6), inVals: series.inVals.slice(-6), outVals: series.outVals.slice(-6) };
+            }
+        }
+
+        let maintenanceFingerprint = '';
+        function syncMaintenanceData(maintenance) {
+            if (!maintenance || !Array.isArray(maintenance.steps)) return false;
+            const fingerprint = JSON.stringify(maintenance);
+            if (maintenanceFingerprint === fingerprint) return false;
+            maintenanceFingerprint = fingerprint;
+            const wasRunning = WBState.tasks.running;
+            WBState.tasks.running = !!maintenance.running;
+            if (WBState.currentChapter === 'tasks' || WBState.currentChapter === 'scheduler') {
+                if (maintenance.steps.some(step => step.failed > 0 || step.state === 'failed')) setPreviewFrameState('error', 800);
+                else if (WBState.tasks.running) setPreviewFrameState('busy', 0);
+                else if (wasRunning) setPreviewFrameState('success', 800);
+            }
+            WBState.tasks.pausedAll = !!maintenance.paused;
+            WBState.tasks.activeStep = maintenance.steps.findIndex(step => step.state === 'running');
+            WBState.tasks.steps = maintenance.steps.map((step, index) => ({
+                code: String(index + 1).padStart(2, '0'), key: step.name,
+                name: ({token: '访问令牌续期', checkin: '每日签到', activity: '每日活跃上报', travel: '猫猫旅行状态'})[step.name] || step.name,
+                backendState: step.state,
+                dur: (() => { const start = Date.parse(step.started_at); const end = Date.parse(step.finished_at); return Number.isFinite(start) && start > 946684800000 ? Math.max(0, Math.round(((Number.isFinite(end) && end > start ? end : Date.now()) - start) / 1000)) + 's' : '—'; })(), progress: ['done', 'failed'].includes(step.state) ? 100 : (step.total > 0 ? Math.round((step.accounts || []).length * 100 / step.total) : 0),
+                okCount: step.completed || 0, processedCount: (step.accounts || []).length, skippedCount: (step.accounts || []).filter(item => item.state === 'skipped').length, totalCount: step.total || 0,
+                failures: (step.accounts || []).filter(item => item.state === 'failed').map(item => {
+                    const account = WBState.accounts.find(entry => entry.uid === item.uid);
+                    const message = String(item.message || '未提供失败原因');
+                    return {uid: item.uid, name: account?.name || item.uid, region: account?.region || '—',
+                        reason: /12153|refresh token is invalid/i.test(message) ? '刷新令牌已失效，需要重新授权' : message, time: '—'};
+                })
+            }));
+            return true;
+        }
+
+        // Daily scheduler gate is separate from the pause state of one
+        // already-running maintenance batch. Starting enables future daily
+        // executions and then runs one batch immediately.
+        function syncTaskScheduleData(schedule) {
+            if (!schedule || typeof schedule.enabled !== 'boolean') return false;
+            const changed = WBState.tasks.scheduleEnabled !== schedule.enabled;
+            WBState.tasks.scheduleEnabled = schedule.enabled;
+            return changed;
+        }
+
+        function updateTaskScheduleVisual(enabled, animate = true) {
+            WBState.tasks.scheduleEnabled = !!enabled;
+            const disabled = !WBState.tasks.scheduleEnabled;
+            const gray = disabled || WBState.tasks.pausedAll;
+            const rows = document.querySelectorAll('#editorial-stage-body .editorial-row');
+            rows.forEach((rowEl, idx) => {
+                const shell = rowEl.querySelector('.task-line-shell');
+                if (!shell) return;
+                const activeTrack = shell.querySelector('.task-active-track');
+                const grayTrack = shell.querySelector('.task-gray-track');
+                if (activeTrack) {
+                    activeTrack.style.transition = animate ? 'width 0.55s cubic-bezier(0, 0, 0.2, 1)' : 'none';
+                    activeTrack.style.width = gray ? '0%' : '100%';
+                }
+                if (grayTrack) {
+                    grayTrack.style.transition = animate ? 'width 0.55s cubic-bezier(0, 0, 0.2, 1), box-shadow 0.2s ease' : 'none';
+                    grayTrack.style.width = gray ? '100%' : '0%';
+                    grayTrack.style.boxShadow = gray ? '-2.5px 0 0 0 #050605' : 'none';
+                }
+                const stateSpan = rowEl.children?.[5];
+                if (stateSpan && disabled) {
+                    stateSpan.textContent = WBState.tasks.pausedAll ? '已暂停（排程停用）' : (WBState.tasks.running ? '排程停用（本次运行中）' : '已停用');
+                    stateSpan.className = 'text-[11px] tone-paused text-left transition-colors duration-300';
+                } else if (stateSpan && !disabled) {
+                    const step = WBState.tasks.steps[idx];
+                    const failed = (step?.failures?.length || 0) > 0;
+                    stateSpan.textContent = WBState.tasks.pausedAll ? '已暂停' : (failed ? '报错' : (step?.backendState === 'running' ? '执行中' : (step?.backendState === 'pending' ? '待运行' : '正常')));
+                    stateSpan.className = `text-[11px] ${WBState.tasks.pausedAll ? 'tone-paused' : (failed ? 'tone-fault' : 'tone-normal')} text-left transition-colors duration-300`;
+                }
+            });
+            updateEditorialKeyFigures(false);
+            syncDynamicBottomButtons();
+        }
+
+        let taskActionPending = false;
+        async function setDailyTasksEnabled(enabled) {
+            if (!IS_PROD_ENV) {
+                updateTaskScheduleVisual(enabled);
+                setPreviewFrameState(enabled ? 'success' : 'busy', enabled ? 800 : 600);
+                notifyEditorialStatus(enabled ? 'ALL DAILY TASKS ENABLED' : 'ALL DAILY TASKS DISABLED');
+                return true;
+            }
+            const finishFeedback = beginActionFeedback();
+            notifyEditorialStatus(enabled ? 'ENABLING ALL DAILY TASKS…' : 'DISABLING ALL DAILY TASKS…');
+            const data = await safeApiFetch('/panel/api/tasks/schedule', {
+                method: 'POST', body: JSON.stringify({enabled: !!enabled})
+            }, 10000);
+            if (!data || typeof data.enabled !== 'boolean') {
+                finishFeedback('error');
+                notifyEditorialStatus('每日排程更新失败，任务未启动');
+                return false;
+            }
+            updateTaskScheduleVisual(data.enabled);
+            finishFeedback(data.enabled === !!enabled ? 'success' : 'error');
+            if (WBState.tasks.running) setPreviewFrameState('busy', 0);
+            notifyEditorialStatus(data.enabled ? 'ALL DAILY TASKS ENABLED' : 'ALL DAILY TASKS DISABLED');
+            return data.enabled === !!enabled;
+        }
+
+        async function startAllTasks() {
+            if (taskActionPending) return;
+            taskActionPending = true;
+            try {
+                if (!await setDailyTasksEnabled(true)) return;
+                if (WBState.tasks.running) {
+                    if (WBState.tasks.pausedAll) {
+                        const status = await safeApiFetch('/panel/api/maintenance/pause', {method:'POST', body:JSON.stringify({paused:false})}, 10000);
+                        if (!status) { setPreviewFrameState('error', 800); notifyEditorialStatus('任务恢复失败'); return; }
+                        syncMaintenanceData(status);
+                    }
+                    renderEditorialStage(false);
+                    return;
+                }
+                await runFourStepPipeline();
+            } finally { taskActionPending = false; }
+        }
+
+        async function setDailyTasksFromToggle() {
+            if (taskActionPending) return;
+            taskActionPending = true;
+            try { await setDailyTasksEnabled(WBState.tasks.scheduleEnabled === false); }
+            finally { taskActionPending = false; }
+        }
+
+        function escapeDisplayText(value) {
+            return String(value ?? '').replace(/[&<>"']/g, char => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[char]);
         }
 
         async function triggerBackendPreload() {
@@ -1390,32 +1645,86 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             }
         }
 
+        async function loadAuthenticatedMusic() {
+            if (!IS_PROD_ENV) return;
+            const epoch = authTransitionEpoch;
+            soundscape.pendingAuthenticatedTrack = { loading: true };
+            const music = await safeApiFetch('/panel/api/music', {}, 3500);
+            if (epoch !== authTransitionEpoch) return;
+            if (music && Array.isArray(music.musicList)) {
+                WBState.customization.musicList = music.musicList;
+                WBState.customization.activeMusicId = music.activeMusicId;
+                WBState.customization.randomMusic = music.randomMusic;
+            }
+            const active = music && Array.isArray(music.musicList)
+                ? (WBState.customization.musicList.find(m => m.id === WBState.customization.activeMusicId)
+                    || WBState.customization.musicList.find(m => m.id === 'm-default'))
+                : null;
+            const track = active ? {url: active.url, isDefault: !!active.isDefault || active.id === 'm-default'}
+                : {url: '', isDefault: true};
+            soundscape.pendingAuthenticatedTrack = track;
+            if (soundscape.isInitialized && mainSceneActive) {
+                soundscape.pendingAuthenticatedTrack = null;
+                soundscape.playCustomBackgroundTrack(track.url, track.isDefault);
+            }
+        }
+
         async function loadAuthenticatedPanelData() {
             if (!IS_PROD_ENV) return;
+            const epoch = authTransitionEpoch;
             try {
                 const sessionRes = await safeApiFetch('/auth/session', {}, 2000);
+                if (epoch !== authTransitionEpoch) return;
                 if (sessionRes && sessionRes.csrf_token) {
                     csrfToken = sessionRes.csrf_token;
                     serverSession = sessionRes;
                 }
-                const [ovRes, egressRes, pkgRes, logsRes, customRes] = await Promise.all([
+                const [ovRes, egressRes, pkgRes, logsRes, customRes, modelsRes] = await Promise.all([
                     safeApiFetch('/panel/api/overview', {}, 3500),
-                    safeApiFetch('/panel/api/egress', {}, 3500),
+                    safeApiFetch('/panel/api/meta/nodes', {}, 3500),
                     safeApiFetch('/panel/api/packages', {}, 3500),
                     safeApiFetch('/panel/api/request_logs?summary=1&limit=50', {}, 3500),
-                    safeApiFetch('/panel/api/customization', {}, 3500)
+                    safeApiFetch('/panel/api/customization', {}, 3500),
+                    safeApiFetch('/panel/api/models', {}, 10000)
                 ]);
+                if (epoch !== authTransitionEpoch) return;
                 if (ovRes) syncOverviewData(ovRes);
+                const preferences = await safeApiFetch('/panel/api/preferences', {}, 3500);
+                if (epoch !== authTransitionEpoch) return;
+                if (Number.isInteger(preferences?.credit_guard_low)) WBState.configThreshold = preferences.credit_guard_low;
+                if (Number.isInteger(preferences?.subscription_refresh_hours)) WBState.configCacheHours = preferences.subscription_refresh_hours;
                 if (egressRes) syncEgressData(egressRes);
                 if (pkgRes) syncPackagesData(pkgRes);
                 if (logsRes) syncLogsData(logsRes);
+                const usage = await safeApiFetch('/panel/api/usage?hours=24', {}, 10000);
+                if (epoch !== authTransitionEpoch) return;
+                syncUsageData(usage);
+                const maintenance = await safeApiFetch('/panel/api/maintenance/status', {}, 10000);
+                if (epoch !== authTransitionEpoch) return;
+                syncMaintenanceData(maintenance);
+                const schedule = await safeApiFetch('/panel/api/tasks/schedule', {}, 10000);
+                if (epoch !== authTransitionEpoch) return;
+                syncTaskScheduleData(schedule);
+                const subscriptions = await safeApiFetch('/panel/api/meta/subscriptions', {}, 10000);
+                if (epoch !== authTransitionEpoch) return;
+                if (Array.isArray(subscriptions?.subscriptions)) {
+                    WBState.subscriptions = subscriptions.subscriptions.map(item => {
+                        const refreshed = Date.parse(item.last_refresh_at || '');
+                        return {
+                            id: item.id, name: item.name, disabled: !item.enabled, hasURL: item.has_url === true,
+                            url: item.url_preview || '', ageHours: Number.isFinite(refreshed) && refreshed > 0 ? Math.max(0, (Date.now() - refreshed) / 3600000) : null
+                        };
+                    });
+                    if (!WBState.subscriptions.some(item => item.id === WBState.activeSubId)) WBState.activeSubId = WBState.subscriptions[0]?.id || '';
+                }
+                syncModelsData(modelsRes);
                 if (customRes && typeof customRes === 'object') {
-                    const saved = customRes.data && typeof customRes.data === 'object' ? customRes.data : customRes;
-                    if (Array.isArray(saved.musicList)) WBState.customization.musicList = saved.musicList.filter(m => m && typeof m.id === 'string' && typeof m.url === 'string' && (m.isDefault || m.url.startsWith('data:audio/')));
-                    if (typeof saved.activeMusicId === 'string' && WBState.customization.musicList.some(m => m.id === saved.activeMusicId)) WBState.customization.activeMusicId = saved.activeMusicId;
-                    if (typeof saved.randomMusic === 'boolean') WBState.customization.randomMusic = saved.randomMusic;
-                    const active = WBState.customization.musicList.find(m => m.id === WBState.customization.activeMusicId) || WBState.customization.musicList.find(m => m.id === 'm-default');
-                    if (active && typeof soundscape !== 'undefined' && soundscape) soundscape.playCustomBackgroundTrack(active.url, active.isDefault || active.id === 'm-default');
+                    const container = customRes.data && typeof customRes.data === 'object' ? customRes.data : customRes;
+                    const saved = container.customization && typeof container.customization === 'object' ? container.customization : container;
+                    // 音乐由 /panel/api/music 单独加载，避免旧个性化快照覆盖最新选择。
+                    if (Array.isArray(saved.sloganList)) WBState.customization.sloganList = saved.sloganList.filter(s => s && typeof s.id === 'string' && typeof s.name === 'string' && typeof s.text === 'string' && typeof s.date === 'string');
+                    if (typeof saved.activeSloganId === 'string' && WBState.customization.sloganList.some(s => s.id === saved.activeSloganId)) WBState.customization.activeSloganId = saved.activeSloganId;
+                    if (typeof saved.randomMotto === 'boolean') WBState.customization.randomMotto = saved.randomMotto;
                 }
             } catch (e) {
                 console.warn('Authenticated panel preload failed:', e);
@@ -1609,8 +1918,9 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
         let isAuthenticating = false;
         let logoutResetTimer = null;
         let authTransitionEpoch = 0;
+        let logoutPromise = null;
 
-        function triggerAccessDeniedAnimation() {
+        function triggerAccessDeniedAnimation(message = '[ ACCESS DENIED // INVALID ACCESS KEY ]') {
             const accessKeyInput = document.getElementById('input-access-key');
             const pwdContainer = document.getElementById('password-container');
             const pwdHint = document.getElementById('password-hint');
@@ -1638,7 +1948,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             
             if (pwdHint) {
                 pwdHint.classList.add('text-[#ff5c74]');
-                scrambleText(pwdHint, '[ ACCESS DENIED // INVALID ACCESS KEY ]', 320);
+                scrambleText(pwdHint, message, 320);
             }
             if (enterBtn) {
                 scrambleText(enterBtn, '[ RE-ENTER KEY ]', 260);
@@ -1661,13 +1971,31 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
         }
 
         async function submitPasswordAndEnter(withSound = true) {
-            if (logoutResetTimer) { clearTimeout(logoutResetTimer); logoutResetTimer = null; }
+            if (logoutResetTimer) return;
             if (isAuthenticating) return;
+            isAuthenticating = true;
+            // 在真实点击或回车的同步调用栈中解锁音频上下文；不能等网络
+            // 登录返回后再 resume，否则浏览器可能把它当成无手势自动播放。
+            if (withSound && soundscape) {
+                soundscape.initForLogin();
+                if (soundscape.ctx?.state === 'suspended') soundscape.ctx.resume().catch(() => {});
+                soundscape.activateLoginAudio();
+                soundscape.prepareMediaGesture();
+            }
+            if (logoutPromise && !(await logoutPromise)) {
+                logoutPromise = endServerSession();
+                if (!(await logoutPromise)) {
+                    soundscape.releasePreparedAudio();
+                    triggerAccessDeniedAnimation('[ LOGOUT FAILED // RETRY ]');
+                    return;
+                }
+            }
             const accessKeyInput = document.getElementById('input-access-key');
-            const entered = (accessKeyInput?.value || '').trim();
+            const entered = accessKeyInput?.value || '';
 
             // 严禁无密码登录：输入空的密码直接报错
             if (!entered) {
+                soundscape.releasePreparedAudio();
                 if (withSound && typeof soundscape !== 'undefined' && soundscape && typeof soundscape.triggerErrorSound === 'function') {
                     soundscape.triggerErrorSound();
                 }
@@ -1675,28 +2003,51 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 return;
             }
 
-            isAuthenticating = true;
             const transitionEpoch = ++authTransitionEpoch;
             let authenticated = false;
+            let authenticatedPanelReady = Promise.resolve();
+            let failureMessage = '[ LOGIN UNAVAILABLE // RETRY ]';
 
             try {
-                const loginRes = await safeApiFetch('/auth/login', {
+                const response = await fetch('/auth/login', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ password: entered })
-                }, 2500);
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ password: entered }),
+                    signal: AbortSignal.timeout(10000)
+                });
+                const loginRes = await response.json();
+                if (response.status === 401) failureMessage = '[ ACCESS DENIED // INVALID ACCESS KEY ]';
+                else if (response.status === 429) failureMessage = '[ TOO MANY ATTEMPTS // WAIT AND RETRY ]';
+                else if (!response.ok) failureMessage = '[ LOGIN FAILED // RETRY ]';
+                if (transitionEpoch !== authTransitionEpoch) return;
                 if (loginRes && loginRes.authenticated) {
                     authenticated = true;
                     if (loginRes.csrf_token) {
                         csrfToken = loginRes.csrf_token;
                         window.csrfToken = loginRes.csrf_token;
                     }
-                    void loadAuthenticatedPanelData();
+                    // Resolve protected music/preferences before entering the main
+                    // scene.  Starting the scene first races the default track
+                    // against the user's configured track and causes a visible
+                    // audio snap during the login transition.
+                    authenticatedPanelReady = loadAuthenticatedMusic();
+                    void loadAuthenticatedPanelData().then(() => {
+                        // 数据可能在用户进入某个章节后才到达。刷新可见内容，
+                        // 但不要销毁正在输入的凭据、订阅或个性化表单。
+                        if (transitionEpoch !== authTransitionEpoch || pageTransition.state !== 'IN_PAGE'
+                            || WBState.accountSubmode || WBState.importingSub || WBState.customization.isAdding) return;
+                        updateEditorialKeyFigures(false);
+                        renderEditorialStage(false);
+                    });
                 }
             } catch (e) {
                 authenticated = false;
             }
             if (authenticated) {
+                if (accessKeyInput) accessKeyInput.value = '';
+                await authenticatedPanelReady.catch(() => {});
+                if (transitionEpoch !== authTransitionEpoch) { isAuthenticating = false; return; }
                 soundscape.stopLoginAudio();
                 const pwdContainer = document.getElementById('password-container');
                 const pwdHint = document.getElementById('password-hint');
@@ -1717,10 +2068,11 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     isAuthenticating = false;
                 }, 420);
             } else {
+                soundscape.releasePreparedAudio();
                 if (withSound && typeof soundscape !== 'undefined' && soundscape && typeof soundscape.triggerErrorSound === 'function') {
                     soundscape.triggerErrorSound();
                 }
-                triggerAccessDeniedAnimation();
+                triggerAccessDeniedAnimation(failureMessage);
             }
         }
 
@@ -2767,7 +3119,8 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
         let hoveredTile = null;
 
         let gridHighlightWaves = [];
-        let lastHighlightWaveTime = 0;
+        let lastHighlightWaveTime = -Infinity;
+        const POINTER_WAVE_INTERVAL_MS = 180;
 
         let treeTrunks = [];
         let canopyBranches = [];
@@ -3008,7 +3361,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             }
 
             const now = performance.now();
-            if (closestTile && minDist < scaledRadius * 0.65 && now - lastHighlightWaveTime > 95) {
+            if (closestTile && minDist < scaledRadius * 0.65 && now - lastHighlightWaveTime >= POINTER_WAVE_INTERVAL_MS) {
                 lastHighlightWaveTime = now;
                 spawnGridHighlightWave(closestTile.c, closestTile.r, Math.min(1, 0.55 + force * 0.03));
             }
@@ -3264,7 +3617,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             const waterLineY = h * (4 / 7);
 
             const highlightWaveRadius = elapsedSinceEnter * 1.35;
-            const envRevealAlpha = Math.max(0, Math.min(1, (elapsedSinceEnter - 0.75) / 1.35));
+            const envRevealAlpha = Math.max(0, Math.min(1, elapsedSinceEnter / 1.35));
 
             pointer.smoothX += (pointer.normX - pointer.smoothX) * 0.06;
             pointer.smoothY += (pointer.normY - pointer.smoothY) * 0.06;
@@ -3604,7 +3957,10 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             if (newHoveredTile && newHoveredTile !== hoveredTile) {
                 hoveredTile = newHoveredTile;
                 soundscape.triggerTileNote(hoveredTile.c + hoveredTile.r * 3);
-                spawnGridHighlightWave(hoveredTile.c, hoveredTile.r, 1.0);
+                if (now - lastHighlightWaveTime >= POINTER_WAVE_INTERVAL_MS) {
+                    lastHighlightWaveTime = now;
+                    spawnGridHighlightWave(hoveredTile.c, hoveredTile.r, 1.0);
+                }
 
                 const reflRippleY = Math.min(h - 12, waterLineY + 24 * currentUiScale + (GRID_ROWS - hoveredTile.r) * step * 0.42);
                 spawnPondRipple(
@@ -4076,15 +4432,11 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 activeMusicId: 'm-default',
                 musicList: [
                     { id: 'm-default', date: '2026-10-24 12:00', name: 'Canopy Ambient // 默认雨林氛围音', isDefault: true, url: '' },
-                    { id: 'm-subwave', date: '2026-10-24 14:30', name: 'Subwave Harmonic // 次声波微鸣', isDefault: false, url: '' },
-                    { id: 'm-zenith',  date: '2026-10-24 16:00', name: 'Zenith Pulse // 天顶脉冲', isDefault: false, url: '' }
                 ],
                 randomMotto: false,
                 activeSloganId: 's-1',
                 sloganList: [
                     { id: 's-1', date: '2026-10-24 12:00', name: 'SILENT ARCHITECTURE', text: 'SILENT ARCHITECTURE // 静默架构 · 跨域协议中继与多租户网关' },
-                    { id: 's-2', date: '2026-10-24 14:30', name: 'CYBER CONTINUUM', text: 'CYBER CONTINUUM // 赛博连续体 · 稳态反向代理与出口编排' },
-                    { id: 's-3', date: '2026-10-24 16:00', name: 'VOID RUNTIME', text: 'VOID RUNTIME // 零度运行时 · 智能流量调度与弹性配额' }
                 ],
                 randomTheme: false,
                 activeTheme: 'overcast',
@@ -4279,6 +4631,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             tasks: {
                 running: false,
                 pausedAll: false,
+                scheduleEnabled: true,
                 activeStep: -1,
                 selectedStepCode: null,
                 steps: [
@@ -4344,6 +4697,33 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             ]
         };
         window.WBState = WBState;
+        if (IS_PROD_ENV) {
+            WBState.accounts = [];
+            WBState.nodes = [];
+            WBState.subscriptions = [];
+            WBState.models = [];
+            WBState.logs = [];
+            WBState.usageByModel = [];
+            WBState.loginAuthUrl = '';
+            WBState.uptimeSec = 0;
+            WBState.goroutines = 0;
+            WBState.memMb = 0;
+            WBState.cpuPct = 0;
+            WBState.cpuHistory = Array(14).fill(0);
+            WBState.memHistory = Array(14).fill(0);
+            WBState.trafficAvailable = false;
+            WBState.downMbps = 0;
+            WBState.upMbps = 0;
+            WBState.downHistory = Array(14).fill(0);
+            WBState.upHistory = Array(14).fill(0);
+            WBState.tasks.steps = [];
+            for (const series of [WBState.usage6h, WBState.usage24h, WBState.usage7d]) {
+                series.outVals = series.outVals.map(() => 0);
+                series.inVals = series.inVals.map(() => 0);
+            }
+            WBState.errorModelSeries.rawCounts.fill(0);
+            WBState.errorModelSeries.lambdaVals.fill(0);
+        }
 
 
         function isRawLowBalance(acc) {
@@ -4427,12 +4807,24 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             </span>`;
         }
 
+        function overviewChartPoints(primary, secondary) {
+            const values = [...primary, ...secondary].map(v => Number.isFinite(v) ? v : 0);
+            const mean = values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+            const spread = Math.max(0.001, ...values.map(v => Math.abs(v - mean)));
+            const make = arr => arr.map((v, i) => {
+                const x = i * 520 / Math.max(1, arr.length - 1);
+                const y = Math.max(10, Math.min(60, 42 - ((Number.isFinite(v) ? v : 0) - mean) / spread * 20));
+                return x.toFixed(1) + ',' + y.toFixed(1);
+            }).join(' ');
+            return [make(primary), make(secondary)];
+        }
+
         // Comment 4 & 10: 任务页进度条：停用时灰线从右向左以快到慢替换白/红线，启用时白/红线从左向右以快到慢替换灰线，中间始终留有一小条缝隙不相贴；快速切换时平滑减速反向
         function renderTaskStatusLine(step, widthPx = 108, animateBars = false) {
             const total = Math.max(1, step.totalCount || 1);
             const failed = step.failures ? step.failures.length : Math.max(0, total - step.okCount);
             const prog = Math.max(0, Math.min(100, step.progress ?? 100));
-            const isPaused = !!WBState.tasks?.pausedAll;
+            const isPaused = !!WBState.tasks?.pausedAll || WBState.tasks?.scheduleEnabled === false;
 
             const okCount = Math.max(0, total - failed);
             const okTargetPct = Math.round((okCount / total) * 100);
@@ -4440,12 +4832,12 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             const redPct = (failed > 0 && prog > okTargetPct) ? Math.min(100 - okTargetPct, prog - okTargetPct) : 0;
             const popCls = redPct > 0 ? "task-fault-pop" : "";
 
-            return `<span class="task-line-shell inline-block relative bg-white/12 align-middle shrink-0 overflow-hidden" style="width:${widthPx}px;height:1.8px;">
+            return `<span class="task-line-shell ${animateBars ? 'task-line-enter' : ''} inline-block relative bg-white/12 align-middle shrink-0 overflow-hidden" style="width:${widthPx}px;height:1.8px;">
                 <span class="task-active-track absolute left-0 top-0 bottom-0 overflow-hidden" style="width:${isPaused ? '0%' : '100%'};transition:width 0.45s cubic-bezier(0, 0, 0.2, 1);">
                     <span class="absolute left-0 top-0 bottom-0 bg-white/90" style="width:${currentWhitePct}%;"></span>
                     ${redPct > 0 ? `<span class="absolute top-0 bottom-0 bg-[#ff5c74] ${popCls}" style="left:${okTargetPct}%;width:${redPct}%;box-shadow:0 0 6px rgba(255,92,116,0.65);"></span>` : ""}
                 </span>
-                <span class="task-gray-track absolute top-0 bottom-0 bg-[#9ca3af]" style="right:0;width:${isPaused ? '100%' : '0%'};box-shadow:${isPaused ? '-2.5px 0 0 0 #050605' : 'none'};transition:width 0.45s cubic-bezier(0, 0, 0.2, 1), box-shadow 0.2s ease;"></span>
+                <span class="task-gray-track absolute top-0 bottom-0 " style="background-color:#9ca3af;right:0;width:${isPaused ? '100%' : '0%'};box-shadow:${isPaused ? '-2.5px 0 0 0 #050605' : 'none'};transition:width 0.45s cubic-bezier(0, 0, 0.2, 1), box-shadow 0.2s ease;"></span>
             </span>`;
         }
 
@@ -4461,8 +4853,8 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
 
             let stateLabel = '正常';
             let stateCls = 'tone-normal';
-            if (WBState.tasks.pausedAll) {
-                stateLabel = '停用';
+            if (WBState.tasks.pausedAll || WBState.tasks.scheduleEnabled === false) {
+                stateLabel = WBState.tasks.pausedAll ? '已暂停' : (WBState.tasks.running ? '排程停用（本次运行中）' : '停用');
                 stateCls = 'tone-paused';
             } else if (isCur && !hasFault) {
                 stateLabel = '执行中';
@@ -4475,10 +4867,10 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             const lineContainer = rowEl.children[1];
             if (lineContainer) lineContainer.innerHTML = renderTaskStatusLine(st, 108, false);
 
-            const durSpan = rowEl.children[3];
+            const durSpan = rowEl.children[4];
             if (durSpan) durSpan.textContent = st.dur;
 
-            const stateSpan = rowEl.children[4];
+            const stateSpan = rowEl.children[5];
             if (stateSpan) {
                 stateSpan.className = `text-[11px] ${stateCls} text-left transition-colors duration-300`;
                 stateSpan.textContent = stateLabel;
@@ -4554,6 +4946,58 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 if (canvasEl) canvasEl.classList.remove("canvas-fault-jolt");
             }
         }
+        // Visual feedback is explicitly started by an operation and finished by its result.
+        // Keep the initiating element even when focus moves; concurrent operations cannot
+        // let an older result overwrite the latest ring state.
+        let feedbackTarget = null;
+        let feedbackSequence = 0;
+        document.addEventListener('click', ev => {
+            feedbackTarget = ev.target?.closest?.('button, [data-action]') || null;
+        }, true);
+        function beginActionFeedback(target = feedbackTarget, line = null) {
+            const token = ++feedbackSequence;
+            const row = target?.closest?.('.editorial-row');
+            const elements = [...new Set([target, row, line].filter(Boolean))];
+            const action = target?.dataset?.action;
+            const nodeId = target?.dataset?.nodeId;
+            const subId = target?.dataset?.subId;
+            let currentState = 'busy';
+            const rebind = () => {
+                if (!action || (nodeId === undefined && subId === undefined)) return;
+                const replacement = [...document.querySelectorAll('[data-action]')].find(el =>
+                    el.dataset.action === action && el.dataset.nodeId === nodeId && el.dataset.subId === subId);
+                if (!replacement || elements.includes(replacement)) return;
+                elements.push(replacement);
+                replacement._actionFeedbackToken = token;
+                const replacementRow = replacement.closest?.('.editorial-row');
+                if (replacementRow && !elements.includes(replacementRow)) {
+                    replacementRow._actionFeedbackToken = token;
+                    elements.push(replacementRow);
+                }
+                paint(currentState);
+            };
+            const paint = state => {
+                currentState = state;
+                elements.forEach(el => {
+                    if (state !== 'busy' && el._actionFeedbackToken !== token) return;
+                    if (state === 'busy') el._actionFeedbackToken = token;
+                    el.classList.remove('action-feedback-busy', 'action-feedback-success', 'action-feedback-error');
+                    if (state !== 'idle') el.classList.add('action-feedback-' + state);
+                });
+            };
+            paint('busy');
+            setPreviewFrameState('busy', 0);
+            let finished = false;
+            const finish = (state, ringState = state) => {
+                if (finished) return;
+                finished = true;
+                paint(state);
+                if (token === feedbackSequence) setPreviewFrameState(ringState, 800);
+                setTimeout(() => paint('idle'), 1200);
+            };
+            finish.rebind = rebind;
+            return finish;
+        }
         window.setPreviewFrameState = setPreviewFrameState;
         window.triggerRingState = setPreviewFrameState;
 
@@ -4572,22 +5016,22 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             let t2 = CHAPTER_META[ch]?.btn2 || '[ ACTION 02 ]';
 
             // 重置基础类名，确保更新按钮的绿色仅在关于页面 (sphere) 且更新就绪时生效，绝不污染其他所有页面
-            if (ch === 'sphere' && WBState.sphereUpdateReady) {
+            if (ch === 'sphere' && (WBState.sphereUpdateApplied || (WBState.sphereUpdateReady && !WBState.sphereUpdating))) {
                 btn1.className = 'editorial-action-btn border border-emerald-400 hover:border-emerald-300 text-emerald-300 bg-emerald-400/10 transition-colors';
-            } else if (ch === 'sphere' && WBState.sphereCheckingUpdate) {
+            } else if (ch === 'sphere' && (WBState.sphereCheckingUpdate || WBState.sphereUpdating)) {
                 btn1.className = 'editorial-action-btn border border-amber-400 hover:border-amber-300 text-amber-300 bg-amber-400/10 animate-pulse transition-colors';
             } else {
-                btn1.className = 'editorial-action-btn border border-white/40 hover:border-white bg-white/[0.04] text-white/80 hover:text-white transition-colors';
+                btn1.className = 'editorial-action-btn border border-white/25 hover:border-white bg-white/[0.04] text-white/80 hover:text-white transition-colors';
             }
             btn2.className = 'editorial-action-btn border border-white/25 hover:border-white bg-white/[0.02] text-white/70 hover:text-white transition-colors';
 
             // 重置基础类名，确保更新按钮的绿色仅在关于页面 (sphere) 且更新就绪时生效，绝不污染其他所有页面
-            if (ch === 'sphere' && WBState.sphereUpdateReady) {
+            if (ch === 'sphere' && (WBState.sphereUpdateApplied || (WBState.sphereUpdateReady && !WBState.sphereUpdating))) {
                 btn1.className = 'editorial-action-btn border border-emerald-400 hover:border-emerald-300 text-emerald-300 bg-emerald-400/10 transition-colors';
-            } else if (ch === 'sphere' && WBState.sphereCheckingUpdate) {
+            } else if (ch === 'sphere' && (WBState.sphereCheckingUpdate || WBState.sphereUpdating)) {
                 btn1.className = 'editorial-action-btn border border-amber-400 hover:border-amber-300 text-amber-300 bg-amber-400/10 animate-pulse transition-colors';
             } else {
-                btn1.className = 'editorial-action-btn border border-white/40 hover:border-white bg-white/[0.04] text-white/80 hover:text-white transition-colors';
+                btn1.className = 'editorial-action-btn border border-white/25 hover:border-white bg-white/[0.04] text-white/80 hover:text-white transition-colors';
             }
             btn2.className = 'editorial-action-btn border border-white/25 hover:border-white bg-white/[0.02] text-white/70 hover:text-white transition-colors';
 
@@ -4607,7 +5051,9 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     t2 = '[ RANDOM ASSIGN ]';
                 }
             } else if (ch === 'sphere') {
-                if (WBState.sphereUpdateReady) {
+                if (WBState.sphereUpdating) {
+                    t1 = '[ UPDATING... ]';
+                } else if (WBState.sphereUpdateReady) {
                     t1 = '[ RESTART & UPDATE ]';
                 } else if (WBState.sphereCheckingUpdate) {
                     t1 = '[ CHECKING... ]';
@@ -4637,7 +5083,8 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     t2 = '[ + IMPORT SUB ]';
                 }
             } else if (ch === 'tasks' || ch === 'scheduler') {
-                t2 = WBState.tasks.pausedAll ? '[ RESUME TASKS ]' : '[ PAUSE TASKS ]';
+                t1 = '[ START ALL TASKS ]';
+                t2 = WBState.tasks.scheduleEnabled === false ? '[ ENABLE ALL TASKS ]' : '[ DISABLE ALL TASKS ]';
             } else if (ch === 'usage') {
                 t1 = WBState.usageView === 'CURVE' ? '[ MODEL RANK ]' : '[ TIME CURVE ]';
                 t2 = WBState.usageRange === '24H' ? '[ TIME: 6H ]' : '[ TIME: 24H ]';
@@ -4670,7 +5117,8 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
         }
 
         function getAccountActivePackages(acc) {
-            return (acc.packages || []).filter(p => (p.remain !== undefined ? p.remain : ((p.total || 0) - (p.used || 0))) > 0).sort((a, b) => a.days - b.days);
+            if (acc.blocked || acc.state === 'BLOCKED') return [];
+            return (acc.packages || []).filter(p => (p.remain !== undefined ? p.remain : ((p.total || 0) - (p.used || 0))) > 0 && (p.days === null || p.days > 0)).sort((a, b) => (a.days ?? Infinity) - (b.days ?? Infinity));
         }
 
         function updateEditorialKeyFigures(animateKpi = false) {
@@ -4728,22 +5176,23 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             } else if (ch === 'egress') {
                 const activeSub = WBState.subscriptions.find(s => s.id === WBState.activeSubId) || WBState.subscriptions[0];
                 const expiredCnt = WBState.subscriptions.filter(s => s.ageHours > WBState.configCacheHours).length;
-                l1.textContent = '下行速率'; v1.textContent = `${WBState.downMbps.toFixed(1)} MB/s`;
-                l2.textContent = '上行速率'; v2.textContent = `${WBState.upMbps.toFixed(2)} MB/s`;
+                l1.textContent = '下行速率'; v1.textContent = WBState.trafficAvailable ? `${WBState.downMbps.toFixed(1)} MB/s` : '—';
+                l2.textContent = '上行速率'; v2.textContent = WBState.trafficAvailable ? `${WBState.upMbps.toFixed(2)} MB/s` : '—';
                 l3.textContent = '当前启用订阅'; v3.textContent = activeSub ? activeSub.name : (expiredCnt ? `${expiredCnt} 源待刷新` : '全部有效');
             } else if (ch === 'models') {
-                const list = WBState.modelRealmFilter === 'ALL' ? WBState.models : WBState.models.filter(m => m.realm === WBState.modelRealmFilter);
-                const avgTtft = Math.round(list.reduce((s, m) => s + m.ttft, 0) / Math.max(1, list.length));
+                const list = WBState.models.filter(m => modelMatchesFilter(m, WBState.modelRealmFilter));
+                        const measured = list.filter(m => Number.isFinite(m.ttft));
+                        const avgTtft = measured.length ? Math.round(measured.reduce((s, m) => s + m.ttft, 0) / measured.length) : null;
                 l1.textContent = WBState.modelRealmFilter === 'ALL' ? '可用模型' : `${WBState.modelRealmFilter} 模型`;
                 v1.textContent = `${list.length}`;
                 l2.textContent = '目录缓存'; v2.textContent = WBState.modelCacheHot ? '热命中' : '已同步';
-                l3.textContent = '平均首字延迟'; v3.textContent = `${avgTtft} ms`;
+                l3.textContent = '平均首字延迟'; v3.textContent = avgTtft === null ? '—' : `${avgTtft} ms`;
             } else if (ch === 'tasks' || ch === 'scheduler') {
                 const faultSteps = WBState.tasks.steps.filter(s => (s.failures?.length || 0) > 0).length;
                 // Comment 11: 修改为 4项定时任务
-                l1.textContent = '巡检工序'; v1.textContent = '4 项定时任务';
-                l2.textContent = '运行状态'; v2.textContent = WBState.tasks.pausedAll ? '已全部停用' : (WBState.tasks.running ? '执行锁定' : '空闲就绪');
-                l3.textContent = '异常工序'; v3.textContent = WBState.tasks.pausedAll ? '已挂起' : (faultSteps > 0 ? `${faultSteps} 项含报错` : '全部正常');
+                l1.textContent = '维护工序'; v1.textContent = '4 项维护任务';
+                l2.textContent = '运行状态'; v2.textContent = WBState.tasks.scheduleEnabled === false ? (WBState.tasks.running ? '排程停用，本次运行中' : '已全部停用') : (WBState.tasks.running ? '执行锁定' : '空闲就绪');
+                l3.textContent = '异常工序'; v3.textContent = WBState.tasks.scheduleEnabled === false ? '每日调度已暂停' : (faultSteps > 0 ? `${faultSteps} 项含报错` : '全部正常');
             } else if (ch === 'usage') {
                 const ds = WBState.usageRange === '24H' ? WBState.usage24h : WBState.usage6h;
                 const sumOut = ds.outVals.reduce((a, b) => a + b, 0);
@@ -4751,23 +5200,23 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 l1.textContent = WBState.usageRange === '24H' ? '24H 输出总量' : '6H 输出总量';
                 v1.textContent = `${((sumOut) / 1000).toFixed(2)}M`;
                 l2.textContent = '输入总量'; v2.textContent = `${((sumIn) / 1000).toFixed(2)}M`;
-                l3.textContent = '缓存命中率'; v3.textContent = '68.4%';
+                l3.textContent = '缓存命中率'; v3.textContent = WBState.usageCacheHitRate == null ? '—' : WBState.usageCacheHitRate.toFixed(1) + '%';
             } else if (ch === 'packages') {
                 let totalPackCount = 0;
                 let threeDaysCredits = 0;
-                WBState.accounts.forEach(acc => {
+                WBState.accounts.filter(a => !a.blocked && a.state !== 'BLOCKED').forEach(acc => {
                     const activePacks = getAccountActivePackages(acc);
                     totalPackCount += activePacks.length;
                     activePacks.forEach(p => {
-                        if (p.days <= 3) threeDaysCredits += (p.remain !== undefined ? p.remain : p.total || 0);
+                        if (p.days != null && p.days <= 1) threeDaysCredits += (p.remain !== undefined ? p.remain : p.total || 0);
                     });
                 });
-                l1.textContent = '持包账号数'; v1.textContent = `${WBState.accounts.length} 个账号`;
+                l1.textContent = '持包账号数'; v1.textContent = `${WBState.accounts.filter(a => !a.blocked && a.state !== 'BLOCKED' && getAccountActivePackages(a).length > 0).length} 个账号`;
                 l2.textContent = '生效独立包'; v2.textContent = `${totalPackCount}`;
-                l3.textContent = '3天内到期'; v3.textContent = threeDaysCredits.toLocaleString();
+                l3.textContent = '1天内到期'; v3.textContent = threeDaysCredits.toLocaleString();
             } else if (ch === 'logs') {
                 l1.textContent = '归档异常数'; v1.textContent = `${WBState.logs.length} 条`;
-                l2.textContent = '自动故障转移'; v2.textContent = '98.6%';
+                l2.textContent = '自动故障转移'; v2.textContent = '—';
                 l3.textContent = '隔离待授权'; v3.textContent = `${WBState.accounts.filter(a => a.state === 'BLOCKED').length}`;
             } else if (ch === 'encryption') {
                 l1.textContent = '鉴权门禁'; v1.textContent = 'PBKDF2 保护';
@@ -4776,11 +5225,11 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             } else {
                 // Comments 13, 14, 15: 上方依次为 可用账号、账号额度、实时下行(或负载)
                 let totalBal = 0;
-                WBState.accounts.forEach(a => { if (typeof a.balance === 'number') totalBal += a.balance; });
+                WBState.accounts.forEach(a => { if (!a.blocked && a.state !== 'BLOCKED' && typeof a.balance === 'number') totalBal += a.balance; });
                 l1.textContent = '可用账号'; v1.textContent = `${routableAcc} / ${totalAcc}`;
                 l2.textContent = '账号额度'; v2.textContent = totalBal.toLocaleString();
                 l3.textContent = WBState.overviewMode === 'RESOURCE' ? 'CPU 实时负载' : '实时下行';
-                v3.textContent = WBState.overviewMode === 'RESOURCE' ? `${WBState.cpuPct.toFixed(1)}%` : `${WBState.downMbps.toFixed(1)} MB/s`;
+                v3.textContent = WBState.overviewMode === 'RESOURCE' ? (WBState.cpuAvailable ? WBState.cpuPct.toFixed(1) + '%' : '—') : (WBState.trafficAvailable ? `${WBState.downMbps.toFixed(1)} MB/s` : '—');
             }
         }
 
@@ -4927,8 +5376,8 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                             return `
                                 <div class="editorial-row py-2.5 flex items-center text-xs text-left w-full">
                                     <div class="grid items-center text-left flex-1 min-w-0" style="grid-template-columns: 116px minmax(0, 1fr); column-gap: 16px;">
-                                        <span class="font-mono text-[11px] text-white/40 tabular-nums-left truncate">${m.date}</span>
-                                        <span class="font-mono text-xs text-white/85 truncate pr-2" title="${m.name}">${m.name}</span>
+                                        <span class="font-mono text-[11px] text-white/40 tabular-nums-left truncate">${escapeDisplayText(m.date)}</span>
+                                        <span class="font-mono text-xs text-white/85 truncate pr-2" title="${escapeDisplayText(m.name)}">${escapeDisplayText(m.name)}</span>
                                     </div>
                                     <div class="flex items-center shrink-0 ml-4">
                                         ${actBtn}
@@ -4943,9 +5392,9 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                             const isAct = (!cust.randomMotto && s.id === cust.activeSloganId);
                             const actBtn = isAct
                                 ? `<span class="editorial-text-btn w-[32px] text-left shrink-0 tone-forced font-medium cursor-default">启用</span>`
-                                : `<button data-action="select-custom-slogan" data-slogan-id="${s.id}" class="editorial-text-btn w-[32px] text-left shrink-0 text-white/60 hover:text-white transition-colors">选择</button>`;
+                                : `<button data-action="select-custom-slogan" data-slogan-id="${escapeDisplayText(s.id)}" class="editorial-text-btn w-[32px] text-left shrink-0 text-white/60 hover:text-white transition-colors">选择</button>`;
                             const delBtn = (s.id !== 's-1')
-                                ? `<button data-action="delete-custom-slogan" data-slogan-id="${s.id}" class="editorial-text-btn w-[32px] text-left shrink-0 ml-2.5 text-white/35 hover:text-red-400 transition-colors" title="删除该文案">删除</button>`
+                                ? `<button data-action="delete-custom-slogan" data-slogan-id="${escapeDisplayText(s.id)}" class="editorial-text-btn w-[32px] text-left shrink-0 ml-2.5 text-white/35 hover:text-red-400 transition-colors" title="删除该文案">删除</button>`
                                 : `<span class="w-[32px] shrink-0 ml-2.5 inline-block"></span>`;
                             const previewText = `${s.name} // ${s.text.replace(/\n/g, ' ')}`;
                             const isBuiltin = (s.id === 's-1' || s.id === 's-2' || s.id === 's-3');
@@ -4955,8 +5404,8 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                             return `
                                 <div class="editorial-row py-2.5 flex items-center text-xs text-left w-full">
                                     <div class="grid items-center text-left flex-1 min-w-0" style="grid-template-columns: 116px minmax(0, 1fr); column-gap: 16px;">
-                                        <span class="font-mono text-[11px] text-white/40 tabular-nums-left truncate">${s.date}</span>
-                                        <span class="font-mono text-xs text-white/85 fade-out-tail flex-1 min-w-0 pr-2" title="${previewText}">${previewText}</span>
+                                        <span class="font-mono text-[11px] text-white/40 tabular-nums-left truncate">${escapeDisplayText(s.date)}</span>
+                                        <span class="font-mono text-xs text-white/85 fade-out-tail flex-1 min-w-0 pr-2" title="${escapeDisplayText(previewText)}">${escapeDisplayText(previewText)}</span>
                                     </div>
                                     <div class="flex items-center shrink-0 ml-4">
                                         ${actBtn}
@@ -5022,24 +5471,12 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 const isRes = WBState.overviewMode === 'RESOURCE';
                 const primaryArr = isRes ? WBState.cpuHistory : WBState.downHistory;
                 const secondaryArr = isRes ? WBState.memHistory : WBState.upHistory;
-                const pMax = isRes ? 45 : 35;
-                const sMax = isRes ? 96 : 3.0;
+                const [pPts, sPts] = overviewChartPoints(primaryArr, secondaryArr);
 
-                const pPts = primaryArr.map((v, i) => {
-                    const x = (i / (primaryArr.length - 1)) * 520;
-                    const y = 64 - (Math.min(pMax, v) / pMax) * 50;
-                    return x.toFixed(1) + ',' + y.toFixed(1);
-                }).join(' ');
-                const sPts = secondaryArr.map((v, i) => {
-                    const x = (i / (secondaryArr.length - 1)) * 520;
-                    const y = 64 - (Math.min(sMax, v) / sMax) * 36;
-                    return x.toFixed(1) + ',' + y.toFixed(1);
-                }).join(' ');
-
-                const headerLeft = isRes ? '系统资源变动曲线（实线 CPU 占用 / 虚线堆内存）' : '吞吐呼吸曲线（实线下行速率 / 虚线上行速率）';
+                const headerLeft = isRes ? '系统资源变动曲线（实线服务 CPU / 虚线服务内存）' : '吞吐呼吸曲线（实线下行速率 / 虚线上行速率）';
                 const headerRight = isRes
-                    ? ('CPU ' + WBState.cpuPct.toFixed(1) + '% / MEM ' + WBState.memMb.toFixed(1) + ' MB')
-                    : ('UP ' + WBState.upMbps.toFixed(2) + ' MB/s');
+                    ? ('CPU ' + (WBState.cpuAvailable ? WBState.cpuPct.toFixed(1) + '%' : '—') + ' / 服务内存 ' + (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'))
+                    : (WBState.trafficAvailable ? 'UP ' + WBState.upMbps.toFixed(2) + ' MB/s' : 'UP —');
 
                 const clipId = 'ov-clip-' + (++WBState.chartClipSeq);
                 const clipDef = animate ? ('<defs><clipPath id="' + clipId + '"><rect x="0" y="-6" width="540" height="84" class="svg-clip-spread-rect" /></clipPath></defs>') : '';
@@ -5063,8 +5500,8 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                         </div>
                         <div class="grid grid-cols-4 gap-6 pt-1 text-[11px] text-left h-[44px] shrink-0">
                             <div data-hover-vertex="0" data-hover-label="MEM // ${WBState.memMb.toFixed(1)}MB">
-                                <div class="text-[9.5px] tracking-[0.14em] text-white/36 mb-1 whitespace-nowrap">内存占用</div>
-                                <div id="ov-val-mem" class="text-white/88 tabular-nums-left whitespace-nowrap">${WBState.memMb.toFixed(1)} MB</div>
+                                <div class="text-[9.5px] tracking-[0.14em] text-white/36 mb-1 whitespace-nowrap">服务总内存</div>
+                                <div id="ov-val-mem" class="text-white/88 tabular-nums-left whitespace-nowrap">${WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'}</div>
                             </div>
                             <div data-hover-vertex="4" data-hover-label="UPTIME // ${formatUptime(WBState.uptimeSec)}">
                                 <div class="text-[9.5px] tracking-[0.14em] text-white/36 mb-1 whitespace-nowrap">启动时间</div>
@@ -5074,9 +5511,9 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                                 <div class="text-[9.5px] tracking-[0.14em] text-white/36 mb-1 whitespace-nowrap">监听端点</div>
                                 <div class="text-white/88 tabular-nums-left whitespace-nowrap">127.0.0.1:7863</div>
                             </div>
-                            <div data-hover-vertex="12" data-hover-label='CACHE // 98.6%'>
+                            <div data-hover-vertex="12" data-hover-label="CACHE">
                                 <div class="text-[9.5px] tracking-[0.14em] text-white/36 mb-1 whitespace-nowrap">缓存命中</div>
-                                <div class="text-white/88 tabular-nums-left whitespace-nowrap">98.6%</div>
+                                <div class="text-white/88 tabular-nums-left whitespace-nowrap">${WBState.usageCacheHitRate == null ? '—' : WBState.usageCacheHitRate.toFixed(1) + '%'}</div>
                             </div>
                         </div>
                     </div>
@@ -5103,19 +5540,19 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                             <div class="space-y-2 pt-0.5 text-left">
                                 <div>
                                     <div class="text-[11.5px] tracking-[0.12em] text-white/45 mb-1">设备代码授权端点（完成浏览器授权后自动载入池中）</div>
-                                    <div class="text-[12.5px] font-mono text-white/90 border-b border-white/15 pb-1 max-w-xl fade-truncate selectable-text">${WBState.loginAuthUrl}</div>
+                                    <div class="text-[12.5px] font-mono text-white/90 border-b border-white/15 pb-1 max-w-xl fade-truncate selectable-text">${escapeDisplayText(WBState.loginAuthUrl || '请点击下方按钮获取授权链接')}</div>
                                 </div>
                                 <div class="inline-flex items-center space-x-5 py-0.5 max-w-sm">
                                     <button class="editorial-text-btn text-white text-[11.5px] px-0.5" data-action="open-oauth">[ 跳转浏览器授权 &rarr; ]</button>
                                     <button id="btn-oauth-status" class="editorial-text-btn text-[11.5px] px-0.5" data-action="copy-oauth">[ 复制授权链接 ]</button>
                                 </div>
                                 <!-- 兜底导入：适度收拢上方单元格，留出充足间距彻底避免与下方紧贴 -->
-                                <div class="pt-2 border-t border-white/10 mt-1">
+                                <div class="pt-1 border-t border-white/10 mt-1">
                                     <div class="flex justify-between items-center text-[11.5px] tracking-[0.12em] text-white/45 mb-1">
-                                        <span>兜底导入：粘贴浏览器完成授权后的回调 URL 或重定向地址</span>
+                                        <span>导入账号凭据 JSON（单个对象或数组）</span>
                                     </div>
-                                    <div class="w-full pb-2 mb-6">
-                                        <input id="inp-oauth-callback-url" class="editorial-input w-full font-mono text-[12px] text-white/90 py-1.5" placeholder="https://auth.workbuddy.cn/oauth/callback?code=... 或重定向完整 URL" data-action-enter="import-callback-url" />
+                                    <div class="w-full pb-1 mb-3">
+                                        <textarea id="inp-account-credentials" class="editorial-input credential-paste w-full font-mono text-[12px]" rows="2" wrap="off" autocomplete="off" placeholder="粘贴凭据 JSON"></textarea>
                                     </div>
                                 </div>
                             </div>
@@ -5130,14 +5567,15 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     if (acc) {
                         const rawLow = isRawLowBalance(acc);
                         let curModeLabel = '正常选号';
-                        if (!acc.manualOn) curModeLabel = '已停用';
+                        if (acc.state === 'BLOCKED' || acc.blocked) curModeLabel = '启用';
+                        else if (!acc.manualOn) curModeLabel = '已停用';
                         else if (rawLow && !acc.forceOverride) curModeLabel = '低额保护';
                         else if (rawLow && acc.forceOverride) curModeLabel = '强行启用';
 
                         // 构建节点状态并严格按优先级排序：0=当前已绑/空闲可选(按ping升序) -> 1=超时节点 -> 2=已被其他账号绑定节点
                         const decoratedNodes = WBState.nodes.map(n => {
-                            const owner = WBState.accounts.find(a => a.uid !== acc.uid && a.egress === n.name);
-                            const isCurrent = acc.egress === n.name;
+                            const owner = WBState.accounts.find(a => a.uid !== acc.uid && (IS_PROD_ENV ? a.egressNodeId === n.id : a.egress === n.name));
+                            const isCurrent = IS_PROD_ENV ? acc.egressNodeId === n.id : acc.egress === n.name;
                             const isOccupied = Boolean(owner);
                             const isTimeout = Boolean(n.timeout);
                             let rankGroup = 0;
@@ -5156,34 +5594,35 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                         const nodeSlice = decoratedNodes.slice(WBState.accountNodePage * nodesPerPage, (WBState.accountNodePage + 1) * nodesPerPage);
 
                         const nodeCellsHtml = nodeSlice.map(n => {
-                            const disabled = n.isTimeout || n.isOccupied;
+                            const disabled = n.isTimeout;
                             let nameCls = 'text-white/82';
                             let rightHtml = '';
                             let borderCls = 'border-white/10 hover:border-white/40 cursor-pointer';
+                            const latencyLabel = n.status === 'error' ? '失败' : n.status === 'untested' ? '未测速' : n.status === 'testing' ? '测速中' : `${n.ping}ms`;
+                            const latencyClass = n.status === 'error' ? 'tone-fault' : n.status === 'untested' || n.status === 'testing' ? 'text-white/45' : n.ping < 800 ? 'tone-forced' : 'tone-guard';
 
-                            if (n.isCurrent) {
-                                nameCls = 'text-white font-medium';
-                                borderCls = 'border-white/80 bg-white/[0.05] cursor-pointer';
-                                const latCls = n.isTimeout ? 'tone-fault' : (n.ping < 800 ? 'tone-forced' : 'tone-guard');
-                                const latTxt = n.isTimeout ? '超时' : `${n.ping}ms`;
-                                rightHtml = `<span class="text-[10.5px] ${latCls} tabular-nums-left">${latTxt}</span>`;
-                            } else if (n.isTimeout) {
+                            if (n.isTimeout) {
                                 nameCls = 'text-white/28';
                                 borderCls = 'border-white/[0.05] cursor-not-allowed';
-                                rightHtml = `<span class="text-[10.5px] tone-fault opacity-80">超时</span>`;
+                                rightHtml = `<span class="text-[10.5px] tone-fault opacity-80 whitespace-nowrap shrink-0">超时</span>`;
+                            } else if (n.isCurrent) {
+                                nameCls = 'text-white font-medium';
+                                borderCls = 'border-white/80 bg-white/[0.05] cursor-pointer';
+                                rightHtml = `<span class="text-[10.5px] ${latencyClass} tabular-nums-left whitespace-nowrap">${latencyLabel}</span>`;
                             } else if (n.isOccupied) {
-                                nameCls = 'text-white/24';
-                                borderCls = 'border-white/[0.05] cursor-not-allowed';
-                                rightHtml = `<span class="text-[10px] text-white/24 tabular-nums-left">已占</span>`;
+                                nameCls = 'text-white/70';
+                                borderCls = 'border-white/10 hover:border-white/40 cursor-pointer';
+                                rightHtml = n.status === 'error'
+                                    ? `<span class="text-[10px] tone-fault tabular-nums-left whitespace-nowrap shrink-0">失败</span>`
+                                    : `<span class="text-[10px] tone-guard tabular-nums-left whitespace-nowrap shrink-0">已绑定</span>`;
                             } else {
-                                const latCls = n.ping < 800 ? 'tone-forced' : 'tone-guard';
-                                rightHtml = `<span class="text-[10.5px] ${latCls} tabular-nums-left">${n.ping}ms</span>`;
+                                rightHtml = `<span class="text-[10.5px] ${latencyClass} tabular-nums-left whitespace-nowrap">${latencyLabel}</span>`;
                             }
 
-                            const clickAttr = disabled ? '' : `data-action="bind-egress" data-uid="${acc.uid}" data-node="${n.name}"`;
+                            const clickAttr = disabled ? '' : `data-action="bind-egress" data-uid="${escapeDisplayText(acc.uid)}" data-node="${escapeDisplayText(IS_PROD_ENV ? n.id : n.name)}"`;
                             return `
-                                <div ${clickAttr} class="flex justify-between items-center px-2 py-2 border-b ${borderCls} transition-colors text-left">
-                                    <span class="text-[11px] ${nameCls} truncate pr-1.5">${n.name}</span>
+                                <div ${clickAttr} class="flex min-w-0 justify-between items-center gap-2 px-2 py-2 border-b ${borderCls} transition-colors text-left">
+                                    <span class="text-[11px] ${nameCls} min-w-0 flex-1 fade-truncate" title="${escapeDisplayText(n.name)}">${escapeDisplayText(n.name)}</span>
                                     ${rightHtml}
                                 </div>
                             `;
@@ -5195,17 +5634,17 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                                     <div class="flex items-center space-x-4 text-xs text-left">
                                         <span class="text-white font-medium">${acc.name}</span>
                                         <span class="text-white/40 text-[11px]">${acc.region}</span>
-                                        <span class="text-white/42 text-[11px] tabular-nums-left">熔断 ${acc.breakerAt}</span>
-                                        <button class="editorial-text-btn text-white" data-action="toggle-account-manual" data-uid="${acc.uid}">[${curModeLabel}]</button>
+                                        <span class="text-white/42 text-[11px] tabular-nums-left">熔断 ${escapeDisplayText(acc.breakerAt || '—')}</span>
+                                        <button class="editorial-text-btn text-white" data-action="toggle-account-manual" data-uid="${escapeDisplayText(acc.uid)}">[${curModeLabel}]</button>
                                     </div>
                                     <button class="editorial-text-btn" data-action="clear-selected-account">&larr; 返回列表</button>
                                 </div>
                                 <div class="flex justify-between items-center text-[10px] tracking-[0.12em] text-white/40">
-                                    <span>独占绑定出口（当前：<strong class="text-white font-normal">${acc.egress}</strong>）</span>
+                                    <span>账号绑定出口（当前：<strong class="text-white font-normal">${escapeDisplayText(acc.egress)}</strong>）</span>
                                     <span class="space-x-3">
                                         <span class="tone-forced">&lt;800ms</span>
                                         <span class="tone-guard">&ge;800ms</span>
-                                        <span class="text-white/28">超时/已占后置</span>
+                                        <span class="text-white/28">超时不可选择</span>
                                     </span>
                                 </div>
                                 <div class="grid grid-cols-3 gap-x-4 gap-y-1.5 pt-0.5">
@@ -5246,7 +5685,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     if (isTokenBlocked) {
                         statusText = '令牌隔离';
                         statusCls = 'tone-fault';
-                        actionLabel = acc.manualOn ? '停用' : '启用';
+                        actionLabel = '启用';
                     } else if (!acc.manualOn) {
                         statusText = '停用';
                         statusCls = 'tone-paused';
@@ -5283,7 +5722,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                              >
                             <div class="grid items-center text-left cursor-pointer shrink-0"
                                  style="grid-template-columns: 108px 46px 74px 62px; column-gap: 10px;"
-                                 data-action="select-account-egress" data-uid="${acc.uid}" data-name="${acc.name}">
+                                 data-action="select-account-egress" data-uid="${escapeDisplayText(acc.uid)}" data-name="${acc.name}">
                                 <span class="text-white font-mono text-[11.5px] tracking-tight text-left truncate" title="${acc.name}">${acc.name}</span>
                                 <span class="text-white/45 text-[10.5px] font-['Space_Grotesk'] text-left tracking-wider">${acc.region}</span>
                                 <span class="text-white/90 font-['Space_Grotesk'] tabular-nums text-left">${quotaStr}</span>
@@ -5291,9 +5730,9 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                             </div>
                             <div class="flex items-center shrink-0 ml-8">
                                 <button class="editorial-text-btn w-[86px] max-w-[86px] text-left truncate ${egressCls}" title="点击更换绑定出口"
-                                        data-action="select-account-egress" data-uid="${acc.uid}" data-name="${acc.name}">${acc.egress}</button>
-                                <button class="editorial-text-btn w-[30px] text-left shrink-0 ml-3.5" data-action="toggle-account-manual" data-uid="${acc.uid}">${actionLabel}</button>
-                                <button class="editorial-text-btn w-[30px] text-left shrink-0 ml-2.5 text-white/35 hover:text-red-400 transition-colors" title="永久删除该账号" data-action="delete-account" data-uid="${acc.uid}">删除</button>
+                                        data-action="select-account-egress" data-uid="${escapeDisplayText(acc.uid)}" data-name="${acc.name}">${acc.egress}</button>
+                                <button class="editorial-text-btn w-[30px] text-left shrink-0 ml-3.5" data-action="toggle-account-manual" data-uid="${escapeDisplayText(acc.uid)}">${actionLabel}</button>
+                                <button class="editorial-text-btn w-[30px] text-left shrink-0 ml-2.5 text-white/35 hover:text-red-400 transition-colors" title="永久删除该账号" data-action="delete-account" data-uid="${escapeDisplayText(acc.uid)}">删除</button>
                             </div>
                         </div>
                     `;
@@ -5381,21 +5820,22 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     const slice = subNodes.slice(WBState.egressPage * pageSize, (WBState.egressPage + 1) * pageSize);
 
                     innerListHtml = slice.map((n, idx) => {
-                        const boundAcc = WBState.accounts.find(a => a.egress === n.name);
-                        const accLabel = boundAcc ? boundAcc.name : '未绑定';
-                        const accCls = boundAcc ? 'text-white/82' : 'text-white/30';
-                        const pingTxt = n.timeout ? '超时' : `${n.ping} ms`;
-                        const pingCls = n.timeout ? 'tone-fault' : (n.ping < 800 ? 'tone-forced' : 'tone-guard');
+                        const boundAccounts = WBState.accounts.filter(a => IS_PROD_ENV ? a.egressNodeId === n.id : a.egress === n.name);
+                        const boundCount = IS_PROD_ENV ? (n.bindingCount ?? boundAccounts.length) : boundAccounts.length;
+                        const accLabel = boundCount > 1 ? `${boundCount} 个账号` : (boundAccounts[0]?.name || (boundCount ? '1 个账号' : '未绑定'));
+                        const accCls = n.timeout || n.status === 'error' ? 'tone-fault' : boundCount > 1 ? 'tone-guard' : boundCount === 1 ? 'tone-forced' : 'text-white/30';
+                        const pingTxt = n.status === 'testing' ? '测速中' : n.timeout ? '超时' : n.status === 'error' ? '失败' : IS_PROD_ENV && n.status === 'untested' ? '未测速' : `${n.ping} ms`;
+                        const pingCls = n.timeout || n.status === 'error' ? 'tone-fault' : n.status === 'testing' || n.status === 'untested' ? 'tone-guard' : (n.ping < 800 ? 'tone-forced' : 'tone-guard');
 
                         return `
                             <div class="editorial-row py-2.5 grid items-center gap-x-5 text-xs text-left"
-                                 style="grid-template-columns: 128px 136px 84px 76px 44px;"
-                                 data-hover-vertex="${idx * 5 + 2}" data-hover-label='${n.name} // ${n.timeout ? 'TIMEOUT' : n.ping + 'MS'}'>
-                                <span class="text-white font-medium max-w-[124px] fade-truncate text-left">${n.name}</span>
-                                <span class="${accCls} text-[11.5px] max-w-[130px] fade-truncate text-left">${accLabel}</span>
+                                 style="grid-template-columns: minmax(0, 1fr) 110px 64px 72px 44px;"
+                                 data-hover-vertex="${idx * 5 + 2}" data-hover-label='${escapeDisplayText(n.name)} // ${n.timeout ? 'TIMEOUT' : n.ping + 'MS'}'>
+                                <span class="text-white font-medium min-w-0 fade-truncate text-left" title="${escapeDisplayText(n.name)}">${escapeDisplayText(n.name)}</span>
+                                <span class="${accCls} text-[11.5px] max-w-[130px] fade-truncate text-left">${escapeDisplayText(accLabel)}</span>
                                 <div>${renderHairlineSpark(n.trend, 64, 15, animate)}</div>
                                 <span class="${pingCls} font-['Space_Grotesk'] tabular-nums-left text-left">${pingTxt}</span>
-                                <button class="editorial-text-btn text-left" data-action="probe-node" data-node-id="${n.id}">刷新</button>
+                                <button class="editorial-text-btn text-left" data-action="probe-node" data-node-id="${escapeDisplayText(n.id)}">刷新</button>
                             </div>
                         `;
                     }).join('');
@@ -5408,35 +5848,36 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     const subSlice = WBState.subscriptions.slice(WBState.egressSubPage * pageSize, (WBState.egressSubPage + 1) * pageSize);
 
                     innerListHtml = subSlice.map((s, idx) => {
-                        const expired = s.ageHours > WBState.configCacheHours;
+                        const neverRefreshed = s.ageHours == null || !Number.isFinite(s.ageHours);
+                        const expired = !neverRefreshed && s.ageHours > WBState.configCacheHours;
                         const nodeCnt = WBState.nodes.filter(n => n.subId === s.id).length;
                         const isSelectedSub = s.id === WBState.activeSubId;
                         const selectBtnHtml = isSelectedSub
-                            ? `<button class="editorial-text-btn text-left" style="color:#f0c987;" data-action="select-sub" data-sub-id="${s.id}">查看</button>`
-                            : `<button class="editorial-text-btn text-left" data-action="select-sub" data-sub-id="${s.id}">查看</button>`;
+                            ? `<button class="editorial-text-btn text-left" style="color:#f0c987;" data-action="select-sub" data-sub-id="${escapeDisplayText(s.id)}">查看</button>`
+                            : `<button class="editorial-text-btn text-left" data-action="select-sub" data-sub-id="${escapeDisplayText(s.id)}">查看</button>`;
 
                         const disableBtnHtml = s.disabled
-                            ? `<button class="editorial-text-btn text-left text-white/50 hover:text-white" data-action="toggle-sub" data-sub-id="${s.id}">启用</button>`
-                            : `<button class="editorial-text-btn text-left text-white/40 hover:text-white" data-action="toggle-sub" data-sub-id="${s.id}">停用</button>`;
+                            ? `<button class="editorial-text-btn text-left text-white/50 hover:text-white" data-action="toggle-sub" data-sub-id="${escapeDisplayText(s.id)}">启用</button>`
+                            : `<button class="editorial-text-btn text-left text-white/40 hover:text-white" data-action="toggle-sub" data-sub-id="${escapeDisplayText(s.id)}">停用</button>`;
 
-                        const delBtnHtml = `<button class="editorial-text-btn text-left text-white/35 hover:text-red-400 transition-colors" data-action="delete-sub" data-sub-id="${s.id}">删除</button>`;
+                        const delBtnHtml = `<button class="editorial-text-btn text-left text-white/35 hover:text-red-400 transition-colors" data-action="delete-sub" data-sub-id="${escapeDisplayText(s.id)}">删除</button>`;
 
                         const nodeCls = s.disabled ? 'text-white/20' : 'text-white/48';
 
                         return `
-                            <div id="sub-row-${s.id}" class="editorial-row py-3 grid items-center gap-x-4 text-xs text-left"
+                            <div id="sub-row-${escapeDisplayText(s.id)}" class="editorial-row py-3 grid items-center gap-x-4 text-xs text-left"
                                  style="grid-template-columns: minmax(0, 1fr) 56px 128px 154px;"
-                                 data-hover-vertex="${idx * 8 + 1}" data-hover-label='${s.id} // ${nodeCnt} NODES'>
+                                 data-hover-vertex="${idx * 8 + 1}" data-hover-label='${escapeDisplayText(s.id)} // ${nodeCnt} NODES'>
                                 <div class="min-w-0 max-w-[172px]">
-                                    <div class="text-white font-medium max-w-[172px] fade-truncate">${s.name}</div>
-                                    <div class="text-[10.5px] text-white/35 mt-0.5 max-w-[168px] fade-truncate selectable-text" title="${s.url}">${s.url}</div>
+                                    <div class="text-white font-medium max-w-[172px] fade-truncate">${escapeDisplayText(s.name)}</div>
+                                    <div class="text-[10.5px] text-white/35 mt-0.5 max-w-[168px] fade-truncate selectable-text" title="${escapeDisplayText(s.url)}">${escapeDisplayText(s.url)}</div>
                                 </div>
                                 <span class="${nodeCls} text-[11px] tabular-nums-left">${nodeCnt} 节点</span>
                                 <span class="text-[11px] tabular-nums-left ${expired ? 'tone-guard' : 'tone-normal'}">
-                                    ${expired ? `已缓存 (${s.ageHours.toFixed(1)}h)` : `有效 (${s.ageHours.toFixed(1)}h / ${WBState.configCacheHours}h)`}
+                                    ${s.hasURL === false ? '缺少订阅链接' : neverRefreshed ? '尚未刷新' : expired ? `已缓存 (${s.ageHours.toFixed(1)}h)` : `有效 (${s.ageHours.toFixed(1)}h / ${WBState.configCacheHours}h)`}
                                 </span>
                                 <div class="flex items-center space-x-3">
-                                    <button class="editorial-text-btn text-left" data-action="refresh-sub" data-sub-id="${s.id}">刷新</button>
+                                    <button class="editorial-text-btn text-left" data-action="refresh-sub" data-sub-id="${escapeDisplayText(s.id)}">刷新</button>
                                     ${selectBtnHtml}
                                     ${disableBtnHtml}
                                     ${delBtnHtml}
@@ -5461,9 +5902,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
 
             // 4. 模型查看 (models)：统一贴顶向上对齐，拉取模型放左钮、域筛选放右钮 (Comment 9)
             if (ch === 'models') {
-                const filteredModels = WBState.modelRealmFilter === 'ALL'
-                    ? WBState.models
-                    : WBState.models.filter(m => m.realm === WBState.modelRealmFilter);
+                const filteredModels = WBState.models.filter(m => modelMatchesFilter(m, WBState.modelRealmFilter));
 
                 const pageSize = 4;
                 const totalPages = Math.max(1, Math.ceil(filteredModels.length / pageSize));
@@ -5478,7 +5917,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                         <span class="text-[11.5px] text-white/60 tabular-nums-left">上下文 <strong class="text-white font-normal font-['Space_Grotesk'] ml-1">${m.ctx}</strong></span>
                         <span class="text-[11.5px] text-white/60 tabular-nums-left">最大输出 <strong class="text-white font-normal font-['Space_Grotesk'] ml-1">${m.maxOut}</strong></span>
                         <div>${renderHairlineSpark(m.trend, 52, 14, animate)}</div>
-                        <span class="text-white/85 font-['Space_Grotesk'] tabular-nums-left">${m.ttft} ms</span>
+                        <span class="text-white/85 font-['Space_Grotesk'] tabular-nums-left">${m.ttft == null ? '—' : m.ttft + ' ms'}</span>
                     </div>
                 `).join('');
 
@@ -5495,9 +5934,9 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                         const failRows = (step.failures || []).map(f => `
                             <div class="editorial-row py-2.5 grid items-center gap-x-4 text-xs text-left"
                                  style="grid-template-columns: 124px 58px minmax(0, 1fr);">
-                                <span class="text-white font-medium truncate">${f.name}</span>
-                                <span class="text-white/42 text-[11px] font-['Space_Grotesk']">${f.region}</span>
-                                <span class="tone-fault text-[11.5px] truncate">${f.reason}</span>
+                                <span class="text-white font-medium truncate">${escapeDisplayText(f.name)}</span>
+                                <span class="text-white/42 text-[11px] font-['Space_Grotesk']">${escapeDisplayText(f.region)}</span>
+                                <span class="tone-fault text-[11.5px] truncate">${escapeDisplayText(f.reason)}</span>
                             </div>
                         `).join('');
 
@@ -5507,12 +5946,12 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                                     <div class="flex items-center space-x-3 text-left">
                                         <span class="text-white text-xs font-medium">${step.code} ${step.name}</span>
                                         <span class="text-[11px] ${(step.failures?.length || 0) > 0 ? 'tone-fault' : 'text-white/45'}">
-                                            ${(step.failures?.length || 0) > 0 ? `共 ${step.failures.length} 个账号执行报错` : `${step.okCount}/${step.totalCount} 账号全部成功`}
+                                            已处理 ${step.processedCount ?? step.okCount}/${step.totalCount}，成功 ${step.okCount}，失败 ${step.failures?.length || 0}，跳过 ${step.skippedCount || 0}
                                         </span>
                                     </div>
                                     <button class="editorial-text-btn" data-action="set-task-step">&larr; 返回任务列表</button>
                                 </div>
-                                <div>${failRows || '<div class="py-4 text-xs text-white/45 text-left">该工序下所有参与账号均执行成功，无异常报错记录。</div>'}</div>
+                                <div>${failRows || '<div class="py-4 text-xs text-white/45 text-left">暂无失败记录。</div>'}</div>
                             </div>
                         `, animate);
                         renderPagerControls(0, 1, '');
@@ -5525,10 +5964,10 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     const failCnt = st.failures ? st.failures.length : Math.max(0, st.totalCount - st.okCount);
                     const hasFault = failCnt > 0 && !(WBState.tasks.running && (st.progress ?? 0) < 12);
 
-                    let stateLabel = '正常';
+                    let stateLabel = st.backendState === 'pending' ? '待运行' : '正常';
                     let stateCls = 'tone-normal';
-                    if (WBState.tasks.pausedAll) {
-                        stateLabel = '停用';
+                    if (WBState.tasks.pausedAll || WBState.tasks.scheduleEnabled === false) {
+                        stateLabel = WBState.tasks.pausedAll ? '已暂停' : (WBState.tasks.running ? '排程停用（本次运行中）' : '停用');
                         stateCls = 'tone-paused';
                     } else if (isCur && !hasFault) {
                         stateLabel = '执行中';
@@ -5538,28 +5977,33 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                         stateCls = 'tone-fault';
                     }
 
-                    const ratioHtml = hasFault && !WBState.tasks.pausedAll
-                        ? `<span class="tone-fault font-medium">${st.okCount}</span><span class="text-white/45">/${st.totalCount}</span>`
-                        : `<span class="text-white/82">${st.okCount}</span><span class="text-white/42">/${st.totalCount}</span>`;
+                    const processed = st.processedCount ?? st.okCount;
+                    // 执行数始终用白色、总数始终用暗白；失败数字独立成列并只在
+                    // 非零时变红，避免把“已处理”误读成失败数。
+                    const ratioHtml = `<span style="color:#fff">${processed}</span><span style="color:rgba(255,255,255,.42)">/${st.totalCount}</span>`;
+                    const failedHtml = failCnt > 0
+                        ? `<span class="tone-fault font-medium">${failCnt}</span>`
+                        : `<span class="text-white/45">0</span>`;
 
                     return `
                         <div class="editorial-row py-3 grid items-center gap-x-4 text-xs text-left cursor-pointer"
-                             style="grid-template-columns: 144px 124px 72px 72px 48px;"
+                             style="grid-template-columns: minmax(120px, 144px) 108px 64px 48px 56px minmax(96px, 1fr);"
                              data-action="set-task-step" data-step-code="${st.code}"
-                             data-hover-vertex="${idx * 3}" data-hover-label='STEP ${st.code} // ${st.okCount}/${st.totalCount}'>
+                             data-hover-vertex="${idx * 3}" data-hover-label='STEP ${st.code} // ${processed}/${st.totalCount}'>
                             <div class="flex items-center space-x-3 min-w-0">
                                 <span class="text-white/38 font-mono shrink-0">${st.code}</span>
                                 <span class="text-white font-medium max-w-[124px] whitespace-nowrap overflow-hidden">${st.name}</span>
                             </div>
                             <div class="flex items-center">${renderTaskStatusLine(st, 108, animate)}</div>
-                            <div class="font-['Space_Grotesk'] tabular-nums-left">${ratioHtml}</div>
+                            <div class="font-['Space_Grotesk'] tabular-nums-left" title="已处理 ${processed}，成功 ${st.okCount}，失败 ${failCnt}，跳过 ${st.skippedCount || 0}">${ratioHtml}</div>
+                            <div class="font-['Space_Grotesk'] tabular-nums-left" title="失败账号数">${failedHtml}</div>
                             <span class="text-white/52 font-['Space_Grotesk'] tabular-nums-left">${st.dur}</span>
                             <span class="text-[11px] ${stateCls} text-left">${stateLabel}</span>
                         </div>
                     `;
                 }).join('');
 
-                commitStageMarkup(container, `<div>${rowsHtml}</div>`, animate);
+                commitStageMarkup(container, `<div>${WBState.tasks.running ? `<button class="editorial-text-btn mb-3" data-action="toggle-maintenance-pause">${WBState.tasks.pausedAll ? '继续本次任务' : '暂停本次任务'}</button>` : ''}${rowsHtml}</div>`, animate);
                 renderPagerControls(0, 1, '');
                 return;
             }
@@ -5599,7 +6043,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 }
 
                 const ds = WBState.usageRange === '24H' ? WBState.usage24h : WBState.usage6h;
-                const maxV = Math.max(...ds.outVals) * 1.15;
+                const maxV = Math.max(1, ...ds.outVals, ...ds.inVals) * 1.15;
                 const w = 520, h = 128;
                 const outPts = ds.outVals.map((v, i) => `${((i / (ds.outVals.length - 1)) * w).toFixed(1)},${(h - 18 - (v / maxV) * (h - 32)).toFixed(1)}`).join(' ');
                 const inPts  = ds.inVals.map((v, i) => `${((i / (ds.inVals.length - 1)) * w).toFixed(1)},${(h - 18 - (v / maxV) * (h - 32)).toFixed(1)}`).join(' ');
@@ -5669,7 +6113,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                         const packRows = slice.map((p, idx) => {
                             const globalOrder = WBState.packageDetailPage * pageSize + idx + 1;
                             const ratio = p.remain / Math.max(1, p.total);
-                            const soon = p.days <= 7;
+                            const tone = expiryTone(p.days);
                             return `
                                 <div class="editorial-row py-2.5 grid items-center gap-x-3 text-xs text-left"
                                      style="grid-template-columns: minmax(0, 1.45fr) 64px 150px 76px;"
@@ -5680,7 +6124,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                                         <span class="text-white/88 font-['Space_Grotesk'] tabular-nums-left w-[98px] shrink-0">${p.remain.toLocaleString()} <span class="text-white/35 text-[10.5px]">/ ${p.total.toLocaleString()}</span></span>
                                         ${renderHairlineMeter(ratio, 36)}
                                     </div>
-                                    <span class="text-[11px] ${soon ? 'tone-guard' : 'text-white/55'} tabular-nums-left whitespace-nowrap">${p.days} 天到期</span>
+                                    <span class="text-[11px] ${tone} tabular-nums-left whitespace-nowrap">${p.days == null ? '到期时间未知' : p.days + ' 天到期'}</span>
                                 </div>
                             `;
                         }).join('');
@@ -5709,10 +6153,10 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     let sortedAccounts;
                     if (WBState.packageListSort === 'USAGE') {
                         // 按积分用量最少排序 (余额升序)
-                        sortedAccounts = WBState.accounts.slice().sort((a, b) => (a.balance || 0) - (b.balance || 0));
+                        sortedAccounts = WBState.accounts.filter(a => !a.blocked && a.state !== 'BLOCKED').sort((a, b) => (a.balance || 0) - (b.balance || 0));
                     } else {
                         // 按账号名称排序 (1~9, 然后 A~Z)
-                        sortedAccounts = sortAccountsAlphanumeric(WBState.accounts);
+                        sortedAccounts = sortAccountsAlphanumeric(WBState.accounts.filter(a => !a.blocked && a.state !== 'BLOCKED'));
                     }
 
                     const totalPages = Math.max(1, Math.ceil(sortedAccounts.length / pageSize));
@@ -5721,23 +6165,23 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
 
                     const accPackRows = slice.map((acc, idx) => {
                         const activePacks = getAccountActivePackages(acc);
-                        const minDays = activePacks.length ? activePacks[0].days : 7;
-                        const soon = minDays <= 7;
+                        const minDays = activePacks[0]?.days ?? null;
+                        const tone = expiryTone(minDays);
                         const balNum = typeof acc.balance === 'number' ? acc.balance : 0;
                         const quotaNum = typeof acc.quota === 'number' && acc.quota > 0 ? acc.quota : 5000;
                         const ratio = Math.max(0, Math.min(1, balNum / quotaNum));
                         const vIdx = idx * 4 + 1;
                         return `
                             <div class="editorial-row py-2.5 grid items-center gap-x-4 text-xs text-left cursor-pointer"
-                                 style="grid-template-columns: minmax(0, 1.4fr) 72px 86px 64px 80px 58px;"
-                                 data-action="select-package-uid" data-uid="${acc.uid}"
+                                 style="grid-template-columns: minmax(100px, 1.4fr) 58px 76px 42px minmax(80px, 1fr) 58px;"
+                                 data-action="select-package-uid" data-uid="${escapeDisplayText(acc.uid)}"
                                  data-hover-vertex="${vIdx}" data-hover-label="ACC // ${acc.name.toUpperCase()}"
                                  >
                                 <span class="text-white font-medium max-w-[130px] truncate text-left" title="${acc.name}">${acc.name}</span>
                                 <span class="text-white/52 text-[11px] tabular-nums-left">${activePacks.length} 个包</span>
                                 <span class="text-white/90 font-['Space_Grotesk'] tabular-nums-left w-[76px] shrink-0">${balNum.toLocaleString()}</span>
                                 <div class="flex items-center">${renderHairlineMeter(ratio, 42)}</div>
-                                <span class="text-[11px] ${soon ? 'tone-guard' : 'text-white/50'} tabular-nums-left whitespace-nowrap">${minDays} 天到期</span>
+                                <span class="text-[11px] ${tone} tabular-nums-left whitespace-nowrap">${minDays === null ? (acc.packagesError ? '获取失败' : activePacks.length ? '到期时间未知' : '无生效包') : minDays + ' 天到期'}</span>
                                 <button class="editorial-text-btn text-left">查看 &rarr;</button>
                             </div>
                         `;
@@ -5766,7 +6210,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 if (WBState.packageView === 'MODEL') {
                     if (WBState.packageModelMode === 'ACCOUNT') {
                         // 模型 2: 按账号排序的折线统计图 (账号优先排序为从 1~9，然后是从 A 到 Z)
-                        const sortedAccs = sortAccountsAlphanumeric(WBState.accounts);
+                        const sortedAccs = sortAccountsAlphanumeric(WBState.accounts.filter(a => !a.blocked && a.state !== 'BLOCKED'));
                         const pageSize = 6;
                         const totalPages = Math.max(1, Math.ceil(sortedAccs.length / pageSize));
                         const curP = (typeof WBState.packageModelAccountPage === 'number') ? WBState.packageModelAccountPage : 0;
@@ -5787,7 +6231,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                         const clipId = 'acc-clip-' + (++WBState.chartClipSeq);
                         const clipDef = animate ? `<defs><clipPath id="${clipId}"><rect x="0" y="-6" width="540" height="84" class="svg-clip-spread-rect" /></clipPath></defs>` : '';
                         const clipAttr = animate ? `clip-path="url(#${clipId})"` : '';
-                        const initP = points[0] || { acc: { name: '--' }, bal: 0, quota: 5000 };
+                        const initP = points.find(p => p.acc.uid === WBState.packageModelAccountUid) || points[0] || { acc: { name: '--' }, x: 40, bal: 0, quota: 0 };
                         const initPacks = getAccountActivePackages(initP.acc);
 
                         commitStageMarkup(container, `
@@ -5805,7 +6249,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                                             <polyline fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="1.35" points="${curvePts}" />
                                             ${points.map(p => `<circle cx="${p.x}" cy="${p.y}" r="2.5" fill="#98dfc2" opacity="0.95" />`).join('')}
                                         </g>
-                                        <line id="pkg-model-cursor" x1="${points[0]?.x || 40}" y1="0" x2="${points[0]?.x || 40}" y2="62" stroke="#f0c987" stroke-width="1.2" opacity="0.8" />
+                                        <line id="pkg-model-cursor" x1="${initP.x}" y1="0" x2="${initP.x}" y2="62" stroke="#f0c987" stroke-width="1.2" opacity="0.8" />
                                     </svg>
                                     <div class="flex justify-between items-center text-[9px] tracking-[0.08em] text-white/40 mt-1.5 font-mono">
                                         ${points.map(p => `<span class="w-[74px] truncate text-center" title="${p.acc.name}">${p.acc.name}</span>`).join('')}
@@ -5830,18 +6274,18 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
 
                     // 模型 1: 按天数排序的折线统计图 (Weibull 寿命衰减与到期分布模型，无换页)
                     const points = getWeibullModelPoints();
-                    const curvePts = `0,8 ${points.map(p => `${p.x},${p.y}`).join(' ')} 520,68`;
+                    const curvePts = points.map(p => `${p.x},${p.y}`).join(' ');
                     const clipId = 'pkg-clip-' + (++WBState.chartClipSeq);
                     const clipDef = animate ? `<defs><clipPath id="${clipId}"><rect x="0" y="-6" width="540" height="84" class="svg-clip-spread-rect" /></clipPath></defs>` : '';
                     const clipAttr = animate ? `clip-path="url(#${clipId})"` : '';
-                    const initP = points[1] || points[0];
+                    const initP = points[Math.max(0, Math.min(points.length - 1, WBState.packageModelHoverIdx))];
 
                     commitStageMarkup(container, `
                         <div class="flex flex-col justify-start space-y-4 pt-1">
                             <div>
                                 <div class="flex justify-between items-center text-[10px] tracking-[0.15em] text-white/42 mb-3">
                                     <span id="pkg-model-readout">时段 ${initP.day}天 — 存活积分 ${initP.survival.toFixed(1)}% / 预计到期 ${initP.expAcc} 账号 / 临期包 ${initP.packs}</span>
-                                    <span class="text-white/60 font-mono">S(t)=exp(-(t/38)^1.4)</span>
+                                    <span class="text-white/60 font-mono">已知到期包剩余占比</span>
                                 </div>
                                 <svg viewBox="0 0 520 70" class="w-full h-[70px] overflow-visible">
                                     ${clipDef}
@@ -5852,15 +6296,10 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                                         <polyline fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="1.35" points="${curvePts}" />
                                         ${points.map(p => `<circle cx="${p.x}" cy="${p.y}" r="2.5" fill="#ffffff" opacity="0.9" />`).join('')}
                                     </g>
-                                    <line id="pkg-model-cursor" x1="110" y1="0" x2="110" y2="68" stroke="#f0c987" stroke-width="1.2" opacity="0.8" />
+                                    <line id="pkg-model-cursor" x1="${initP.x}" y1="0" x2="${initP.x}" y2="68" stroke="#f0c987" stroke-width="1.2" opacity="0.8" />
                                 </svg>
                                 <div class="flex justify-between items-center text-[9px] tracking-[0.14em] text-white/35 mt-1.5 font-mono">
-                                    <span class="tone-fault">07D 预警</span>
-                                    <span>15D</span>
-                                    <span>30D 月底</span>
-                                    <span>45D</span>
-                                    <span>60D</span>
-                                    <span>90D 储备</span>
+                                    <span>1D</span><span>3D</span><span>5D</span><span>10D</span><span>20D</span><span>30D</span>
                                 </div>
                             </div>
                             <div class="grid grid-cols-6 gap-2 pt-1 text-[10.5px]">
@@ -5886,8 +6325,8 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     let longCnt = 0, longSum = 0;
                     WBState.accounts.forEach(acc => {
                         getAccountActivePackages(acc).forEach(p => {
-                            if (p.days <= 7) { urgentCnt++; if (!acc.unlimited) urgentSum += p.remain; }
-                            else if (p.days <= 30) { monthCnt++; if (!acc.unlimited) monthSum += p.remain; }
+                            if (p.days != null && p.days <= 7) { urgentCnt++; if (!acc.unlimited) urgentSum += p.remain; }
+                            else if (p.days != null && p.days <= 30) { monthCnt++; if (!acc.unlimited) monthSum += p.remain; }
                             else { longCnt++; if (!acc.unlimited) longSum += p.remain; }
                         });
                     });
@@ -5925,7 +6364,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
 
                 // Comment 11: 账号列表根据 WBState.packageSort 排序 (EXPIRY=临期时间升序, ACCOUNT=账号名顺位)
                 const accCandidates = (WBState.packageExpiringOnly
-                    ? WBState.accounts.filter(acc => getAccountActivePackages(acc).some(p => p.days <= 7))
+                    ? WBState.accounts.filter(acc => getAccountActivePackages(acc).some(p => p.days != null && p.days <= 7))
                     : WBState.accounts.slice()).sort((a, b) => {
                         if (WBState.packageSort === 'EXPIRY') {
                             const minA = getAccountActivePackages(a)[0]?.days ?? 999;
@@ -5943,13 +6382,13 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 const accPackRows = slice.map((acc, idx) => {
                     const activePacks = getAccountActivePackages(acc);
                     const minDays = activePacks.length ? activePacks[0].days : 0;
-                    const soon = minDays > 0 && minDays <= 7;
+                    const tone = expiryTone(minDays);
                     const balStr = acc.unlimited ? 'UNLIMITED' : acc.balance.toLocaleString();
                     const ratio = acc.unlimited ? 1 : (acc.balance / Math.max(1, acc.quota));
                     return `
                         <div class="editorial-row py-2.5 grid items-center gap-x-3 text-xs text-left cursor-pointer"
                              style="grid-template-columns: minmax(0, 1.4fr) 68px 136px 86px 46px;"
-                             data-action="select-package-uid" data-uid="${acc.uid}"
+                             data-action="select-package-uid" data-uid="${escapeDisplayText(acc.uid)}"
                              data-hover-vertex="${idx * 5 + 2}" data-hover-label="${acc.name.toUpperCase()} // ${activePacks.length} PACKS"
                              >
                             <span class="text-white font-medium max-w-[130px] fade-truncate text-left">${acc.name}</span>
@@ -5958,7 +6397,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                                 <span class="text-white/90 font-['Space_Grotesk'] tabular-nums-left w-[76px] shrink-0">${balStr}</span>
                                 ${renderHairlineMeter(ratio, 38)}
                             </div>
-                            <span class="text-[11px] ${soon ? 'tone-guard' : 'text-white/50'} tabular-nums-left">${minDays ? minDays + ' 天到期' : '无生效包'}</span>
+                            <span class="text-[11px] ${tone} tabular-nums-left">${minDays ? minDays + ' 天到期' : '无生效包'}</span>
                             <span class="editorial-text-btn text-left">查看 &rarr;</span>
                         </div>
                     `;
@@ -6199,6 +6638,14 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
 
         // Comment 4: 授权成功统一处理流程
         function handleOAuthComplete(authData) {
+            if (IS_PROD_ENV) {
+                if (WBState.oauthPollTimer) clearInterval(WBState.oauthPollTimer);
+                WBState.oauthPollTimer = null;
+                WBState.accountSubmode = null;
+                loadAuthenticatedPanelData().then(() => renderEditorialStage(true));
+                notifyEditorialStatus('授权完成，正在加载账号');
+                return;
+            }
             if (WBState.oauthPollTimer) {
                 clearInterval(WBState.oauthPollTimer);
                 WBState.oauthPollTimer = null;
@@ -6262,7 +6709,9 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             }
 
             let pollAttempts = 0;
+            let pollInFlight = false;
             WBState.oauthPollTimer = setInterval(async () => {
+                if (pollInFlight) return;
                 pollAttempts++;
                 if (!WBState.accountSubmode || pollAttempts > 60) {
                     clearInterval(WBState.oauthPollTimer);
@@ -6270,12 +6719,13 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     return;
                 }
                 try {
+                    pollInFlight = true;
                     const st = encodeURIComponent(WBState.loginState || '');
-                    const res = await safeApiFetch(`/panel/api/login/poll?state=${st}`, { method: 'GET' }, 2500);
+                    const res = await safeApiFetch(`/panel/api/login/poll?state=${st}`, { method: 'GET' }, 65000);
                     if (res && (res.done === true || res.success === true)) {
                         handleOAuthComplete(res);
                     }
-                } catch (_) {}
+                } catch (_) {} finally { pollInFlight = false; }
             }, 2000);
         }
 
@@ -6301,9 +6751,10 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             startOAuthPolling();
         };
 
-        window.copyOAuthLoginLink = () => {
-            navigator.clipboard?.writeText(WBState.loginAuthUrl);
-            notifyEditorialStatus('OAUTH AUTHORIZATION URL COPIED');
+        window.copyOAuthLoginLink = async () => {
+            if (!WBState.loginAuthUrl) { notifyEditorialStatus('请先获取授权链接'); return; }
+            try { await navigator.clipboard.writeText(WBState.loginAuthUrl); notifyEditorialStatus('授权链接已复制'); }
+            catch (_) { notifyEditorialStatus('复制失败，请手动复制授权链接'); }
         };
 
         function triggerJsonDownload(filename, payloadObj) {
@@ -6317,10 +6768,11 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 a.click();
                 document.body.removeChild(a);
                 setTimeout(() => URL.revokeObjectURL(url), 1000);
-            } catch (_) {}
+            } catch (_) { throw new Error('download failed'); }
         }
 
         // Comment 4: 系统设置 导入/导出 JSON 配置
+        let jsonImportTimer = null;
         window.triggerImportJsonConfig = () => {
             const btnImport = document.getElementById('btn-import-json');
             if (btnImport) {
@@ -6328,6 +6780,12 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 btnImport.classList.add('json-btn-busy');
             }
             setPreviewFrameState('busy', 0);
+            clearTimeout(jsonImportTimer);
+            jsonImportTimer = setTimeout(() => {
+                btnImport?.classList.remove('json-btn-busy');
+                setPreviewFrameState('error', 800);
+                notifyEditorialStatus('导入等待超时，请重新选择文件');
+            }, 60000);
             notifyEditorialStatus('WAITING FOR JSON CONFIG FILE...');
 
             const fileInp = document.getElementById('hidden-json-file-input');
@@ -6337,7 +6795,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             }
         };
 
-        window.exportGlobalJsonConfig = () => {
+        window.exportGlobalJsonConfig = async () => {
             const btnExport = document.getElementById('btn-export-json');
             if (btnExport) {
                 btnExport.classList.remove('json-btn-success', 'json-btn-error');
@@ -6345,6 +6803,24 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             }
             setPreviewFrameState('busy', 0);
             notifyEditorialStatus('PREPARING GLOBAL JSON EXPORT...');
+
+            if (IS_PROD_ENV) {
+                const accounts = await safeApiFetch('/panel/api/accounts/export', {}, 30000);
+                btnExport?.classList.remove('json-btn-busy');
+                if (!Array.isArray(accounts)) {
+                    btnExport?.classList.add('json-btn-error');
+                    setPreviewFrameState('error', 800);
+                    notifyEditorialStatus('账号导出失败');
+                    return;
+                }
+                try { triggerJsonDownload('workbuddy-accounts.json', accounts); }
+                catch (_) { btnExport?.classList.add('json-btn-error'); setPreviewFrameState('error', 800); notifyEditorialStatus('账号文件下载失败'); return; }
+                btnExport?.classList.add('json-btn-success');
+                setTimeout(() => btnExport?.classList.remove('json-btn-success'), 1200);
+                setPreviewFrameState('success', 1200);
+                notifyEditorialStatus('账号凭据已导出，请妥善保管文件');
+                return;
+            }
 
             setTimeout(() => {
                 try {
@@ -6525,7 +7001,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             sub.ageHours = 0.1;
             soundscape.triggerTileNote(9);
             setTimeout(() => {
-                setPreviewFrameState(failed.length ? 'error' : 'success', 800);
+                setPreviewFrameState('success', 800);
                 notifyEditorialStatus(`SUBSCRIPTION ${sub.name} REFRESHED`);
                 renderEditorialStage(false);
             }, 1000);
@@ -6600,7 +7076,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             };
 
             // 2. 验证中：线条变黄并添加轻微左右晃动类
-            setPreviewFrameState('busy', 400);
+            setPreviewFrameState('busy', 0);
             WBState._isPullingSub = true;
             if (urlEl) {
                 urlEl.classList.remove('input-error-shake', 'input-success-green');
@@ -6620,10 +7096,8 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     const res = await safeApiFetch('/panel/api/meta/subscriptions', {
                         method: 'POST',
                         body: JSON.stringify({ url: urlVal, name: nameVal })
-                    }, 6000);
-                    if (res && res.error) {
-                        throw new Error(res.error || 'PULL_FAILED');
-                    }
+                    }, 65000);
+                    if (!res || res.ok !== true) throw new Error('PULL_FAILED');
                 }
                 return true;
             })();
@@ -6633,14 +7107,14 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             try {
                 await Promise.all([verifyPromise, animDelay]);
 
-                // 3. 验证/拉取成功：线条转为鲜绿（#4ade80），晃动停止，延时约 350ms 返回上一级并呈现新增订阅与节点！
+                // 3. 成功显示绿线 500ms，随后立即进入订阅页；数据刷新在后台进行。
                 if (urlEl) {
                     urlEl.classList.remove('input-verifying-sway', 'input-error-shake');
                     urlEl.classList.add('input-success-green');
                     urlEl.style.borderColor = '#4ade80';
                     urlEl.style.borderBottomColor = '#4ade80';
-                    setPreviewFrameState('success', 800);
                 }
+                setPreviewFrameState('success', 800);
                 try {
                     if (typeof soundscape !== 'undefined' && soundscape && typeof soundscape.triggerTileNote === 'function') {
                         soundscape.triggerTileNote(12);
@@ -6650,6 +7124,15 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
 
                 setTimeout(() => {
                     WBState._isPullingSub = false;
+                    if (IS_PROD_ENV) {
+                        WBState.importingSub = false;
+                        WBState.egressTab = 'SUBS';
+                        renderEditorialStage(true);
+                        loadAuthenticatedPanelData().then(() => {
+                            if (WBState.currentChapter === 'egress' && WBState.egressTab === 'SUBS' && !WBState.importingSub) renderEditorialStage(false);
+                        });
+                        return;
+                    }
                     const nextId = `SUB-0${WBState.subscriptions.length + 1}`;
                     WBState.subscriptions.push({ id: nextId, name: nameVal, ageHours: 0.1, url: urlVal });
                     WBState.nodes.push(
@@ -6662,7 +7145,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     setVertexHover(-1);
                     notifyEditorialStatus(`SUBSCRIPTION ${nextId} IMPORTED & ENABLED`);
                     renderEditorialStage(true);
-                }, 350);
+                }, 500);
             } catch (err) {
                 await animDelay;
                 triggerError();
@@ -6865,16 +7348,19 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
     }
 
     function getWeibullModelPoints() {
-        const daysArr = [7, 15, 30, 45, 60, 90];
+        const daysArr = [1, 3, 5, 10, 20, 30];
+        const allPacks = WBState.accounts.flatMap(getAccountActivePackages).filter(p => p.days != null);
+        const total = allPacks.reduce((sum, p) => sum + (Number(p.remain) || 0), 0);
         return daysArr.map((day, i) => {
             let expAcc = 0;
             let packs = 0;
             WBState.accounts.forEach(acc => {
                 const activePacks = getAccountActivePackages(acc);
-                if (activePacks.some(p => p.days <= day)) expAcc++;
-                packs += activePacks.filter(p => p.days <= day).length;
+                if (activePacks.some(p => p.days !== null && p.days <= day)) expAcc++;
+                packs += activePacks.filter(p => p.days !== null && p.days <= day).length;
             });
-            const survival = Math.max(5.0, +(100 * Math.exp(-Math.pow(day / 38, 1.4))).toFixed(1));
+            const remaining = allPacks.filter(p => p.days > day).reduce((sum, p) => sum + (Number(p.remain) || 0), 0);
+            const survival = total > 0 ? 100 * remaining / total : 0;
             const x = [40, 110, 210, 310, 410, 500][i];
             const y = Math.round(68 - (survival / 100) * 50);
             return { day, survival, expAcc, packs, x, y };
@@ -6882,9 +7368,11 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
     }
 
     window.hoverPackageModelPoint = (idx) => {
-        WBState.packageModelHoverIdx = idx;
+        if (!Number.isInteger(idx) || idx < 0) { setVertexHover(-1); return; }
         const points = getWeibullModelPoints();
-        const p = points[idx] || points[1];
+        const p = points[idx];
+        if (!p) return;
+        WBState.packageModelHoverIdx = idx;
         const titleEl = document.getElementById('pkg-model-readout');
         if (titleEl) {
             titleEl.textContent = `时段 ${p.day}天 — 存活积分 ${p.survival.toFixed(1)}% / 预计到期 ${p.expAcc} 账号 / 临期包 ${p.packs}`;
@@ -6899,11 +7387,13 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
     };
 
     window.hoverAccountModelPoint = (idx) => {
-        const sortedAccs = sortAccountsAlphanumeric(WBState.accounts);
+        if (!Number.isInteger(idx) || idx < 0) { setVertexHover(-1); return; }
+        const sortedAccs = sortAccountsAlphanumeric(WBState.accounts.filter(a => !a.blocked && a.state !== 'BLOCKED'));
         const pageSize = 6;
         const slice = sortedAccs.slice((WBState.packageModelAccountPage || 0) * pageSize, ((WBState.packageModelAccountPage || 0) + 1) * pageSize);
         const acc = slice[idx];
         if (!acc) return;
+        WBState.packageModelAccountUid = acc.uid;
         const activePacks = getAccountActivePackages(acc);
         const titleEl = document.getElementById('pkg-model-readout');
         if (titleEl) {
@@ -6950,7 +7440,41 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             pipelineTimers = [];
         }
 
+        let maintenanceStarting = false;
+        async function startMaintenance() {
+            if (maintenanceStarting) return;
+            maintenanceStarting = true;
+            notifyEditorialStatus('正在启动任务…');
+            try {
+                const token = csrfToken || window.csrfToken || '';
+                const response = await fetch('/panel/api/maintenance/run', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: {'Content-Type': 'application/json', 'X-CSRF-Token': token},
+                    body: '{}', signal: AbortSignal.timeout(10000)
+                });
+                if (response.status === 409) {
+                    const status = await safeApiFetch('/panel/api/maintenance/status', {}, 10000);
+                    if (status && syncMaintenanceData(status)) renderEditorialStage(false);
+                    notifyEditorialStatus('任务正在运行，请等待完成');
+                } else if (response.status === 401 || response.status === 403) {
+                    notifyEditorialStatus('登录已失效或验证失败，请重新登录');
+                } else if (!response.ok) {
+                    notifyEditorialStatus('任务启动失败，服务返回 HTTP ' + response.status);
+                } else {
+                    const status = await response.json();
+                    syncMaintenanceData(status);
+                    renderEditorialStage(false);
+                    notifyEditorialStatus('任务已启动');
+                }
+            } catch (_) {
+                notifyEditorialStatus('任务启动请求失败，请检查服务连接');
+            } finally { maintenanceStarting = false; }
+        }
+
         function runFourStepPipeline() {
+            if (IS_PROD_ENV) {
+                return startMaintenance();
+            }
             if (WBState.tasks.running) return;
             clearPipelineTimers();
             WBState.tasks.pausedAll = false;
@@ -7023,7 +7547,21 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
         }
         window.runTaskPipeline = runTaskPipeline;
 
-        function togglePauseAllTasks() {
+        window.togglePauseAllTasks = togglePauseAllTasks;
+        async function togglePauseAllTasks() {
+            if (IS_PROD_ENV) {
+                if (!WBState.tasks.running) { notifyEditorialStatus('当前没有正在运行的任务'); return; }
+                if (taskActionPending) return;
+                taskActionPending = true;
+                try {
+                    const status = await safeApiFetch('/panel/api/maintenance/pause', {method: 'POST', body: JSON.stringify({paused: !WBState.tasks.pausedAll})}, 10000);
+                    if (!status) { notifyEditorialStatus('任务状态更新失败，请重试'); return; }
+                    syncMaintenanceData(status);
+                    renderEditorialStage(false);
+                    notifyEditorialStatus(status.paused ? '当前账号处理结束后暂停本次任务' : '本次任务已继续');
+                } finally { taskActionPending = false; }
+                return;
+            }
             clearPipelineTimers();
             WBState.isGlobalSpinning = false;
             if (WBState.spinTimer) {
@@ -7048,7 +7586,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             WBState.tasks.steps.forEach((st, idx) => {
                 const rows = document.querySelectorAll("#editorial-stage-body .editorial-row");
                 const rowEl = rows[idx];
-                const stateSpan = rowEl?.children?.[4];
+                const stateSpan = rowEl?.children?.[5];
                 if (stateSpan) {
                     scrambleText(stateSpan, isP ? "已暂停" : (st.failures?.length ? "报错" : "正常"), 360);
                 }
@@ -7062,7 +7600,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                         grayTrack.style.width = isP ? '100%' : '0%';
                         grayTrack.style.boxShadow = isP ? '-2.5px 0 0 0 #050605' : 'none';
                     }
-                    const durSpan = rowEl.children[3];
+                    const durSpan = rowEl.children[4];
                     if (durSpan) durSpan.textContent = st.dur;
                 } else {
                     updateTaskRowInPlace(idx);
@@ -7072,7 +7610,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
         }
 
         // 重置主场景3D矩阵网格、瓦片与标签到初始完整可用状态，防止退出重登时原界面失效或不可点击
-        function resetMainWorldState() {
+        function resetMainWorldState(showScene = true) {
             pageTransition.state = 'IDLE';
             pageTransition.progress = 0;
             hoveredTile = null;
@@ -7104,16 +7642,37 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 labelsLayer.style.pointerEvents = 'none';
             }
             const ms = document.getElementById('main-scene');
-            if (ms) {
+            if (ms && showScene) {
                 ms.classList.remove('pointer-events-none');
                 ms.style.opacity = '1';
             }
         }
 
-        function logoutToStartPage() {
+        function clearLocalSession() {
+            csrfToken = '';
+            window.csrfToken = '';
+            localStorage.removeItem('wb_csrf_token');
+            serverSession = null;
+            memoryEncryptedBundle = null;
+            WBState.accounts = [];
+            WBState.subscriptions = [];
+            WBState.currentChapter = null;
+        }
+
+        function endServerSession() {
+            return safeApiFetch('/auth/logout', { method: 'POST', body: '{}' }).then(result => {
+                if (!result || result.ok !== true) return false;
+                clearLocalSession();
+                return true;
+            });
+        }
+
+        function logoutToStartPage(sessionAlreadyEnded = false) {
             authTransitionEpoch++;
             isAuthenticating = false;
             if (soundscape) {
+                soundscape.releasePreparedAudio();
+                soundscape.audioGeneration++;
                 if (soundscape._customAudioTimer) {
                     clearTimeout(soundscape._customAudioTimer);
                     soundscape._customAudioTimer = null;
@@ -7130,20 +7689,18 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             soundscape.triggerTransitionSweep(false);
             clearPipelineTimers();
 
-            resetMainWorldState();
+            resetMainWorldState(false);
             WBState.currentChapter = null;
             mainSceneActive = false;
 
-            // 登录页背景音量平滑渐变为小音量 (0.18)
+            // 登录页背景音量为主场景的三分之一。
             if (soundscape && soundscape.masterGain && soundscape.ctx) {
                 const nowT = soundscape.ctx.currentTime;
                 soundscape.masterGain.gain.cancelScheduledValues(nowT);
                 soundscape.masterGain.gain.setValueAtTime(soundscape.masterGain.gain.value, nowT);
-                soundscape.masterGain.gain.linearRampToValueAtTime(0.18, nowT + 1.2);
+                soundscape.masterGain.gain.linearRampToValueAtTime(soundscape.isMuted ? 0 : 0.7 / 3, nowT + 1.2);
             }
-            if (soundscape && soundscape.customAudio && !soundscape.isMuted) {
-                soundscape.fadeAudio(soundscape.customAudio, soundscape.customAudio.volume, 0.18, 1200);
-            }
+            if (soundscape) soundscape.playCustomBackgroundTrack('', true);
 
             projectPageView.style.opacity = '0';
             projectPageView.classList.add('pointer-events-none', 'hidden');
@@ -7176,7 +7733,12 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             }
             if (mainFooter) mainFooter.style.opacity = '0';
             // 先注销服务端会话，再执行视觉复位，快速重登时不会保留旧会话。
-            safeApiFetch('/auth/logout', { method: 'POST' });
+            if (sessionAlreadyEnded) {
+                clearLocalSession();
+                logoutPromise = Promise.resolve(true);
+            } else {
+                logoutPromise = endServerSession();
+            }
 
             logoutResetTimer = setTimeout(() => {
                 logoutResetTimer = null;
@@ -7184,11 +7746,14 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 projectPageView.classList.remove('flex');
                 mainSceneActive = false;
 
-                if (counterBox) counterBox.classList.add('hidden');
+                if (counterBox) {
+                    counterBox.classList.remove('hidden');
+                    counterBox.style.opacity = '1';
+                }
                 if (promptBox) {
-                    promptBox.classList.remove('hidden');
-                    promptBox.classList.add('flex');
-                    promptBox.style.opacity = '1';
+                    promptBox.classList.add('hidden');
+                    promptBox.classList.remove('flex');
+                    promptBox.style.opacity = '0';
                 }
                 if (pwdContainer) {
                     pwdContainer.style.opacity = '1';
@@ -7202,6 +7767,15 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     accessInput.value = '';
                 }
 
+                // 显示开场层前绘制新首帧，避免露出上一轮网格残影。
+                if (!introActive) {
+                    introActive = true;
+                    initIntroGrid();
+                    introStartTime = performance.now();
+                    lastAmbientSpawnTime = 0;
+                    renderIntroGrid(introStartTime);
+                }
+
                 if (introLayer) {
                     introLayer.classList.remove('hidden');
                     introLayer.style.pointerEvents = 'auto';
@@ -7212,16 +7786,10 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     });
                 }
 
-                if (!introActive) {
-                    introActive = true;
-                    initIntroGrid();
-                    const nowTs = performance.now();
-                    introStartTime = nowTs - 3200;
-                    for (let i = 0; i < introCells.length; i++) {
-                        introCells[i].revealTime = nowTs - 1800;
-                    }
-                    requestAnimationFrame(renderIntroGrid);
-                }
+                backendPreloadFinished = false;
+                backendPreloadSuccess = false;
+                startStrictLoadingSequence();
+
             }, 360);
         }
 
@@ -7737,16 +8305,35 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             syncDynamicBottomButtons();
         }
 
-                function handleCustomMusicFileSelected(input) {
+        let finishMusicPicker = null;
+        let cancelMusicPicker = null;
+        function openCustomMusicPicker(button, input) {
+            if (!input || finishMusicPicker) return;
+            finishMusicPicker = beginActionFeedback(button);
+            cancelMusicPicker = () => {
+                if (finishMusicPicker) finishMusicPicker('idle');
+                finishMusicPicker = null;
+                cancelMusicPicker = null;
+            };
+            input.addEventListener('cancel', cancelMusicPicker, {once: true});
+            try { input.click(); } catch (_) { cancelMusicPicker(); }
+        }
+        function handleCustomMusicFileSelected(input) {
             const file = input?.files?.[0];
+            if (cancelMusicPicker) input.removeEventListener('cancel', cancelMusicPicker);
+            cancelMusicPicker = null;
             const nameEl = document.getElementById('custom-music-file-name');
             if (!file) {
+                if (finishMusicPicker) finishMusicPicker('idle');
+                finishMusicPicker = null;
                 if (nameEl) {
                     nameEl.textContent = '未选择任何文件';
                     nameEl.className = 'font-mono text-xs text-neutral-500 max-w-[280px] whitespace-nowrap';
                 }
                 return;
             }
+            if (finishMusicPicker) finishMusicPicker('success');
+            finishMusicPicker = null;
             if (nameEl) {
                 nameEl.textContent = file.name;
                 nameEl.className = 'font-mono text-xs text-neutral-300 fade-out-tail flex-1 min-w-0';
@@ -7758,113 +8345,65 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             }
         }
 
+        let musicQueue = Promise.resolve();
+        function queueMusic(task) {
+            const result = musicQueue.then(task);
+            musicQueue = result.catch(() => {});
+            return result;
+        }
+        function applyMusicState(state) {
+            const cust = WBState.customization;
+            cust.musicList = state.musicList;
+            cust.activeMusicId = state.activeMusicId;
+            cust.randomMusic = state.randomMusic;
+            updateEditorialKeyFigures(false);
+            renderEditorialStage(false);
+            syncDynamicBottomButtons();
+        }
         function saveCustomMusic() {
-            const nameInp = document.getElementById('custom-music-name-input');
-            const fileInp = document.getElementById('custom-music-file-hidden');
-            const name = (nameInp ? nameInp.value.trim() : '') || 'Custom Audio ' + (WBState.customization.musicList.length);
-            const file = fileInp?.files?.[0];
-
-            if (!nameInp?.value.trim()) {
-                nameInp?.classList.remove('input-error-shake');
-                nameInp?.style.setProperty('border-bottom-color', '#ff5c74', 'important');
-                void nameInp?.offsetWidth;
-                nameInp?.classList.add('input-error-shake');
-                setPreviewFrameState('error', 700);
-                setTimeout(() => {
-                    nameInp?.classList.remove('input-error-shake');
-                    nameInp?.style.removeProperty('border-bottom-color');
-                }, 750);
-                notifyEditorialStatus('MUSIC // PLEASE ENTER MUSIC NAME');
+            const name = document.getElementById('custom-music-name-input')?.value.trim();
+            const file = document.getElementById('custom-music-file-hidden')?.files?.[0];
+            const types = { mp3:'audio/mpeg', wav:'audio/wav', flac:'audio/flac', m4a:'audio/mp4', aac:'audio/aac', ogg:'audio/ogg', opus:'audio/ogg', webm:'audio/webm' };
+            const mime = file?.type?.startsWith('audio/') ? file.type : types[file?.name?.split('.').pop().toLowerCase()];
+            const line = document.getElementById('custom-music-name-input');
+            const finishFeedback = beginActionFeedback(line);
+            if (!name || !file || !mime || !file.size) {
+                finishFeedback('error');
+                notifyEditorialStatus('MUSIC // ENTER A NAME AND SELECT AN AUDIO FILE');
                 return;
             }
-
-            const newId = 'm-' + Date.now();
-            const now = new Date();
-            const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
-
-            if (!file || !file.type.startsWith('audio/') || file.size === 0) {
-                notifyEditorialStatus('MUSIC // SELECT A VALID AUDIO FILE');
-                return;
-            }
-
-            if (file) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    const dataUrl = e.target.result;
-                    if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:audio/')) {
-                        notifyEditorialStatus('MUSIC // AUDIO FILE COULD NOT BE VALIDATED');
-                        return;
-                    }
-                    const item = {
-                        id: newId,
-                        date: dateStr,
-                        name: name,
-                        isDefault: false,
-                        url: dataUrl
-                    };
-                    const nextCustomization = { ...WBState.customization, musicList: [item, ...WBState.customization.musicList] };
-                    const savePromise = IS_PROD_ENV
-                        ? safeApiFetch('/panel/api/customization', { method: 'POST', body: JSON.stringify({ customization: nextCustomization }) }, 30000)
-                        : Promise.resolve({ ok: true });
-                    savePromise.then(result => {
-                        if (!result || result.ok !== true) {
-                            notifyEditorialStatus('MUSIC // SAVE FAILED');
-                            return;
-                        }
-                        WBState.customization = nextCustomization;
-                    // 导入后不要自动选择，维持原有背景音乐不变 (严格对齐 Comment 15)
-                        WBState.customization.isAdding = false;
-                        soundscape.triggerTileNote(8);
-                        notifyEditorialStatus('MUSIC', 'IMPORTED -> ' + name);
-                        renderEditorialStage(false);
-                        syncDynamicBottomButtons();
-                    });
-                };
-                reader.readAsDataURL(file);
-            } else {
-                const synthUrl = generateSyntheticWavUrl(130.81, 261.63);
-                WBState.customization.musicList.unshift({
-                    id: newId,
-                    date: dateStr,
-                    name: name,
-                    isDefault: false,
-                    url: synthUrl
-                });
+            return queueMusic(async () => {
+                const started = Date.now();
+                const result = await safeApiFetch('/panel/api/music/upload', {method:'POST', headers:{'Content-Type':mime, 'X-Audio-Name':encodeURIComponent(name)}, body:file}, 0x7fffffff);
+                await new Promise(resolve => setTimeout(resolve, Math.max(0, 350 - (Date.now() - started))));
+                if (!result || !Array.isArray(result.musicList)) {
+                    finishFeedback('error'); notifyEditorialStatus('MUSIC // SAVE FAILED'); return;
+                }
+                finishFeedback('success');
+                await new Promise(resolve => setTimeout(resolve, 500));
                 WBState.customization.isAdding = false;
-                soundscape.triggerTileNote(6);
-                notifyEditorialStatus('MUSIC', 'ADDED -> ' + name);
-                renderEditorialStage(false);
-                syncDynamicBottomButtons();
-            }
+                applyMusicState(result);
+                soundscape.triggerTileNote(8);
+                notifyEditorialStatus('MUSIC', 'IMPORTED -> ' + name);
+            });
         }
-
-        function selectCustomMusic(id) {
-            WBState.customization.randomMusic = false;
-            WBState.customization.activeMusicId = id;
-            const m = WBState.customization.musicList.find(x => x.id === id);
-            soundscape.triggerTileNote(7);
-            if (m) {
-                soundscape.playCustomBackgroundTrack(m.url, m.isDefault || m.id === 'm-default');
-                notifyEditorialStatus('MUSIC', 'PLAYING -> ' + m.name);
-            }
-            updateEditorialKeyFigures(false);
-            renderEditorialStage(false);
-            syncDynamicBottomButtons();
+        function musicAction(action, id) {
+            return queueMusic(async () => {
+                setPreviewFrameState('busy', 0);
+                const result = await safeApiFetch('/panel/api/music/action', {method:'POST', body:JSON.stringify({action, id})}, 30000);
+                if (!result || !Array.isArray(result.musicList)) {
+                    setPreviewFrameState('error', 800); notifyEditorialStatus('MUSIC // SAVE FAILED'); return;
+                }
+                applyMusicState(result);
+                const current = result.musicList.find(m => m.id === result.activeMusicId);
+                if (current) soundscape.playCustomBackgroundTrack(current.url, current.isDefault || current.id === 'm-default');
+                setPreviewFrameState('success', 800);
+            });
         }
+        function selectCustomMusic(id) { return musicAction('select', id); }
+        function deleteCustomMusic(id) { return musicAction('delete', id); }
 
-        function deleteCustomMusic(id) {
-            WBState.customization.musicList = WBState.customization.musicList.filter(x => x.id !== id);
-            if (WBState.customization.activeMusicId === id) {
-                WBState.customization.activeMusicId = 'm-default';
-                soundscape.playCustomBackgroundTrack('', true);
-            }
-            soundscape.triggerTileNote(2);
-            updateEditorialKeyFigures(false);
-            renderEditorialStage(false);
-            syncDynamicBottomButtons();
-        }
-
-        function saveCustomSlogan() {
+        async function saveCustomSlogan() {
             const nameInp = document.getElementById('custom-slogan-name-input');
             const textInp = document.getElementById('custom-slogan-text-input');
             const name = (nameInp ? nameInp.value.trim() : '') || 'Custom Motto ' + (WBState.customization.sloganList.length + 1);
@@ -7890,17 +8429,22 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             const now = new Date();
             const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
 
-            WBState.customization.sloganList.unshift({
-                id: newId,
-                date: dateStr,
-                name: name,
-                text: text
-            });
-            // WBState.customization.activeSloganId = newId; // Comment 13: 保留原选中项
-            WBState.customization.randomMotto = false;
-            WBState.customization.isAdding = false;
+            const item = { id: newId, date: dateStr, name, text };
+            const nextCustomization = { ...WBState.customization, sloganList: [item, ...WBState.customization.sloganList], isAdding: false };
+            const finishFeedback = beginActionFeedback(textInp);
+            const started = Date.now();
+            const result = IS_PROD_ENV ? await safeApiFetch('/panel/api/customization', { method: 'POST', body: JSON.stringify({ customization: nextCustomization }) }, 30000) : { ok: true };
+            await new Promise(resolve => setTimeout(resolve, Math.max(0, 350 - (Date.now() - started))));
+            if (!result || result.ok !== true) {
+                finishFeedback('error');
+                notifyEditorialStatus('MOTTO // SAVE FAILED');
+                return;
+            }
+            finishFeedback('success');
+            await new Promise(resolve => setTimeout(resolve, 500));
+            WBState.customization = nextCustomization;
             soundscape.triggerTileNote(8);
-            notifyEditorialStatus('MOTTO', 'ADDED & ACTIVATED -> ' + name);
+            notifyEditorialStatus('MOTTO', 'IMPORTED -> ' + name);
             applyCurrentMottoToHome();
             updateEditorialKeyFigures(false);
             renderEditorialStage(false);
@@ -7954,12 +8498,10 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             const cust = WBState.customization;
             soundscape.triggerTileNote(7);
             if (cust.currentTab === 'music') {
-                cust.randomMusic = true;
                 const pool = cust.musicList;
                 const pick = pool[Math.floor(Math.random() * pool.length)];
-                cust.activeMusicId = pick.id;
-                soundscape.playCustomBackgroundTrack(pick.url, pick.isDefault || pick.id === 'm-default');
-                notifyEditorialStatus('RANDOM', 'MUSIC -> ' + pick.name);
+                if (pick) musicAction('random', pick.id);
+                return;
             } else if (cust.currentTab === 'slogan') {
                 cust.randomMotto = true;
                 const pool = cust.sloganList;
@@ -8094,30 +8636,67 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             const rightHeaderEl = document.getElementById('ov-header-right');
             if (rightHeaderEl) {
                 rightHeaderEl.textContent = isRes
-                    ? ('CPU ' + WBState.cpuPct.toFixed(1) + '% / MEM ' + WBState.memMb.toFixed(1) + ' MB')
-                    : ('UP ' + WBState.upMbps.toFixed(2) + ' MB/s');
+                    ? ('CPU ' + (WBState.cpuAvailable ? WBState.cpuPct.toFixed(1) + '%' : '—') + ' / 服务内存 ' + (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'))
+                    : (WBState.trafficAvailable ? 'UP ' + WBState.upMbps.toFixed(2) + ' MB/s' : 'UP —');
             }
             const pPoly = document.getElementById('ov-poly-primary');
             const sPoly = document.getElementById('ov-poly-secondary');
             if (pPoly && sPoly) {
                 const primaryArr = isRes ? WBState.cpuHistory : WBState.downHistory;
                 const secondaryArr = isRes ? WBState.memHistory : WBState.upHistory;
-                const pMax = isRes ? 45 : 35;
-                const sMax = isRes ? 96 : 3.0;
-                const pPts = primaryArr.map((v, i) => ((i / (primaryArr.length - 1)) * 520).toFixed(1) + ',' + (64 - (Math.min(pMax, v) / pMax) * 50).toFixed(1)).join(' ');
-                const sPts = secondaryArr.map((v, i) => ((i / (secondaryArr.length - 1)) * 520).toFixed(1) + ',' + (64 - (Math.min(sMax, v) / sMax) * 36).toFixed(1)).join(' ');
+                const [pPts, sPts] = overviewChartPoints(primaryArr, secondaryArr);
                 pPoly.setAttribute('points', pPts);
                 sPoly.setAttribute('points', sPts);
             }
             const memValEl = document.getElementById('ov-val-mem');
             const uptimeValEl = document.getElementById('ov-val-uptime');
-            if (memValEl) memValEl.textContent = WBState.memMb.toFixed(1) + ' MB';
+            if (memValEl) memValEl.textContent = WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—';
             if (uptimeValEl) uptimeValEl.textContent = formatUptime(WBState.uptimeSec);
         }
+
+        let statusPollRunning = false;
+        setInterval(async () => {
+            if (!IS_PROD_ENV || !mainSceneActive || statusPollRunning) return;
+            statusPollRunning = true;
+            try {
+                const overview = await safeApiFetch('/panel/api/overview', {}, 10000);
+                if (overview) {
+                    WBState.cpuAvailable = overview.service_cpu_available === true;
+                    if (WBState.cpuAvailable) { WBState.cpuPct = overview.service_cpu_percent; WBState.cpuHistory.shift(); WBState.cpuHistory.push(WBState.cpuPct); }
+                    WBState.serviceMemoryAvailable = overview.service_memory_available === true;
+                    if (WBState.serviceMemoryAvailable) WBState.memMb = overview.service_memory_bytes / 1048576;
+                }
+                if (typeof overview?.uptime_sec === 'number') WBState.uptimeSec = overview.uptime_sec;
+                const traffic = await safeApiFetch('/panel/api/meta/stats', {}, 10000);
+                WBState.trafficAvailable = !!traffic && !traffic.demo && (!traffic.running || !!traffic.sampled_at);
+                if (WBState.trafficAvailable) {
+                    WBState.downMbps = traffic.download_speed / 1048576;
+                    WBState.upMbps = traffic.upload_speed / 1048576;
+                    WBState.downHistory.shift(); WBState.downHistory.push(WBState.downMbps);
+                    WBState.upHistory.shift(); WBState.upHistory.push(WBState.upMbps);
+                }
+                if (WBState.serviceMemoryAvailable) {
+                    WBState.memHistory.shift(); WBState.memHistory.push(WBState.memMb);
+                }
+                if (pageTransition.state === 'IN_PAGE' && ['tasks', 'scheduler'].includes(WBState.currentChapter)) {
+                    const status = await safeApiFetch('/panel/api/maintenance/status', {}, 10000);
+                    if (status && syncMaintenanceData(status)) renderEditorialStage(false);
+                    const schedule = await safeApiFetch('/panel/api/tasks/schedule', {}, 10000);
+                    if (schedule && syncTaskScheduleData(schedule)) updateTaskScheduleVisual(schedule.enabled, false);
+                }
+            } finally { statusPollRunning = false; }
+        }, 10000);
 
         // 秒级实时心跳：静默更新数值（animate=false，绝不重播入场动画或产生抖动）
         setInterval(() => {
             WBState.uptimeSec++;
+            if (IS_PROD_ENV) {
+                if (pageTransition.state === 'IN_PAGE') {
+                    updateEditorialKeyFigures(false);
+                    if (['overview', 'gateway', 'sphere'].includes(WBState.currentChapter)) updateOverviewStageInPlace();
+                }
+                return;
+            }
             let coolingChanged = false;
             WBState.accounts.forEach(acc => {
                 if (acc.state === 'COOLING' && acc.coolSec > 0) {
@@ -8288,14 +8867,24 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                         new Promise(resolve => setTimeout(resolve, 800))
                     ]).then(([data]) => {
                         WBState.sphereCheckingUpdate = false;
-                        if (data && (data.has_update || data.ok)) {
+                        if (data && data.has_update === false) {
+                            WBState.sphereUpdateReady = false;
+                            syncDynamicBottomButtons();
+                            if (btn1) {
+                                btn1.classList.remove('border-amber-400', 'text-amber-300', 'animate-pulse', 'border-rose-500');
+                                btn1.classList.add('border-emerald-400');
+                                setTimeout(() => btn1.classList.remove('border-emerald-400'), 1200);
+                            }
+                            setPreviewFrameState('success', 1200);
+                            notifyEditorialStatus('UPDATE CHECK COMPLETE // ALREADY UP TO DATE');
+                        } else if (data && data.has_update === true && data.data?.artifact?.verified === true) {
                             WBState.sphereUpdateReady = true;
                             if (btn1) {
                                 btn1.classList.remove('border-amber-400', 'text-amber-300', 'animate-pulse', 'border-rose-500', 'border-white/50');
                                 btn1.classList.add('border-emerald-400', 'text-emerald-300', 'bg-emerald-400/10');
                             }
                             setPreviewFrameState('success', 1200);
-                            notifyEditorialStatus(`UPDATE AVAILABLE // V${data.current_version || '3.0.1'} -> V${data.latest_version || '3.0.2'}`);
+                            notifyEditorialStatus(`UPDATE AVAILABLE // V${data.current_version || '—'} -> V${data.latest_version || '—'}`);
                             syncDynamicBottomButtons();
                         } else {
                             throw new Error('Check failed');
@@ -8303,27 +8892,18 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     }).catch(() => {
                         WBState.sphereCheckingUpdate = false;
                         WBState.sphereUpdateReady = false;
+                        syncDynamicBottomButtons();
                         if (btn1) {
                             btn1.classList.remove('border-amber-400', 'text-amber-300', 'animate-pulse', 'border-emerald-400');
                             btn1.classList.add('border-rose-500', 'text-rose-400', 'canvas-fault-jolt');
-                            setTimeout(() => btn1.classList.remove('canvas-fault-jolt'), 450);
+                            setTimeout(() => { btn1.classList.remove('canvas-fault-jolt'); if (WBState.currentChapter === 'sphere') syncDynamicBottomButtons(); }, 1200);
                         }
                         setPreviewFrameState('error', 800);
                         notifyEditorialStatus('UPDATE CHECK FAILED // CLICK TO RETRY');
-                        syncDynamicBottomButtons();
                     });
                 } else {
                     if (WBState.sphereUpdating) {
-                        WBState.sphereUpdating = false;
-                        WBState.sphereUpdateReady = false;
-                        if (btn1) {
-                            btn1.classList.remove('border-amber-400', 'text-amber-300', 'animate-pulse', 'border-emerald-400');
-                            btn1.classList.add('border-rose-500', 'text-rose-400', 'canvas-fault-jolt');
-                            setTimeout(() => btn1.classList.remove('canvas-fault-jolt'), 450);
-                        }
-                        setPreviewFrameState('error', 800);
-                        notifyEditorialStatus('UPDATE HALTED BY OPERATOR');
-                        syncDynamicBottomButtons();
+                        notifyEditorialStatus('UPDATE IN PROGRESS');
                         return;
                     }
                     WBState.sphereUpdating = true;
@@ -8337,24 +8917,26 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     syncDynamicBottomButtons();
 
                     const applyPromise = (typeof safeApiFetch === 'function')
-                        ? safeApiFetch('/panel/api/update/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 3500)
+                        ? safeApiFetch('/panel/api/update/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 0x7fffffff)
                         : fetch('/panel/api/update/apply', { method: 'POST' }).then(r => r.json()).catch(() => null);
 
                     applyPromise.then(data => {
                         if (!data || data.ok !== true) throw new Error('verified update is unavailable');
+                        WBState.sphereUpdateApplied = true;
                         if (btn1) {
                             btn1.classList.remove('border-amber-400', 'text-amber-300', 'animate-pulse');
                             btn1.classList.add('border-emerald-400', 'text-emerald-300');
                         }
                         setPreviewFrameState('success', 1000);
-                        notifyEditorialStatus('SYSTEM UPDATE APPLIED // RESTARTING');
-                        setTimeout(() => location.reload(), 1500);
+                        WBState.sphereUpdating = false;
+                        notifyEditorialStatus('UPDATE INSTALLED // RESTART SERVICE TO ACTIVATE');
                     }).catch(() => {
                         WBState.sphereUpdating = false;
+                        syncDynamicBottomButtons();
                         if (btn1) {
                             btn1.classList.remove('border-amber-400', 'text-amber-300', 'animate-pulse');
                             btn1.classList.add('border-rose-500', 'text-rose-400', 'canvas-fault-jolt');
-                            setTimeout(() => btn1.classList.remove('canvas-fault-jolt'), 450);
+                            setTimeout(() => { btn1.classList.remove('canvas-fault-jolt'); if (WBState.currentChapter === 'sphere') syncDynamicBottomButtons(); }, 1200);
                         }
                         setPreviewFrameState('error', 800);
                         notifyEditorialStatus('UPDATE FAILED');
@@ -8396,6 +8978,10 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 WBState.accountSubmode = 'INGEST';
                 renderEditorialStage(true);
             } else if (ch === 'egress') {
+                if (IS_PROD_ENV && !WBState.importingSub) {
+                    refreshEgressView();
+                    return;
+                }
                 // Comment 3 & 4: 刷新全量节点，右侧几何模型圆圈黄色慢闪，非全超时则短暂变绿，全部超时才变红颤抖
                 if (WBState.importingSub) {
                     WBState.importingSub = false;
@@ -8442,6 +9028,22 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     }, 500);
                 }
                 } else if (ch === "models") {
+                if (IS_PROD_ENV) {
+                    // 模型页面的大按钮不变色；结果只反馈到右侧圆环。
+                    setPreviewFrameState('busy', 0);
+                    safeApiFetch('/panel/api/models/refresh', {method: 'POST', body: '{}'}, 30000, true).then(result => {
+                        setPreviewFrameState(Array.isArray(result?.models) && !result.stale ? 'success' : 'error', 800);
+                        if (!Array.isArray(result?.models)) {
+                            notifyEditorialStatus(result?.error?.includes('没有可用账号') ? '模型获取失败 // 没有可用账号' : '模型获取失败 // 请检查账号与出口');
+                            return;
+                        }
+                        syncModelsData(result);
+                        notifyEditorialStatus(result.stale ? '模型刷新失败，显示旧缓存' : '模型列表已更新');
+                        updateEditorialKeyFigures(false);
+                        renderEditorialStage(true);
+                    });
+                    return;
+                }
                 setPreviewFrameState("busy", 1200);
                 soundscape.triggerTileNote(7);
                 notifyEditorialStatus("FETCHING ALL MODELS // CN & GLOBAL");
@@ -8461,7 +9063,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     }, 1200);
                 });
             } else if (ch === 'tasks' || ch === 'scheduler') {
-                runFourStepPipeline();
+                void startAllTasks();
             } else if (ch === 'usage') {
                 WBState.usageView = WBState.usageView === 'CURVE' ? 'RANK' : 'CURVE';
                 if (WBState.usageView === 'RANK') WBState.usageModelPage = 0;
@@ -8485,10 +9087,40 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 const elTh = document.getElementById('cfg-threshold');
                 const elSub = document.getElementById('cfg-sub-refresh');
 
-                const oldVal = (elOld?.value || '').trim();
-                const newVal = (elNew?.value || '').trim();
-                const repVal = (elRep?.value || '').trim();
+                const oldVal = elOld?.value || '';
+                const newVal = elNew?.value || '';
+                const repVal = elRep?.value || '';
                 const isChangingPwd = Boolean(oldVal || newVal || repVal);
+
+                if (IS_PROD_ENV && !isChangingPwd) {
+                    const threshold = Number(elTh?.value);
+                    if (!Number.isInteger(threshold) || threshold < 1 || threshold > 1000000) {
+                        beginActionFeedback()('error');
+                        notifyEditorialStatus('低额保护阈值必须在 1 到 1000000 之间');
+                        return;
+                    }
+                    const refreshHours = Number(elSub?.value);
+                    if (!Number.isInteger(refreshHours) || refreshHours < 1 || refreshHours > 8760) {
+                        beginActionFeedback()('error');
+                        notifyEditorialStatus('订阅刷新间隔必须在 1 到 8760 小时之间');
+                        return;
+                    }
+                    const finishFeedback = beginActionFeedback(elTh, elSub);
+                    safeApiFetch('/panel/api/preferences', {method: 'POST', body: JSON.stringify({credit_guard_low: threshold, subscription_refresh_hours: refreshHours})}, 10000).then(result => {
+                        finishFeedback(result ? 'success' : 'error');
+                        if (!result) { notifyEditorialStatus('设置保存失败'); return; }
+                        WBState.configThreshold = result.credit_guard_low;
+                        WBState.configCacheHours = result.subscription_refresh_hours;
+                        notifyEditorialStatus('设置已保存');
+                        updateEditorialKeyFigures(true);
+                    });
+                    return;
+                }
+
+                if (IS_PROD_ENV && isChangingPwd && (Number(elTh?.value) !== WBState.configThreshold || Number(elSub?.value) !== WBState.configCacheHours)) {
+                    notifyEditorialStatus('请分别保存密码和数值设置');
+                    return;
+                }
 
                 // --- Comment 1: 密码修改状态机规范 ---
                 if (isChangingPwd) {
@@ -8521,43 +9153,15 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     notifyEditorialStatus('VERIFYING CREDENTIALS // PBKDF2...');
 
                     setTimeout(async () => {
-                        pwdInputs.forEach(el => {
+                        const stopPasswordWait = () => pwdInputs.forEach(el => {
                             el.classList.remove('input-verifying-sway');
                             el.style.borderBottomColor = '';
                         });
 
                         let checkOk = false;
-                        let oldWrong = false;
-                        if (IS_PROD_ENV) {
-                            try {
-                                const verifyRes = await safeApiFetch('/auth/login', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ password: oldVal })
-                                }, 3000);
-                                if (!verifyRes || !verifyRes.authenticated) {
-                                    oldWrong = true;
-                                }
-                            } catch (e) {
-                                oldWrong = true;
-                            }
-                        }
-
-                        // (2) 若访问密码输错 应当是访问密码变红颤抖，圆圈同理变红
-                        if (oldWrong) {
-                            elOld.classList.add('input-error-shake');
-                            elOld.style.borderBottomColor = '#ff5c74';
-                            setTimeout(() => {
-                                elOld.classList.remove('input-error-shake');
-                                elOld.style.borderBottomColor = '';
-                            }, 650);
-                            setPreviewFrameState('error', 800);
-                            notifyEditorialStatus('CURRENT PASSWORD INCORRECT');
-                            return;
-                        }
-
-                        // (3) 若新密码和确认新密码不同或过短 (在访问密码校验成功之后发生)，应当只有确认新密码横线变红颤抖
-                        if (newVal !== repVal || newVal.length < 6) {
+                // (3) 新密码与确认值不同时，只标记确认输入框。
+                        if (newVal !== repVal) {
+                            stopPasswordWait();
                             elRep.classList.add('input-error-shake');
                             elRep.style.borderBottomColor = '#ff5c74';
                             setTimeout(() => {
@@ -8565,7 +9169,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                                 elRep.style.borderBottomColor = '';
                             }, 650);
                             setPreviewFrameState('error', 800);
-                            notifyEditorialStatus(newVal !== repVal ? 'CONFIRM PASSWORD MISMATCH' : 'NEW PASSWORD MUST BE AT LEAST 6 CHARS');
+                            notifyEditorialStatus('CONFIRM PASSWORD MISMATCH');
                             return;
                         }
 
@@ -8575,9 +9179,9 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                                 const pwdRes = await safeApiFetch('/auth/password', {
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ old_password: oldVal, new_password: newVal })
+                                    body: JSON.stringify({ old_password: oldVal, new_password: newVal, confirm_password: repVal })
                                 }, 3000);
-                                if (pwdRes && (pwdRes.ok || pwdRes.authenticated)) {
+                                if (pwdRes && pwdRes.ok === true) {
                                     checkOk = true;
                                     if (pwdRes.csrf_token) {
                                         csrfToken = pwdRes.csrf_token;
@@ -8590,17 +9194,19 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                             }
                         }
 
+                        stopPasswordWait();
                         if (checkOk) {
-                            elRep.style.borderBottomColor = '#34d399';
+                            elRep.classList.add('input-success-green');
                             setTimeout(() => {
-                                elRep.style.borderBottomColor = '';
+                                elRep.classList.remove('input-success-green');
                                 elOld.value = '';
                                 elNew.value = '';
                                 elRep.value = '';
                             }, 1200);
                             setPreviewFrameState('success', 1000);
                             soundscape.triggerTileNote(11);
-                            notifyEditorialStatus('PASSWORD SUCCESSFULLY UPDATED');
+                            notifyEditorialStatus('PASSWORD SUCCESSFULLY UPDATED // 请重新登录');
+                            if (IS_PROD_ENV) setTimeout(() => logoutToStartPage(true), 1200);
                         } else {
                             elOld.classList.add('input-error-shake');
                             elOld.style.borderBottomColor = '#ff5c74';
@@ -8613,6 +9219,8 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                         }
                     }, 420);
                 }
+
+                if (IS_PROD_ENV) return;
 
                 // --- Comment 1: 保护阈值和刷新时间独立校验与动效 ---
                 const rawThStr = (elTh?.value || '').trim();
@@ -8728,9 +9336,9 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 notifyEditorialStatus('COPIED // HTTP://127.0.0.1:7863/V1');
             } else if (ch === 'accounts') {
                 if (WBState.accountSubmode) {
-                    importFromPastedCallbackUrl();
+                    window.importFromPastedCallbackUrl();
                 } else {
-                    probeAllAccountEgress();
+                    triggerGlobalDataRefresh();
                 }
             } else if (ch === 'egress') {
                 // Comment 3: 导入页面为确定导入，非导入页面为进入导入
@@ -8747,7 +9355,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 notifyEditorialStatus(`MODEL REALM FILTER -> ${WBState.modelRealmFilter}`);
                 renderEditorialStage(true);
             } else if (ch === 'tasks' || ch === 'scheduler') {
-                togglePauseAllTasks();
+                void setDailyTasksFromToggle();
             } else if (ch === 'usage') {
                 WBState.usageRange = (WBState.usageRange === '6H') ? '24H' : '6H';
                 const nextTargetBtnText = WBState.usageRange === '24H' ? '[ TIME: 6H ]' : '[ TIME: 24H ]';
@@ -8778,9 +9386,27 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             }
         });
 
-        document.getElementById('hidden-json-file-input')?.addEventListener('change', (ev) => {
+        document.getElementById('hidden-json-file-input')?.addEventListener('change', async (ev) => {
             const file = ev.target?.files?.[0];
             if (!file) return;
+            if (IS_PROD_ENV) {
+                const btn = document.getElementById('btn-import-json');
+                let result = null;
+                try {
+                    if (file.size > 8 * 1024 * 1024) throw new Error('oversized');
+                    const payload = JSON.parse(await file.text());
+                    result = await safeApiFetch('/panel/api/accounts/import', {method: 'POST', body: JSON.stringify(payload)}, 59000, true);
+                } catch (_) {}
+                clearTimeout(jsonImportTimer);
+                btn?.classList.remove('json-btn-busy');
+                btn?.classList.add(result?.ok ? 'json-btn-success' : 'json-btn-error');
+                setTimeout(() => btn?.classList.remove('json-btn-success', 'json-btn-error'), 1200);
+                setPreviewFrameState(result?.ok ? 'success' : 'error', 1200);
+                notifyEditorialStatus(result?.ok ? ('新增 ' + result.imported + ' 个账号，保留 ' + result.retained.length + ' 个已有账号') : (result?.rollback_failed?.length ? 'Meta 回滚失败，代理内核已停止，请检查状态' : '导入失败或结果未知，请刷新账号列表核对'));
+                if (result?.ok) { await loadAuthenticatedPanelData(); renderEditorialStage(false); }
+                ev.target.value = '';
+                return;
+            }
 
             const btnImport = document.getElementById('btn-import-json');
             // Comment 9: 导入过程中按钮与圆环变黄慢闪
@@ -8879,10 +9505,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
 
         function enterMainExperience(withSound) {
             if (logoutResetTimer) { clearTimeout(logoutResetTimer); logoutResetTimer = null; }
-            if (logoutResetTimer) {
-                clearTimeout(logoutResetTimer);
-                logoutResetTimer = null;
-            }
+            const transitionEpoch = authTransitionEpoch;
             isAuthenticating = false;
             try {
                 if (typeof WBState !== 'undefined' && WBState.customization) {
@@ -8892,7 +9515,17 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                     if (zen && !zen.url) zen.url = generateSyntheticWavUrl(196.0, 392.0);
                 }
             } catch (e) {}
-            soundscape.init(withSound);
+            const pendingTrack = soundscape.pendingAuthenticatedTrack;
+            soundscape.init(withSound, { skipDefault: !!pendingTrack && !pendingTrack.isDefault });
+            if (pendingTrack && !pendingTrack.isDefault && soundscape.defaultAmbientGain && soundscape.ctx) {
+                const gain = soundscape.defaultAmbientGain.gain;
+                gain.cancelScheduledValues(soundscape.ctx.currentTime);
+                gain.setValueAtTime(0, soundscape.ctx.currentTime);
+            }
+            if (pendingTrack && !pendingTrack.loading) {
+                soundscape.pendingAuthenticatedTrack = null;
+                soundscape.playCustomBackgroundTrack(pendingTrack.url, pendingTrack.isDefault);
+            }
             if (soundscape.customAudio) {
                 soundscape.fadeAudio(soundscape.customAudio, soundscape.customAudio.volume, withSound ? 0.7 : 0.0, 1200);
             }
@@ -8906,17 +9539,20 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
 
             introLayer.style.opacity = '0';
             introLayer.style.pointerEvents = 'none';
+            mainScene.style.transition = 'opacity 900ms ease-in-out';
 
             if (projectPageView) {
                 projectPageView.classList.add('hidden', 'pointer-events-none');
                 projectPageView.classList.remove('flex');
                 projectPageView.style.opacity = '0';
             }
-            resetMainWorldState();
+            // 复位内部瓦片，但先保持主场景隐藏；由下方同一过渡统一显现。
+            resetMainWorldState(false);
 
             scrambleText(document.getElementById('role-tag'), '[ LOCAL CONTROL MESH ]', 750);
 
             setTimeout(() => {
+                if (transitionEpoch !== authTransitionEpoch) return;
                 introActive = false;
                 introLayer.classList.add('hidden');
                 mainScene.classList.remove('pointer-events-none');
@@ -8927,6 +9563,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
                 resetMainWorldState();
 
                 setTimeout(() => {
+                    if (transitionEpoch !== authTransitionEpoch) return;
                     topControls.classList.remove('hidden');
                     topControls.classList.add('flex');
                     weatherSwitcher.classList.remove('hidden');
@@ -8945,27 +9582,32 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
         // 顶栏全局数据刷新（刷新账号池、用量、积分构成、错误记录）
         // 顶栏轻量快速刷新：仅刷新账号池额度、用量积分、构成和错误记录（不测速出口、不全量重置）
         async function triggerGlobalDataRefresh() {
-            setPreviewFrameState('busy', 1200);
+            const finishFeedback = beginActionFeedback(feedbackTarget);
             soundscape.triggerTileNote(7);
-            if (!IS_PROD_ENV) { notifyEditorialStatus('REFRESH UNAVAILABLE // DEMO DATA IS READ-ONLY'); setPreviewFrameState('error', 800); return; }
-            const result = await safeApiFetch('/panel/api/refresh', { method: 'POST', body: '{}' }, 30000);
-            if (!result || result.ok !== true) { notifyEditorialStatus('REFRESH FAILED // 状态未改变'); setPreviewFrameState('error', 800); return; }
-            const [overview, egress, packages, logs] = await Promise.all([
+            if (!IS_PROD_ENV) { finishFeedback('error'); notifyEditorialStatus('REFRESH UNAVAILABLE // DEMO DATA IS READ-ONLY'); return; }
+            const result = await safeApiFetch('/panel/api/refresh', { method: 'POST', body: '{}' }, 30000, true);
+            if (!result || result.ok !== true) {
+                const failed = Object.entries(result?.components || {}).filter(([, value]) => value?.ok !== true).map(([name]) => ({balance:'账号额度或出口', usage:'用量存储', errors:'错误记录', packages:'积分构成'})[name] || name);
+                finishFeedback('error');
+                notifyEditorialStatus(failed.length ? '刷新失败 // 请检查 ' + failed.join('、') : '刷新失败 // 服务连接异常');
+                return;
+            }
+            const [overview, egress, packages, logs, usage] = await Promise.all([
                 safeApiFetch('/panel/api/overview', {}, 10000),
-                safeApiFetch('/panel/api/egress', {}, 10000),
+                safeApiFetch('/panel/api/meta/nodes', {}, 10000),
                 safeApiFetch('/panel/api/packages', {}, 10000),
-                safeApiFetch('/panel/api/request_logs?summary=1&limit=50', {}, 10000)
+                safeApiFetch('/panel/api/request_logs?summary=1&limit=50', {}, 10000),
+                safeApiFetch('/panel/api/usage?hours=24', {}, 10000)
             ]);
             syncOverviewData(overview);
             syncEgressData(egress);
             if (packages?.accounts) syncPackagesData(packages);
             if (logs) syncLogsData(logs);
+            if (usage) syncUsageData(usage);
             const failed = Object.entries(result.components || {}).filter(([, value]) => value?.ok !== true);
             notifyEditorialStatus(failed.length ? 'REFRESH PARTIAL // ' + failed.map(([name]) => name).join(', ') : 'REFRESHED // QUOTA, TELEMETRY & LOGS SYNCED');
             if (pageTransition.state === 'IN_PAGE') renderEditorialStage(false);
-            setTimeout(() => {
-                setPreviewFrameState(failed.length ? 'error' : 'success', 800);
-            }, 1200);
+            finishFeedback(failed.length || !overview || !egress || !packages || !logs || !usage ? 'error' : 'success');
         }
         document.getElementById('btn-refresh-all')?.addEventListener('click', triggerGlobalDataRefresh);
 
@@ -8974,7 +9616,7 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             const acc = WBState.accounts.find(a => a.uid === uid);
             if (!acc) return;
             const label = acc.name || uid;
-            if (!window.confirm(`永久删除账号「${label}」？凭证、出口绑定、用量与任务记录将一并清理，且无法撤销。`)) return;
+            if (!window.confirm(`永久删除账号「${label}」？出口绑定、用量与任务记录将清理，凭证隔离保留七天后清理。`)) return;
             if (IS_PROD_ENV) {
                 const result = await safeApiFetch('/panel/api/accounts/' + encodeURIComponent(uid) + '/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 30000);
                 if (!result || result.ok !== true) {
@@ -9038,11 +9680,155 @@ import { initEditorialEventDelegation, handleDataAction } from './editorial-even
             }, 2200);
         });
 
+        async function refreshEgressView(nodeID = null) {
+            if (WBState._egressRefreshing) return;
+            WBState._egressRefreshing = true;
+            // 大按钮始终保留原样；批量操作只驱动右侧圆环。
+            const finishFeedback = !nodeID
+                ? Object.assign((state, ringState = state) => setPreviewFrameState(ringState, 800), { rebind: () => {} })
+                : beginActionFeedback();
+            if (!nodeID) setPreviewFrameState('busy', 0);
+            try {
+                if (!nodeID && WBState.egressTab === 'SUBS') {
+                    const ids = WBState.subscriptions.map(item => item.id);
+                    let failed = 0;
+                    for (const id of ids) {
+                        const result = await safeApiFetch('/panel/api/meta/subscriptions', {method: 'POST', body: JSON.stringify({action: 'refresh', id})}, 65000);
+                        if (!result || result.ok !== true) failed++;
+                    }
+                    await loadAuthenticatedPanelData();
+                    notifyEditorialStatus('订阅刷新完成：' + (ids.length - failed) + ' 成功，' + failed + ' 失败');
+                    finishFeedback(failed ? 'error' : 'success');
+                } else {
+                    const job = await safeApiFetch('/panel/api/meta/tests', {method: 'POST', body: JSON.stringify(nodeID ? {node: nodeID} : {})}, 10000);
+                    if (!job || !job.id) { notifyEditorialStatus('节点测速启动失败'); finishFeedback('error'); return; }
+                    notifyEditorialStatus('节点测速进行中');
+                    let status = job;
+                    while (status.running) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        status = await safeApiFetch('/panel/api/meta/tests', {}, 10000);
+                        if (!status || status.id !== job.id) { notifyEditorialStatus('节点测速状态读取失败'); finishFeedback('error'); return; }
+                        syncEgressData(await safeApiFetch('/panel/api/meta/nodes', {}, 10000));
+                        renderEditorialStage(false);
+                        finishFeedback.rebind();
+                    }
+                    const finalNodes = await safeApiFetch('/panel/api/meta/nodes', {}, 10000);
+                    if (!finalNodes || !Array.isArray(finalNodes.nodes)) {
+                        notifyEditorialStatus('节点测速结果读取失败'); finishFeedback('error'); return;
+                    }
+                    syncEgressData(finalNodes);
+                    notifyEditorialStatus('节点测速完成：' + status.completed + '，失败 ' + status.failed);
+                    const selected = nodeID ? WBState.nodes.find(n => n.id === nodeID) : null;
+                    const boundFailure = WBState.nodes.some(n => n.bindingCount > 0 && (n.timeout || n.status === 'error'));
+                    const allFailed = status.total > 0 && status.failed >= status.total;
+                    const ringFailed = status.cancelled || boundFailure || (!nodeID && allFailed);
+                    const nodeFailed = nodeID && (!selected || selected.timeout || selected.status === 'error');
+                    finishFeedback(status.cancelled || nodeFailed || (!nodeID && allFailed) ? 'error' : 'success', ringFailed ? 'error' : 'success');
+                }
+                renderEditorialStage(false);
+                finishFeedback.rebind();
+            } finally { WBState._egressRefreshing = false; }
+        }
         function handleViewportScaleSync() {
             updateResponsiveScale();
             if (introActive) initIntroGrid();
             resizeMainWorldCanvas();
             setupCrispPreviewCanvas();
+        }
+        if (IS_PROD_ENV) {
+            window.toggleAccountManual = async (uid) => {
+                const account = WBState.accounts.find(item => item.uid === uid);
+                if (!account) return;
+                if (account.state === 'BLOCKED') { beginActionFeedback()('error'); notifyEditorialStatus('令牌已隔离，请重新授权'); return; }
+                const result = await safeApiFetch('/panel/api/accounts/' + encodeURIComponent(uid) + '/toggle_disabled', {method: 'POST', body: JSON.stringify({disabled: account.manualOn})}, 10000);
+                if (!result?.ok) { beginActionFeedback()('error'); notifyEditorialStatus(account.state === 'BLOCKED' ? '令牌已隔离，请重新授权' : '账号状态更新失败'); return; }
+                syncOverviewData(await safeApiFetch('/panel/api/overview', {}, 10000));
+                renderEditorialStage(false);
+            };
+            window.bindAccountEgress = async (uid, nodeName) => {
+                const node = WBState.nodes.find(item => item.id === nodeName);
+                if (!node) return;
+                if (node.timeout) { beginActionFeedback()('error'); notifyEditorialStatus('节点超时，请重新测速'); return; }
+                const result = await safeApiFetch('/panel/api/meta/accounts/' + encodeURIComponent(uid) + '/bind', {method: 'POST', body: JSON.stringify({node: node.id})}, 40000);
+                if (!result?.ok) { notifyEditorialStatus('出口绑定失败'); return; }
+                syncEgressData(await safeApiFetch('/panel/api/meta/nodes', {}, 10000));
+                renderEditorialStage(false);
+            };
+            window.switchLoginRealm = (realm) => {
+                WBState.loginRealm = realm;
+                WBState.loginAuthUrl = '';
+                WBState.loginState = '';
+                renderEditorialStage(false);
+            };
+            window.openOAuthLoginLink = async () => {
+                const finishFeedback = beginActionFeedback();
+                const authWindow = window.open('about:blank', '_blank');
+                if (authWindow) authWindow.opener = null;
+                const result = await safeApiFetch('/panel/api/login/start', {method: 'POST', body: JSON.stringify({realm: WBState.loginRealm.toLowerCase()})}, 35000);
+                if (!result?.state || !result?.url) { finishFeedback('error'); if (authWindow) authWindow.close(); notifyEditorialStatus('获取授权链接失败'); return; }
+                let authURL;
+                try { authURL = new URL(result.url); } catch (_) { finishFeedback('error'); if (authWindow) authWindow.close(); notifyEditorialStatus('授权链接无效'); return; }
+                if (authURL.protocol !== 'https:' || authURL.username || authURL.password) { finishFeedback('error'); if (authWindow) authWindow.close(); notifyEditorialStatus('授权链接无效'); return; }
+                WBState.loginState = result.state;
+                WBState.loginAuthUrl = authURL.href;
+                if (authWindow) authWindow.location.href = authURL.href;
+                else notifyEditorialStatus('浏览器阻止了新窗口，请复制授权链接');
+                finishFeedback('success'); // Link obtained; authorization completion is reported separately.
+                startOAuthPolling();
+                renderEditorialStage(false);
+            };
+            const subscriptionAction = async (action, id, extra = {}) => {
+                const finishFeedback = beginActionFeedback();
+                const result = await safeApiFetch('/panel/api/meta/subscriptions', {method: 'POST', body: JSON.stringify({action, id, ...extra})}, 65000, true);
+                if (!result || result.ok === false) {
+                    finishFeedback('error');
+                    notifyEditorialStatus(result?.error === 'subscription has no stored URL' ? '缺少订阅链接，请重新导入' : '订阅操作失败');
+                    return;
+                }
+                finishFeedback('success');
+                await loadAuthenticatedPanelData();
+                renderEditorialStage(false);
+                finishFeedback.rebind();
+            };
+            window.toggleDisableSub = (id) => {
+                const item = WBState.subscriptions.find(sub => sub.id === id);
+                if (item) return subscriptionAction('toggle', id, {enabled: !!item.disabled});
+            };
+            window.deleteSubscription = (id) => {
+                if (window.confirm('删除此订阅？')) return subscriptionAction('delete', id);
+            };
+            window.refreshSingleSub = (id) => subscriptionAction('refresh', id);
+            window.importFromPastedCallbackUrl = async () => {
+                const input = document.getElementById('inp-account-credentials');
+                const finishFeedback = beginActionFeedback(input);
+                let payload;
+                try { payload = JSON.parse(input?.value || ''); } catch (_) {
+                    finishFeedback('error');
+                    notifyEditorialStatus('凭据 JSON 无效');
+                    return;
+                }
+                const started = Date.now();
+                const result = await safeApiFetch('/panel/api/accounts/import', {method: 'POST', body: JSON.stringify(payload)}, 59000, true);
+                await new Promise(resolve => setTimeout(resolve, Math.max(0, 350 - (Date.now() - started))));
+                if (!result?.ok) {
+                    finishFeedback('error');
+                    notifyEditorialStatus(result?.rollback_failed?.length ? 'Meta 回滚失败，代理内核已停止，请检查状态' : '凭据导入失败，请检查格式及账号状态');
+                    await loadAuthenticatedPanelData();
+                    return;
+                }
+                finishFeedback('success');
+                await new Promise(resolve => setTimeout(resolve, 500));
+                if (input) input.value = '';
+                WBState.accountSubmode = null;
+                await loadAuthenticatedPanelData();
+                renderEditorialStage(true);
+                notifyEditorialStatus('账号凭据已导入');
+            };
+            window.probeSingleNode = (nodeID) => {
+                if (WBState.nodes.some(node => node.id === nodeID)) return refreshEgressView(nodeID);
+                beginActionFeedback()('error');
+                notifyEditorialStatus('节点不存在，请刷新列表');
+            };
         }
         window.addEventListener('resize', handleViewportScaleSync);
         window.visualViewport?.addEventListener('resize', handleViewportScaleSync);
@@ -9136,6 +9922,11 @@ function bootGeometricRuntime() {
     if (typeof window === 'undefined') return;
     if (window.__geometricBooted) return;
     window.__geometricBooted = true;
+    Object.assign(window, { renderEditorialStage, notifyEditorialStatus, setVertexHover,
+        syncDynamicBottomButtons, switchCustomizationTab, selectCustomMusic,
+        deleteCustomMusic, selectCustomSlogan, deleteCustomSlogan, selectCustomTheme,
+        handleCustomMusicFileSelected, openCustomMusicPicker });
+    initEditorialEventDelegation(document);
     const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (typeof window !== 'undefined' && window.requestAnimationFrame ? window.requestAnimationFrame : (cb => setTimeout(cb, 16)));
     if (typeof updateResponsiveScale === 'function') updateResponsiveScale();
     if (typeof initIntroGrid === 'function') initIntroGrid();

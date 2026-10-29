@@ -104,7 +104,7 @@ func TestFirstPasswordSetupAndDefaultPasswordBypass(t *testing.T) {
 		}
 
 		// 未登录且未提供 old_password，直接调用 /auth/password
-		w := call(localRequest("POST", "/auth/password", `{"new_password":"direct-save-pwd"}`))
+		w := call(localRequest("POST", "/auth/password", `{"new_password":"direct-save-pwd","confirm_password":"direct-save-pwd"}`))
 		if w.Code != 200 {
 			t.Fatalf("expected 200 for direct password save in default mode, got %d: %s", w.Code, w.Body.String())
 		}

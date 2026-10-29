@@ -28,11 +28,17 @@ func IsEmptyStreamError(err error) bool { return errors.Is(err, errEmptyStream) 
 // Aggregate 读取完整 SSE 流，聚合 delta.content 为单个 OpenAI chat.completion 响应。
 // 分片/半行由 bufio.Reader.ReadString 处理；遇到 "data: [DONE]" 结束。
 // tool_calls 以流式 delta 到达（按 index 合并：首片带 id/type/name，后续只带 arguments 片段）。
-func Aggregate(r io.Reader) (map[string]any, error) { return aggregate(r, nil) }
+func Aggregate(r io.Reader) (map[string]any, error) { return aggregate(r, nil, nil) }
 
 // AggregateSpool returns a response whose large values remain in private files.
 // The caller owns the returned store and must Close it after consuming the map.
 func AggregateSpool(r io.Reader) (map[string]any, *ResponseSpool, error) {
+	return AggregateSpoolObserved(r, nil)
+}
+
+// AggregateSpoolObserved invokes onText as content arrives, while retaining
+// the same aggregation and tool-call validation as the non-streaming path.
+func AggregateSpoolObserved(r io.Reader, onText func(string) error) (map[string]any, *ResponseSpool, error) {
 	store := &ResponseSpool{}
 	committed := false
 	defer func() {
@@ -40,7 +46,7 @@ func AggregateSpool(r io.Reader) (map[string]any, *ResponseSpool, error) {
 			_ = store.Close()
 		}
 	}()
-	result, err := aggregate(r, store)
+	result, err := aggregate(r, store, onText)
 	if err != nil {
 		store.Close()
 		return nil, nil, err
@@ -49,7 +55,7 @@ func AggregateSpool(r io.Reader) (map[string]any, *ResponseSpool, error) {
 	return result, store, nil
 }
 
-func aggregate(r io.Reader, store *ResponseSpool) (map[string]any, error) {
+func aggregate(r io.Reader, store *ResponseSpool, onText func(string) error) (map[string]any, error) {
 	br := bufio.NewReaderSize(r, 16*1024)
 	var (
 		id, model     string
@@ -70,7 +76,8 @@ func aggregate(r io.Reader, store *ResponseSpool) (map[string]any, error) {
 		toolSeq int
 		// idIndex id → 已分配的 index：跨帧持续（延续碎片的 id 常出现在后续帧），
 		// 供缺 index 时按 id 归位既有调用（见 mergeToolCallsChunk 注释）。
-		idIndex = map[string]int{}
+		idIndex     = map[string]int{}
+		observerErr error
 	)
 	// appendContent 是「已取到正文」（gotAnyContent latch）的唯一写入点：delta 与
 	// message 两路 content 都必须经此并入，规约只有一份（issue #142）——
@@ -84,6 +91,9 @@ func aggregate(r io.Reader, store *ResponseSpool) (map[string]any, error) {
 		}
 		content.WriteString(txt)
 		gotAnyContent = true
+		if onText != nil && observerErr == nil {
+			observerErr = onText(txt)
+		}
 	}
 	// mergeToolCallsChunk 把一段 tool_calls 数组按 index 合并进累计表。
 	// delta（流式分片，按 index 累积）与 message（非 delta 整条）共用同一合并逻辑，
@@ -200,6 +210,12 @@ func aggregate(r io.Reader, store *ResponseSpool) (map[string]any, error) {
 			} else {
 				var chunk map[string]any
 				if json.Unmarshal([]byte(payload), &chunk) == nil {
+					// A 200 response can still contain an upstream error event. Do
+					// not turn it into a successful empty completion or save it as
+					// conversation history.
+					if chunk["error"] != nil {
+						return nil, errors.New("upstream returned an error event")
+					}
 					// 有效事件计数：仅 JSON 解析成功的数据帧计入（解析失败沿用静默 continue）。
 					validEvents++
 					if v, ok := chunk["id"].(string); ok && id == "" {
@@ -248,6 +264,9 @@ func aggregate(r io.Reader, store *ResponseSpool) (map[string]any, error) {
 					}
 				}
 			}
+		}
+		if observerErr != nil {
+			return nil, observerErr
 		}
 		if err == io.EOF {
 			break

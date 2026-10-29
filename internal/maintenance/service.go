@@ -17,15 +17,19 @@ type AccountResult struct {
 	Message string `json:"message"`
 }
 type Step struct {
-	Name      string          `json:"name"`
-	State     string          `json:"state"`
-	Completed int             `json:"completed"`
-	Failed    int             `json:"failed"`
-	Accounts  []AccountResult `json:"accounts"`
+	Name       string          `json:"name"`
+	State      string          `json:"state"`
+	StartedAt  time.Time       `json:"started_at,omitempty"`
+	FinishedAt time.Time       `json:"finished_at,omitempty"`
+	Completed  int             `json:"completed"`
+	Failed     int             `json:"failed"`
+	Total      int             `json:"total"`
+	Accounts   []AccountResult `json:"accounts"`
 }
 type Status struct {
 	RunID          string `json:"run_id"`
 	Running        bool   `json:"running"`
+	Paused         bool   `json:"paused"`
 	LastRunAt      string `json:"last_run_at"`
 	LastFinishedAt string `json:"last_finished_at"`
 	LastResult     string `json:"last_result"`
@@ -33,18 +37,25 @@ type Status struct {
 	Steps          []Step `json:"steps"`
 }
 type Service struct {
-	mu     sync.Mutex
-	p      *pool.Pool
-	action Action
-	state  Status
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{}
+	mu          sync.Mutex
+	p           *pool.Pool
+	action      Action
+	state       Status
+	ctx         context.Context
+	cancel      context.CancelFunc
+	done        chan struct{}
+	resume      chan struct{}
+	storagePath string
+	deleted     map[string]bool
 }
 
 func New(p *pool.Pool, fn Action) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Service{p: p, action: fn, ctx: ctx, cancel: cancel, state: Status{Steps: []Step{}}}
+	steps := make([]Step, 0, 4)
+	for _, name := range []string{"token", "checkin", "activity", "travel"} {
+		steps = append(steps, Step{Name: name, State: "pending", Accounts: []AccountResult{}})
+	}
+	return &Service{p: p, action: fn, ctx: ctx, cancel: cancel, state: Status{Steps: steps}}
 }
 func (s *Service) Status() Status {
 	s.mu.Lock()
@@ -70,6 +81,7 @@ func (s *Service) Start() bool {
 		LastResult:     s.state.LastResult,
 		LastFailed:     s.state.LastFailed,
 	}
+	s.deleted = make(map[string]bool)
 	for _, n := range []string{"token", "checkin", "activity", "travel"} {
 		s.state.Steps = append(s.state.Steps, Step{Name: n, State: "pending", Accounts: []AccountResult{}})
 	}
@@ -77,12 +89,49 @@ func (s *Service) Start() bool {
 	go s.run(s.done)
 	return true
 }
+
+func (s *Service) SetPaused(paused bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.state.Running || s.ctx.Err() != nil {
+		return false
+	}
+	if paused == s.state.Paused {
+		return true
+	}
+	s.state.Paused = paused
+	if paused {
+		s.resume = make(chan struct{})
+	} else {
+		close(s.resume)
+		s.resume = nil
+	}
+	return true
+}
+
+func (s *Service) waitUntilResumed() bool {
+	for {
+		s.mu.Lock()
+		resume := s.resume
+		s.mu.Unlock()
+		if resume == nil {
+			return s.ctx.Err() == nil
+		}
+		select {
+		case <-resume:
+		case <-s.ctx.Done():
+			return false
+		}
+	}
+}
 func (s *Service) run(done chan struct{}) {
 	defer close(done)
 	defer func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.state.Running = false
+		s.state.Paused = false
+		s.resume = nil
 		s.state.LastFinishedAt = time.Now().Format(time.RFC3339)
 		s.state.LastFailed = 0
 		completed := 0
@@ -102,20 +151,26 @@ func (s *Service) run(done chan struct{}) {
 		default:
 			s.state.LastResult = "failed"
 		}
+		if err := s.saveLocked(); err != nil {
+			log.Printf("maintenance: save failed: %v", err)
+		}
 	}()
 	accts := s.p.List()
 	for i, name := range []string{"token", "checkin", "activity", "travel"} {
 		s.mu.Lock()
 		s.state.Steps[i].State = "running"
+		s.state.Steps[i].StartedAt = time.Now()
+		s.state.Steps[i].Total = len(accts)
 		s.mu.Unlock()
 		for _, a := range accts {
-			if s.ctx.Err() != nil {
+			if !s.waitUntilResumed() {
 				break
 			}
 			res := AccountResult{UID: a.UID, State: "done"}
-			if a.ManualDisabled {
-				res.State = "skipped"
-				res.Message = "用户手动禁用"
+			_, exists := s.p.Status(a.UID)
+			if !exists {
+				res.State = "failed"
+				res.Message = "账号不存在"
 			} else {
 				msg, err := s.action(s.ctx, name, a.UID)
 				res.Message = msg
@@ -125,6 +180,13 @@ func (s *Service) run(done chan struct{}) {
 				}
 			}
 			s.mu.Lock()
+			if s.deleted[a.UID] {
+				if s.state.Steps[i].Total > 0 {
+					s.state.Steps[i].Total--
+				}
+				s.mu.Unlock()
+				continue
+			}
 			st := &s.state.Steps[i]
 			st.Accounts = append(st.Accounts, res)
 			if res.State == "done" {
@@ -139,6 +201,7 @@ func (s *Service) run(done chan struct{}) {
 		s.mu.Lock()
 		st := &s.state.Steps[i]
 		st.State = "done"
+		st.FinishedAt = time.Now()
 		if st.Failed > 0 {
 			st.State = "failed"
 		}
