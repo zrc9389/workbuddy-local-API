@@ -1733,6 +1733,49 @@ export function expiryTone(days) {
             }
         }
 
+        
+        // 核心规范：开机加载达到 100 并倒数至 0（100~0 回归）期间启动音频
+        // 规则：优先播放用户先前在个性化中配置并选定的自定义音轨（1/3 音量）；若无则播放默认雨林氛围音
+        function startAppropriateLoginSoundtrack() {
+            if (typeof soundscape === 'undefined' || !soundscape) return;
+            if (soundscape._loginTrackStarted) return;
+            soundscape._loginTrackStarted = true;
+
+            const savedMusicUrl = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_url')) || '';
+            const savedMusicId = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_id')) || '';
+
+            if (savedMusicUrl && savedMusicId !== 'm-default') {
+                soundscape.playCustomBackgroundTrack(savedMusicUrl, false);
+                if (soundscape.customAudio) {
+                    soundscape.customAudio.volume = 0.7 / 3;
+                }
+            } else {
+                soundscape.initForLogin();
+                if (soundscape.ctx && soundscape.ctx.state === 'suspended') {
+                    soundscape.ctx.resume().catch(() => {});
+                }
+            }
+        }
+
+        
+        // 全局手势唤醒：浏览器策略默认挂起无手势音频上下文，只要用户在开机期间移动鼠标或点击屏幕，立即唤醒
+        const earlyAudioUnlock = () => {
+            if (typeof soundscape !== 'undefined' && soundscape && soundscape.ctx) {
+                if (soundscape.ctx.state === 'suspended') {
+                    soundscape.ctx.resume().then(() => {
+                        startAppropriateLoginSoundtrack();
+                    }).catch(() => {});
+                } else {
+                    startAppropriateLoginSoundtrack();
+                }
+            }
+        };
+        if (typeof window !== 'undefined') {
+            ['pointerdown', 'mousedown', 'keydown', 'touchstart', 'click'].forEach(evt => {
+                window.addEventListener(evt, earlyAudioUnlock, { passive: true });
+            });
+        }
+
         function startStrictLoadingSequence() {
             const statusEl = document.getElementById('loading-status');
             const progressBarEl = document.getElementById('mini-progress-bar');
@@ -1859,25 +1902,8 @@ export function expiryTone(days) {
                         requestAnimationFrame(stepCounter);
                     }
                 } else if (phase === 'REWIND_TO_0') {
-                    if (!soundscape.loginSoundtrackTriggered) {
-                        soundscape.loginSoundtrackTriggered = true;
-                        try {
-                            if (typeof soundscape !== 'undefined' && soundscape) {
-                                soundscape.initForLogin();
-                                soundscape.activateLoginAudio();
-                                // 如果用户先前在个性化中配置了自定义音乐，优先播放该音乐
-                                const customUrl = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_url')) || '';
-                                if (customUrl) {
-                                    soundscape.playCustomBackgroundTrack(customUrl, false);
-                                }
-                                if (soundscape.ctx && soundscape.ctx.state === 'suspended') {
-                                    soundscape.ctx.resume().catch(() => {});
-                                }
-                            }
-                        } catch (e) {
-                            console.warn('100~0 rewind audio start deferred:', e);
-                        }
-                    }
+                    // 核心契约：在 100~0 回归动画一开始就立即触发音频播放
+                    startAppropriateLoginSoundtrack();
                     const rewindElapsed = now - rewindStartTime;
                     const rewindDuration = 520;
                     const t = Math.min(1, rewindElapsed / rewindDuration);
@@ -8543,6 +8569,14 @@ export function expiryTone(days) {
             cust.musicList = state.musicList;
             cust.activeMusicId = state.activeMusicId;
             cust.randomMusic = state.randomMusic;
+            // 持久化用户选定的音乐 ID 与 URL，确保在未登录首屏即可播放用户选择的音乐
+            const curMusic = Array.isArray(cust.musicList) ? cust.musicList.find(m => m.id === cust.activeMusicId) : null;
+            if (curMusic && typeof localStorage !== 'undefined') {
+                try {
+                    localStorage.setItem('wb_active_music_id', curMusic.id || '');
+                    localStorage.setItem('wb_active_music_url', curMusic.url || '');
+                } catch (_) {}
+            }
             updateEditorialKeyFigures(false);
             renderEditorialStage(false);
             syncDynamicBottomButtons();
