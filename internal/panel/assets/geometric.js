@@ -1739,7 +1739,7 @@ export function expiryTone(days) {
         function startAppropriateLoginSoundtrack() {
             if (typeof soundscape === 'undefined' || !soundscape) return;
             if (soundscape._loginTrackStarted) return;
-            soundscape._loginTrackStarted = true;
+            soundscape._loginTrackStarted = true; soundscape.loginSoundtrackTriggered = true;
 
             const savedMusicUrl = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_url')) || '';
             const savedMusicId = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_id')) || '';
