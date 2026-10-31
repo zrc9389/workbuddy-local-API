@@ -1738,8 +1738,17 @@ export function expiryTone(days) {
         // 规则：优先播放用户先前在个性化中配置并选定的自定义音轨（1/3 音量）；若无则播放默认雨林氛围音
         function startAppropriateLoginSoundtrack() {
             if (typeof soundscape === 'undefined' || !soundscape) return;
-            if (soundscape._loginTrackStarted) return;
-            soundscape._loginTrackStarted = true; soundscape.loginSoundtrackTriggered = true;
+            soundscape.loginSoundtrackTriggered = true;
+            if (soundscape._loginTrackStarted) {
+                if (soundscape.ctx && soundscape.ctx.state === 'suspended') {
+                    soundscape.ctx.resume().catch(() => {});
+                }
+                if (soundscape.customAudio && soundscape.customAudio.paused) {
+                    soundscape.customAudio.play().catch(() => {});
+                }
+                return;
+            }
+            soundscape._loginTrackStarted = true;
 
             const savedMusicUrl = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_url')) || '';
             const savedMusicId = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_id')) || '';
@@ -1748,6 +1757,7 @@ export function expiryTone(days) {
                 soundscape.playCustomBackgroundTrack(savedMusicUrl, false);
                 if (soundscape.customAudio) {
                     soundscape.customAudio.volume = 0.7 / 3;
+                    soundscape.customAudio.play().catch(() => {});
                 }
             } else {
                 soundscape.initForLogin();
@@ -2200,7 +2210,10 @@ export function expiryTone(days) {
         }
         const accessKeyInput = document.getElementById('input-access-key');
         if (accessKeyInput) {
+            accessKeyInput.addEventListener('focus', () => startAppropriateLoginSoundtrack(), { passive: true });
+            accessKeyInput.addEventListener('click', () => startAppropriateLoginSoundtrack(), { passive: true });
             accessKeyInput.addEventListener('keydown', (e) => {
+                startAppropriateLoginSoundtrack();
                 if (e.key === 'Enter') submitPasswordAndEnter(true);
             });
             accessKeyInput.addEventListener('input', () => {
