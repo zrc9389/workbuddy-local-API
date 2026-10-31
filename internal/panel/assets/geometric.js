@@ -4828,7 +4828,7 @@ export function expiryTone(days) {
                 { id: 'INC-902', time: '09:33:51', code: 429, uid: '#c17a39', egress: 'KR-ICN-01', summary: '模型级并发限流，网关队列平滑缓冲 180ms 放行', raw: '{"error":{"code":"model_rate_limited","model":"claude-opus-4-6"}}' }
             ]
         };
-        window.WBState = WBState;
+        window.WBState = WBState; window.soundscape = soundscape; window.spawnGridHighlightWave = spawnGridHighlightWave; window.gridHighlightWaves = gridHighlightWaves;
         if (IS_PROD_ENV) {
             WBState.accounts = [];
             WBState.nodes = [];
