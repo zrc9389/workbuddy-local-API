@@ -1454,7 +1454,9 @@ export function expiryTone(days) {
             if (!Array.isArray(result?.models)) return false;
             WBState.models = result.models.map(item => ({id: item.id, name: item.name || item.id,
                 realm: String(item.realm || '').toUpperCase(), vendor: item.vendor || '', ctx: String(item.context_length || '—'),
-                maxOut: String(item.max_output_tokens || '—'), ttft: null, trend: []}));
+                maxOut: String(item.max_output_tokens || '—'),
+                ttft: (typeof item.ttft === 'number' && item.ttft > 0) ? item.ttft : (typeof item.latency === 'number' && item.latency > 0 ? item.latency : null),
+                trend: Array.isArray(item.trend) ? item.trend : []}));
             WBState.modelCacheHot = result.cached === true;
             return true;
         }
@@ -1504,7 +1506,7 @@ export function expiryTone(days) {
             WBState.tasks.running = !!maintenance.running;
             if (WBState.currentChapter === 'tasks' || WBState.currentChapter === 'scheduler') {
                 if (maintenance.steps.some(step => step.failed > 0 || step.state === 'failed')) setPreviewFrameState('error', 800);
-                else if (WBState.tasks.running) setPreviewFrameState('busy', 0);
+                else if (WBState.tasks.running) if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
                 else if (wasRunning) setPreviewFrameState('success', 800);
             }
             WBState.tasks.pausedAll = !!maintenance.paused;
@@ -1513,7 +1515,7 @@ export function expiryTone(days) {
                 code: String(index + 1).padStart(2, '0'), key: step.name,
                 name: ({token: '访问令牌续期', checkin: '每日签到', activity: '每日活跃上报', travel: '猫猫旅行状态'})[step.name] || step.name,
                 backendState: step.state,
-                dur: (() => { const start = Date.parse(step.started_at); const end = Date.parse(step.finished_at); return Number.isFinite(start) && start > 946684800000 ? Math.max(0, Math.round(((Number.isFinite(end) && end > start ? end : Date.now()) - start) / 1000)) + 's' : '—'; })(), progress: ['done', 'failed'].includes(step.state) ? 100 : (step.total > 0 ? Math.round((step.accounts || []).length * 100 / step.total) : 0),
+                dur: (() => { const start = Date.parse(step.started_at); const end = Date.parse(step.finished_at); return Number.isFinite(start) && start > 946684800000 ? (() => { const diff = ((Number.isFinite(end) && end > start ? end : Date.now()) - start); return diff < 1000 ? Math.max(0.1, (diff / 1000)).toFixed(1) + 's' : Math.round(diff / 1000) + 's'; })() : '—'; })(), progress: ['done', 'failed'].includes(step.state) ? 100 : (step.total > 0 ? Math.round((step.accounts || []).length * 100 / step.total) : 0),
                 okCount: step.completed || 0, processedCount: (step.accounts || []).length, skippedCount: (step.accounts || []).filter(item => item.state === 'skipped').length, totalCount: step.total || 0,
                 failures: (step.accounts || []).filter(item => item.state === 'failed').map(item => {
                     const account = WBState.accounts.find(entry => entry.uid === item.uid);
@@ -1589,7 +1591,7 @@ export function expiryTone(days) {
             }
             updateTaskScheduleVisual(data.enabled);
             finishFeedback(data.enabled === !!enabled ? 'success' : 'error');
-            if (WBState.tasks.running) setPreviewFrameState('busy', 0);
+            if (WBState.tasks.running) if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
             notifyEditorialStatus(data.enabled ? 'ALL DAILY TASKS ENABLED' : 'ALL DAILY TASKS DISABLED');
             return data.enabled === !!enabled;
         }
@@ -2029,7 +2031,9 @@ export function expiryTone(days) {
                 pwdContainer.classList.remove('access-denied-shake');
                 isAuthenticating = false;
             }, 500);
-            setTimeout(() => { accessKeyInput.classList.remove('access-denied-border'); }, 1200);
+            setTimeout(() => {
+                accessKeyInput.classList.remove('access-denied-border');
+            }, 1200);
         }
 
         async function submitPasswordAndEnter(withSound = true) {
@@ -2133,6 +2137,10 @@ export function expiryTone(days) {
                 soundscape.releasePreparedAudio();
                 if (withSound && typeof soundscape !== 'undefined' && soundscape && typeof soundscape.triggerErrorSound === 'function') {
                     soundscape.triggerErrorSound();
+                }
+                const inpKey = document.getElementById('input-access-key');
+                if (inpKey) {
+                    setTimeout(() => { inpKey.value = ''; }, 480);
                 }
                 triggerAccessDeniedAnimation(failureMessage);
             }
@@ -3408,8 +3416,8 @@ export function expiryTone(days) {
                 col,
                 row,
                 radius: 0.1,
-                maxRadius: isFullScreenNoDecay ? 45.0 : 9.5,
-                speed: isFullScreenNoDecay ? 0.38 : 0.22,
+                maxRadius: isFullScreenNoDecay ? 45.0 : 16.5,
+                speed: isFullScreenNoDecay ? 0.38 : 0.12,
                 intensity,
                 isFullScreenNoDecay
             });
@@ -4743,7 +4751,16 @@ export function expiryTone(days) {
                 inVals:  [21, 33, 46,  62, 41,  53]
             },
             usage24h: {
-                labels: ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00', '24:00'],
+                labels: (() => {
+                    const now = new Date(Date.now() + 8 * 3600000);
+                    const curH = now.getUTCHours();
+                    const lbs = [];
+                    for (let step = 6; step >= 0; step--) {
+                        const h = (curH - step * 4 + 48) % 24;
+                        lbs.push(String(h).padStart(2, '0') + ':00');
+                    }
+                    return lbs;
+                })(),
                 outVals: [120, 86, 210, 380, 440, 355, 290],
                 inVals:  [58,  42, 95,  172, 205, 168, 134]
             },
@@ -4946,7 +4963,7 @@ export function expiryTone(days) {
             let stateLabel = '正常';
             let stateCls = 'tone-normal';
             if (WBState.tasks.pausedAll || WBState.tasks.scheduleEnabled === false) {
-                stateLabel = WBState.tasks.pausedAll ? '已暂停' : (WBState.tasks.running ? '排程停用（本次运行中）' : '停用');
+                stateLabel = WBState.tasks.pausedAll ? '已暂停' : (WBState.tasks.running ? '排程停用 · 运行中' : '排程停用');
                 stateCls = 'tone-paused';
             } else if (isCur && !hasFault) {
                 stateLabel = '执行中';
@@ -5081,7 +5098,7 @@ export function expiryTone(days) {
                 });
             };
             paint('busy');
-            setPreviewFrameState('busy', 0);
+            if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
             let finished = false;
             const finish = (state, ringState = state) => {
                 if (finished) return;
@@ -5338,9 +5355,15 @@ export function expiryTone(days) {
 
         // 无重绘悬停游标更新，防止打断 SVG 曲线从左向右蔓延入场动画 (Comment 12)
         window.hoverUsagePoint = (idx) => {
-            WBState.usageHoverIdx = idx;
             const ds = WBState.usageRange === '24H' ? WBState.usage24h : WBState.usage6h;
-            const hIdx = idx >= 0 ? idx : ds.labels.length - 1;
+            if (idx >= 0) {
+                WBState.usageHoverIdx = idx;
+                setVertexHover(idx * 3, `${ds.labels[idx]} // OUT ${ds.outVals[idx]}K`);
+            } else {
+                setVertexHover(-1);
+                return; // 移开时不自动跳回默认时间！保持在最后悬停点
+            }
+            const hIdx = WBState.usageHoverIdx >= 0 ? WBState.usageHoverIdx : ds.labels.length - 1;
             const curX = ((hIdx / (ds.labels.length - 1)) * 520).toFixed(1);
             const lineEl = document.getElementById('usage-cursor-line');
             const labelEl = document.getElementById('usage-cursor-readout');
@@ -5351,14 +5374,18 @@ export function expiryTone(days) {
             if (labelEl) {
                 labelEl.innerHTML = `时刻 <strong class="text-white font-normal">${ds.labels[hIdx]}</strong> &mdash; 输出 ${ds.outVals[hIdx]}K / 输入 ${ds.inVals[hIdx]}K`;
             }
-            if (idx >= 0) setVertexHover(idx * 3, `${ds.labels[idx]} // OUT ${ds.outVals[idx]}K`);
-            else setVertexHover(-1);
         };
 
         window.hoverErrorModelPoint = (idx) => {
-            WBState.logModelHoverIdx = idx;
             const em = WBState.errorModelSeries;
-            const hIdx = idx >= 0 ? idx : 4;
+            if (idx >= 0) {
+                WBState.logModelHoverIdx = idx;
+                setVertexHover(idx * 2 + 1, `${em.labels[idx]} // L=${em.lambdaVals[idx].toFixed(2)}`);
+            } else {
+                setVertexHover(-1);
+                return; // 移开时不自动跳回 16点！保持在最后悬停点
+            }
+            const hIdx = WBState.logModelHoverIdx >= 0 ? WBState.logModelHoverIdx : 4;
             const curX = ((hIdx / (em.labels.length - 1)) * 520).toFixed(1);
             const lineEl = document.getElementById('err-model-cursor-line');
             const labelEl = document.getElementById('err-model-readout');
@@ -5369,8 +5396,6 @@ export function expiryTone(days) {
             if (labelEl) {
                 labelEl.innerHTML = `时段 <strong class="text-white font-normal">${em.labels[hIdx]}</strong> &mdash; 强度 &lambda;(t) = <strong class="text-white font-normal">${em.lambdaVals[hIdx].toFixed(2)}</strong> / 观测 ${em.rawCounts[hIdx]} 次`;
             }
-            if (idx >= 0) setVertexHover(idx * 2 + 1, `${em.labels[idx]} // L=${em.lambdaVals[idx].toFixed(2)}`);
-            else setVertexHover(-1);
         };
 
         function renderEditorialStage(animate = false) {
@@ -5647,8 +5672,8 @@ export function expiryTone(days) {
                                     <div class="flex justify-between items-center text-[11.5px] tracking-[0.12em] text-white/45 mb-1">
                                         <span class="flex items-center space-x-1.5"><span class="inline-block w-1.5 h-1.5 rounded-full bg-white/40"></span><span>导入账号凭据 JSON（单个对象或数组）</span></span>
                                     </div>
-                                    <div class="w-full pb-0.5 mb-1">
-                                        <textarea id="inp-account-credentials" class="editorial-input credential-paste w-full font-mono text-[12px]" rows="2" wrap="off" autocomplete="off" placeholder="粘贴凭据 JSON"></textarea>
+                                    <div class="max-w-xl pb-0.5 mb-1">
+                                        <textarea id="inp-account-credentials" class="editorial-input credential-paste w-full font-mono text-[12.5px] text-white/90" rows="2" wrap="off" autocomplete="off" placeholder="粘贴凭据 JSON"></textarea>
                                     </div>
                                 </div>
                             </div>
@@ -5676,9 +5701,9 @@ export function expiryTone(days) {
                             const isTimeout = Boolean(n.timeout);
                             let rankGroup = 0;
                             const isUnavailable = Boolean(n.timeout || n.status === 'error');
-                            if (isCurrent) rankGroup = -1;
-                            else if (isOccupied) rankGroup = 1;
+                            if (isOccupied) rankGroup = 1;
                             else if (isUnavailable) rankGroup = 2;
+                            else rankGroup = 0; // 当前选中的节点在查看时保持原位排序，不强行跳顶打乱视线
                             return { ...n, owner, isCurrent, isOccupied, isTimeout, rankGroup };
                         }).sort((a, b) => {
                             if (a.rankGroup !== b.rankGroup) return a.rankGroup - b.rankGroup;
@@ -6066,7 +6091,7 @@ export function expiryTone(days) {
                     let stateLabel = st.backendState === 'pending' ? '待运行' : '正常';
                     let stateCls = 'tone-normal';
                     if (WBState.tasks.pausedAll || WBState.tasks.scheduleEnabled === false) {
-                        stateLabel = WBState.tasks.pausedAll ? '已暂停' : (WBState.tasks.running ? '排程停用（本次运行中）' : '停用');
+                        stateLabel = WBState.tasks.pausedAll ? '已暂停' : (WBState.tasks.running ? '排程停用 · 运行中' : '排程停用');
                         stateCls = 'tone-paused';
                     } else if (isCur && !hasFault) {
                         stateLabel = '执行中';
@@ -6086,7 +6111,7 @@ export function expiryTone(days) {
 
                     return `
                         <div class="editorial-row py-3 grid items-center gap-x-4 text-xs text-left cursor-pointer"
-                             style="grid-template-columns: minmax(120px, 144px) 108px 64px 48px 56px minmax(96px, 1fr);"
+                             style="grid-template-columns: minmax(120px, 144px) 108px 64px 48px 56px minmax(130px, 1fr);"
                              data-action="set-task-step" data-step-code="${st.code}"
                              data-hover-vertex="${idx * 3}" data-hover-label='STEP ${st.code} // ${processed}/${st.totalCount}'>
                             <div class="flex items-center space-x-3 min-w-0">
@@ -6102,7 +6127,7 @@ export function expiryTone(days) {
                     `;
                 }).join('');
 
-                commitStageMarkup(container, `<div>${WBState.tasks.running ? `<button class="editorial-text-btn mb-3" data-action="toggle-maintenance-pause">${WBState.tasks.pausedAll ? '继续本次任务' : '暂停本次任务'}</button>` : ''}${rowsHtml}</div>`, animate);
+                commitStageMarkup(container, `<div>${rowsHtml}</div>`, animate);
                 renderPagerControls(0, 1, '');
                 return;
             }
@@ -6218,16 +6243,14 @@ export function expiryTone(days) {
                             const ratio = p.remain / Math.max(1, p.total);
                             const tone = expiryTone(p.days);
                             return `
-                                <div class="editorial-row py-2.5 grid items-center gap-x-3 text-xs text-left"
-                                     style="grid-template-columns: minmax(0, 1.45fr) 64px 150px 76px;"
+                                <div class="editorial-row py-2.5 grid items-center gap-x-4 text-xs text-left"
+                                     style="grid-template-columns: minmax(180px, 1fr) 140px 88px;"
                                      data-hover-vertex="${idx * 5 + 1}" data-hover-label='${p.id} // ${p.days}D LEFT'>
-                                    <span class="text-white font-medium max-w-[145px] fade-truncate text-left">${p.name}</span>
-                                    <span class="text-white/40 text-[10.5px] tabular-nums-left">顺位 ${String(globalOrder).padStart(2, '0')}</span>
-                                    <div class="flex items-center space-x-2.5">
-                                        <span class="text-white/88 font-['Space_Grotesk'] tabular-nums-left w-[98px] shrink-0">${p.remain.toLocaleString()} <span class="text-white/35 text-[10.5px]">/ ${p.total.toLocaleString()}</span></span>
-                                        ${renderHairlineMeter(ratio, 36)}
+                                    <span class="text-white font-medium max-w-[210px] fade-truncate text-left pr-2" title="${escapeDisplayText(p.name)}">${p.name}</span>
+                                    <div class="text-left font-['Space_Grotesk'] tabular-nums-left">
+                                        <span class="text-white/90">${p.remain.toLocaleString()}</span> <span class="text-white/40">/</span> <span class="text-white/60">${p.total.toLocaleString()}</span>
                                     </div>
-                                    <span class="text-[11px] ${tone} tabular-nums-left whitespace-nowrap">${p.days == null ? '到期时间未知' : p.days + ' 天到期'}</span>
+                                    <span class="text-[11px] ${tone} tabular-nums-left whitespace-nowrap text-left">${p.days == null ? '未知' : p.days + ' 天到期'}</span>
                                 </div>
                             `;
                         }).join('');
@@ -6886,7 +6909,7 @@ export function expiryTone(days) {
                 btnImport.classList.remove('json-btn-success', 'json-btn-error');
                 btnImport.classList.add('json-btn-busy');
             }
-            setPreviewFrameState('busy', 0);
+            if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
             clearTimeout(jsonImportTimer);
             jsonImportTimer = setTimeout(() => {
                 btnImport?.classList.remove('json-btn-busy');
@@ -6908,7 +6931,7 @@ export function expiryTone(days) {
                 btnExport.classList.remove('json-btn-success', 'json-btn-error');
                 btnExport.classList.add('json-btn-busy');
             }
-            setPreviewFrameState('busy', 0);
+            if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
             notifyEditorialStatus('PREPARING GLOBAL JSON EXPORT...');
 
             if (IS_PROD_ENV) {
@@ -7025,7 +7048,7 @@ export function expiryTone(days) {
             if (!target) return;
 
             // 1. 刷新中：圆圈变黄，模型 2 倍速
-            setPreviewFrameState('busy', 0);
+            if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
             window.triggerModelSpinAcceleration(1200);
             soundscape.triggerTileNote(6);
             notifyEditorialStatus(`PROBING NODE ${target.name}...`);
@@ -7183,7 +7206,7 @@ export function expiryTone(days) {
             };
 
             // 2. 验证中：线条变黄并添加轻微左右晃动类
-            setPreviewFrameState('busy', 0);
+            if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
             WBState._isPullingSub = true;
             if (urlEl) {
                 urlEl.classList.remove('input-error-shake', 'input-success-green');
@@ -7465,18 +7488,27 @@ export function expiryTone(days) {
         const daysArr = [1, 3, 5, 10, 20, 30];
         const allPacks = WBState.accounts.flatMap(getAccountActivePackages).filter(p => p.days != null);
         const total = allPacks.reduce((sum, p) => sum + (Number(p.remain) || 0), 0);
-        return daysArr.map((day, i) => {
-            let expAcc = 0;
+        const packCounts = daysArr.map(day => {
             let packs = 0;
             WBState.accounts.forEach(acc => {
                 const activePacks = getAccountActivePackages(acc);
-                if (activePacks.some(p => p.days !== null && p.days <= day)) expAcc++;
                 packs += activePacks.filter(p => p.days !== null && p.days <= day).length;
+            });
+            return packs;
+        });
+        const maxPacks = Math.max(1, ...packCounts);
+        return daysArr.map((day, i) => {
+            let expAcc = 0;
+            let packs = packCounts[i];
+            WBState.accounts.forEach(acc => {
+                const activePacks = getAccountActivePackages(acc);
+                if (activePacks.some(p => p.days !== null && p.days <= day)) expAcc++;
             });
             const remaining = allPacks.filter(p => p.days > day).reduce((sum, p) => sum + (Number(p.remain) || 0), 0);
             const survival = total > 0 ? 100 * remaining / total : 0;
             const x = [40, 110, 210, 310, 410, 500][i];
-            const y = Math.round(68 - (survival / 100) * 50);
+            // 遵从要求：包越多则折线上点越高（SVG Y 越小）
+            const y = Math.round(64 - (packs / maxPacks) * 48);
             return { day, survival, expAcc, packs, x, y };
         });
     }
@@ -7489,7 +7521,7 @@ export function expiryTone(days) {
         WBState.packageModelHoverIdx = idx;
         const titleEl = document.getElementById('pkg-model-readout');
         if (titleEl) {
-            titleEl.textContent = `时段 ${p.day}天 — 存活积分 ${p.survival.toFixed(1)}% / 预计到期 ${p.expAcc} 账号 / 临期包 ${p.packs}`;
+            titleEl.textContent = `时段 ${p.day}天 — 存活积分 ${p.survival.toFixed(1)}% / 预计到期 ${p.expAcc} 账号 / 剩余包数 ${p.packs} 个`;
         }
         const curEl = document.getElementById('pkg-model-cursor');
         if (curEl) {
@@ -7600,7 +7632,7 @@ export function expiryTone(days) {
             notifyEditorialStatus('SCHEDULED PIPELINE RUNNING // MUTEX LOCKED');
 
             // Comment 5: 流水线执行期间 3D 几何与外圈以 2.0 倍速旋转，直至任务执行结束
-            setPreviewFrameState('busy', 0);
+            if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
 
             [0, 1, 2, 3].forEach((stepIdx) => {
                 const tStart = setTimeout(() => {
@@ -7614,7 +7646,7 @@ export function expiryTone(days) {
                     if (hasFail) {
                         setPreviewFrameState('error', 700);
                         setTimeout(() => {
-                            if (WBState.tasks.running) setPreviewFrameState('busy', 0);
+                            if (WBState.tasks.running) if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
                         }, 750);
                     } else {
                         soundscape.triggerTileNote(stepIdx * 3 + 2);
@@ -8503,7 +8535,7 @@ export function expiryTone(days) {
         }
         function musicAction(action, id) {
             return queueMusic(async () => {
-                setPreviewFrameState('busy', 0);
+                if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
                 const result = await safeApiFetch('/panel/api/music/action', {method:'POST', body:JSON.stringify({action, id})}, 30000);
                 if (!result || !Array.isArray(result.musicList)) {
                     setPreviewFrameState('error', 800); notifyEditorialStatus('MUSIC // SAVE FAILED'); return;
@@ -8544,7 +8576,16 @@ export function expiryTone(days) {
             const dateStr = now.toISOString().slice(0, 16).replace('T', ' ');
 
             const item = { id: newId, date: dateStr, name, text };
-            const nextCustomization = { ...WBState.customization, sloganList: [item, ...WBState.customization.sloganList], isAdding: false };
+            const nextList = [item, ...WBState.customization.sloganList];
+            const nextCustomization = { ...WBState.customization, sloganList: nextList, activeSloganId: newId, isAdding: false };
+            WBState.customization.sloganList = nextList;
+            WBState.customization.activeSloganId = newId;
+            try {
+                if (typeof localStorage !== 'undefined') {
+                    localStorage.setItem('wb_active_slogan_id', newId);
+                    localStorage.setItem('wb_slogan_list', JSON.stringify(nextList));
+                }
+            } catch (_) {}
             const finishFeedback = beginActionFeedback(textInp);
             const started = Date.now();
             const result = IS_PROD_ENV ? await safeApiFetch('/panel/api/customization', { method: 'POST', body: JSON.stringify({ customization: nextCustomization }) }, 30000) : { ok: true };
@@ -8567,7 +8608,7 @@ export function expiryTone(days) {
 
         function selectCustomSlogan(id) {
             WBState.customization.randomMotto = false;
-            WBState.customization.activeSloganId = id; try { if (typeof localStorage !== 'undefined') localStorage.setItem('wb_active_slogan_id', id); } catch (_) {}
+            WBState.customization.activeSloganId = id; try { if (typeof localStorage !== 'undefined') { localStorage.setItem('wb_active_slogan_id', id); localStorage.setItem('wb_slogan_list', JSON.stringify(WBState.customization.sloganList)); } } catch (_) {}
             const s = WBState.customization.sloganList.find(x => x.id === id);
             soundscape.triggerTileNote(5);
             notifyEditorialStatus('MOTTO', 'SET -> ' + (s ? s.name : id));
@@ -8638,10 +8679,9 @@ export function expiryTone(days) {
 
         function applyCurrentMottoToHome() {
             const cust = WBState.customization;
-            const cur = cust.sloganList.find(s => s.id === cust.activeSloganId);
-            if (!cur) return;
+            const cur = cust.sloganList.find(s => s.id === cust.activeSloganId) || cust.sloganList[0];
             const subtitleEl = document.getElementById('prompt-subtitle');
-            if (subtitleEl) {
+            if (subtitleEl && cur) {
                 subtitleEl.textContent = cur.text;
             }
         }
@@ -8747,7 +8787,13 @@ export function expiryTone(days) {
                 projectPageView.classList.add('flex');
                 requestAnimationFrame(() => {
                     projectPageView.style.opacity = '1';
-                    scrambleText(document.getElementById('page-archive-tag'), document.getElementById('page-archive-tag').textContent, 380);
+                    const tagEl = document.getElementById('page-archive-tag');
+                    const titleEl = document.getElementById('page-title');
+                    const roleEl = document.getElementById('page-role');
+                    if (tagEl) scrambleText(tagEl, tagEl.textContent, 320);
+                    if (titleEl) scrambleText(titleEl, titleEl.textContent, 360);
+                    if (roleEl) scrambleText(roleEl, roleEl.textContent, 340);
+                    renderEditorialStage(true); // 进入内页时执行舞台初始动画
                 });
             }, 640);
         }
@@ -9021,7 +9067,7 @@ export function expiryTone(days) {
                         btn1.classList.remove('border-white/50', 'border-rose-500', 'border-emerald-400');
                         btn1.classList.add('border-amber-400', 'text-amber-300', 'animate-pulse', 'bg-amber-400/10');
                     }
-                    setPreviewFrameState('busy', 0);
+                    if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
                     syncDynamicBottomButtons();
 
                     const checkPromise = (typeof safeApiFetch === 'function')
@@ -9079,7 +9125,7 @@ export function expiryTone(days) {
                         btn1.classList.add('border-amber-400', 'text-amber-300', 'animate-pulse', 'bg-amber-400/10');
                     }
                     notifyEditorialStatus('APPLYING UPDATE // /panel/api/update/apply');
-                    setPreviewFrameState('busy', 0);
+                    if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
                     syncDynamicBottomButtons();
 
                     const applyPromise = (typeof safeApiFetch === 'function')
@@ -9153,7 +9199,7 @@ export function expiryTone(days) {
                     WBState.importingSub = false;
                     renderEditorialStage(true);
                 } else {
-                    setPreviewFrameState('busy', 0);
+                    if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
                     window.triggerModelSpinAcceleration(1200);
                     soundscape.triggerTileNote(7);
 
@@ -9196,7 +9242,7 @@ export function expiryTone(days) {
                 } else if (ch === "models") {
                 if (IS_PROD_ENV) {
                     // 模型页面的大按钮不变色；结果只反馈到右侧圆环。
-                    setPreviewFrameState('busy', 0);
+                    if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
                     safeApiFetch('/panel/api/models/refresh', {method: 'POST', body: '{}'}, 30000, true).then(result => {
                         setPreviewFrameState(Array.isArray(result?.models) && !result.stale ? 'success' : 'error', 800);
                         if (!Array.isArray(result?.models)) {
@@ -9315,7 +9361,7 @@ export function expiryTone(days) {
                         el.classList.add('input-verifying-sway');
                         el.style.borderBottomColor = '#facc15';
                     });
-                    setPreviewFrameState('busy', 0);
+                    if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
                     notifyEditorialStatus('VERIFYING CREDENTIALS // PBKDF2...');
 
                     setTimeout(async () => {
@@ -9407,7 +9453,7 @@ export function expiryTone(days) {
                         item.el.classList.add('input-verifying-sway');
                         item.el.style.borderBottomColor = '#facc15';
                     });
-                    if (!isChangingPwd) setPreviewFrameState('busy', 0);
+                    if (!isChangingPwd) if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
 
                     setTimeout(() => {
                         let hasConfigError = false;
@@ -9504,7 +9550,8 @@ export function expiryTone(days) {
                 if (WBState.accountSubmode) {
                     window.importFromPastedCallbackUrl();
                 } else {
-                    triggerGlobalDataRefresh();
+                    probeAllAccountEgress();
+                    renderEditorialStage(false);
                 }
             } else if (ch === 'egress') {
                 // Comment 3: 导入页面为确定导入，非导入页面为进入导入
@@ -9580,7 +9627,7 @@ export function expiryTone(days) {
                 btnImport.classList.remove('tone-fault', 'tone-forced');
                 btnImport.classList.add('tone-guard', 'animate-pulse');
             }
-            setPreviewFrameState('busy', 0);
+            if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
             notifyEditorialStatus(`IMPORTING JSON CONFIG // ${file.name.toUpperCase()}...`);
 
             const reader = new FileReader();
@@ -9874,7 +9921,7 @@ export function expiryTone(days) {
             const finishFeedback = !nodeID
                 ? Object.assign((state, ringState = state) => setPreviewFrameState(ringState, 800), { rebind: () => {} })
                 : beginActionFeedback();
-            if (!nodeID) setPreviewFrameState('busy', 0);
+            if (!nodeID) if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
             try {
                 if (!nodeID && WBState.egressTab === 'SUBS') {
                     const ids = WBState.subscriptions.map(item => item.id);
@@ -9966,7 +10013,7 @@ export function expiryTone(days) {
                 WBState.loginStates[WBState.loginRealm] = result.state;
                 if (authWindow) authWindow.location.href = authURL.href;
                 else notifyEditorialStatus('浏览器阻止了新窗口，请复制授权链接');
-                WBState.oauthWaiting = true; setPreviewFrameState('busy', 0); // Link obtained; authorization completion is reported separately.
+                WBState.oauthWaiting = true; if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0); // Link obtained; authorization completion is reported separately.
                 startOAuthPolling();
                 renderEditorialStage(false);
             };
@@ -9993,7 +10040,15 @@ export function expiryTone(days) {
             window.refreshSingleSub = (id) => subscriptionAction('refresh', id);
             window.importFromPastedCallbackUrl = async () => {
                 const input = document.getElementById('inp-account-credentials');
+                if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
+                if (input?.classList) {
+                    input.classList.remove('input-error-shake', 'input-success-green');
+                    input.classList.add('input-verifying');
+                }
+                notifyEditorialStatus('正在解析并验证凭据 JSON…');
+                await new Promise(r => setTimeout(r, 600)); // 黄色晃动等待反馈
                 const finishFeedback = beginActionFeedback(input);
+                if (input?.classList) input.classList.remove('input-verifying');
                 let payload;
                 try { payload = JSON.parse(input?.value || ''); } catch (_) {
                     finishFeedback('error');

@@ -218,21 +218,41 @@ func (p *Panel) AccountsImport(w http.ResponseWriter, r *http.Request) {
 			if unlock != nil {
 				unlock()
 			}
-			// 修复同 UID 新凭证不会无条件继承旧 disabled 状态：
-			// 若已有账号被禁用，且本次导入提供了有效的刷新令牌，则解除其历史禁用标记，避免健康记录被旧禁用吞掉
-			if st, ok := p.cfg.Pool.Status(a.UID); ok && st.Blocked && a.RefreshTokenValue() != "" {
+			// 修复同 UID 重新导入：若提供了有效 refreshToken，说明是重新导入的有效凭证，复活旧禁用账号
+			if a.RefreshTokenValue() != "" {
 				p.cfg.Pool.ReviveDisabled(a.UID)
 			}
-
+			if it.binding != nil && p.cfg.Meta != nil {
+				_ = p.cfg.Meta.RestoreAccountBinding(ctx, a.UID, it.binding.URL, it.binding.Node, a.SetProxyAndSave)
+			}
 			retained = append(retained, a.UID)
 			continue
 		}
-		// A credential file not loaded into the pool is still existing data.
+		// A credential file on disk but not in pool should be loaded into pool and activated
 		if _, statErr := os.Lstat(a.FilePath); statErr == nil {
+			var err error
+			if it.binding != nil {
+				if p.cfg.Meta == nil {
+					err = errors.New("Meta unavailable")
+				} else {
+					err = p.cfg.Meta.RestoreAccountBinding(ctx, a.UID, it.binding.URL, it.binding.Node, a.SetProxyAndSave)
+				}
+			} else {
+				err = a.SaveAtomic()
+			}
+			if err != nil {
+				if unlock != nil {
+					unlock()
+				}
+				failed = append(failed, it.a.UID)
+				continue
+			}
+			p.cfg.Pool.Add(a)
+			p.cfg.Pool.ReviveDisabled(a.UID)
 			if unlock != nil {
 				unlock()
 			}
-			retained = append(retained, a.UID)
+			imported = append(imported, a.UID)
 			continue
 		} else if !os.IsNotExist(statErr) {
 			if unlock != nil {
