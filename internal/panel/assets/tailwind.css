@@ -562,3 +562,15 @@
             border-bottom-color: #4ade80 !important;
             border-color: #4ade80 !important;
         }
+
+.w-\[260px\]{width:260px !important}
+.h-\[40px\]{height:40px !important}
+#btn-enter-system {
+    width: 260px !important;
+    height: 40px !important;
+    min-width: 260px !important;
+    max-width: 260px !important;
+    min-height: 40px !important;
+    max-height: 40px !important;
+    box-sizing: border-box !important;
+}

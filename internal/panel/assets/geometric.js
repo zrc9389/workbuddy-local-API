@@ -1934,10 +1934,23 @@ export function expiryTone(days) {
                 const text = '[ INITIALIZE WORKSPACE ]';
                 if (enterBtn) enterBtn.setAttribute('data-text', text);
                 if (btnSpan) btnSpan.textContent = text;
-                if (accessKeyInput) accessKeyInput.placeholder = 'CREATE ACCESS KEY';
+                if (accessKeyInput) {
+                    accessKeyInput.placeholder = 'CREATE ACCESS KEY';
+                    accessKeyInput.classList.remove('access-denied-border');
+                }
                 if (pwdHint) {
                     pwdHint.classList.remove('text-[#ff5c74]');
                     pwdHint.textContent = message || 'INITIAL SETUP // CREATE YOUR ACCESS KEY';
+                    pwdHint.style.opacity = '1';
+                }
+            } else if (mode === 'EMPTY_DENIED') {
+                const text = '[ KEY REQUIRED ]';
+                if (enterBtn) enterBtn.setAttribute('data-text', text);
+                if (btnSpan) btnSpan.textContent = text;
+                if (accessKeyInput) accessKeyInput.placeholder = 'ENTER ACCESS KEY';
+                if (pwdHint) {
+                    pwdHint.classList.add('text-[#ff5c74]');
+                    pwdHint.textContent = message || '[ ACCESS KEY REQUIRED // PLEASE ENTER KEY ]';
                     pwdHint.style.opacity = '1';
                 }
             } else if (mode === 'DENIED') {
@@ -1954,7 +1967,10 @@ export function expiryTone(days) {
                 const text = '[ ACCESS WORKSPACE ]';
                 if (enterBtn) enterBtn.setAttribute('data-text', text);
                 if (btnSpan) btnSpan.textContent = text;
-                if (accessKeyInput) accessKeyInput.placeholder = 'ENTER ACCESS KEY';
+                if (accessKeyInput) {
+                    accessKeyInput.placeholder = 'ENTER ACCESS KEY';
+                    accessKeyInput.classList.remove('access-denied-border');
+                }
                 if (pwdHint) {
                     pwdHint.classList.remove('text-[#ff5c74]');
                     pwdHint.textContent = message || 'ENTER ACCESS KEY TO UNLOCK WORKSPACE';
@@ -1966,6 +1982,7 @@ export function expiryTone(days) {
         async function checkPasswordSessionInitialState() {
             try {
                 const sessionRes = await safeApiFetch('/auth/session', {}, 2500);
+                if (passwordUiMode === 'DENIED' || passwordUiMode === 'EMPTY_DENIED') return;
                 if (sessionRes && sessionRes.default_password) {
                     defaultPasswordSetup = true;
                     updatePasswordUiState('INIT');
@@ -1974,11 +1991,12 @@ export function expiryTone(days) {
                     updatePasswordUiState('AUTH');
                 }
             } catch (_) {
+                if (passwordUiMode === 'DENIED' || passwordUiMode === 'EMPTY_DENIED') return;
                 updatePasswordUiState('AUTH');
             }
         }
 
-        function triggerAccessDeniedAnimation(message = '[ ACCESS DENIED // INVALID ACCESS KEY ]') {
+        function triggerAccessDeniedAnimation(message = '', isEmpty = false) {
             const accessKeyInput = document.getElementById('input-access-key');
             const pwdContainer = document.getElementById('password-container');
             const pwdHint = document.getElementById('password-hint');
@@ -2003,22 +2021,14 @@ export function expiryTone(days) {
 
             pwdContainer.classList.add('access-denied-shake');
             accessKeyInput.classList.add('access-denied-border');
-            updatePasswordUiState('DENIED', message);
+            const mode = isEmpty ? 'EMPTY_DENIED' : 'DENIED';
+            const defaultMsg = isEmpty ? '[ ACCESS KEY REQUIRED // PLEASE ENTER KEY ]' : '[ ACCESS DENIED // INVALID ACCESS KEY ]';
+            updatePasswordUiState(mode, message || defaultMsg);
 
             setTimeout(() => {
                 pwdContainer.classList.remove('access-denied-shake');
-                accessKeyInput.classList.remove('access-denied-border');
-                accessKeyInput.value = '';
-                accessKeyInput.focus();
-                if (pwdHint) {
-                    pwdHint.classList.remove('text-[#ff5c74]');
-                    scrambleText(pwdHint, 'PRESS ENTER OR CLICK TO DECRYPT', 320);
-                }
-                if (enterBtn) {
-                    scrambleText(enterBtn, '[ ACCESS WORKSPACE ]', 320);
-                }
                 isAuthenticating = false;
-            }, 1200);
+            }, 500);
         }
 
         async function submitPasswordAndEnter(withSound = true) {
@@ -2050,7 +2060,7 @@ export function expiryTone(days) {
                 if (withSound && typeof soundscape !== 'undefined' && soundscape && typeof soundscape.triggerErrorSound === 'function') {
                     soundscape.triggerErrorSound();
                 }
-                triggerAccessDeniedAnimation();
+                triggerAccessDeniedAnimation('[ ACCESS KEY REQUIRED // PLEASE ENTER KEY ]', true);
                 return;
             }
 
@@ -2136,7 +2146,8 @@ export function expiryTone(days) {
                 if (e.key === 'Enter') submitPasswordAndEnter(true);
             });
             accessKeyInput.addEventListener('input', () => {
-                if (passwordUiMode === 'DENIED') {
+                if (passwordUiMode === 'DENIED' || passwordUiMode === 'EMPTY_DENIED') {
+                    accessKeyInput.classList.remove('access-denied-border');
                     updatePasswordUiState(defaultPasswordSetup ? 'INIT' : 'AUTH');
                 }
             });
@@ -3195,8 +3206,16 @@ export function expiryTone(days) {
             durationIn: 1050,  // 由四周向中心收敛返回耗时 (ms)
             activeProject: null,
             progress: 0,       // 0 (正常网格) ~ 1 (完全进入新页面)
-            transitionType: 'CARD_FLIP' // 'DIFFUSION' (全界面扩散) | 'CARD_FLIP' (牌面翻转)
+            transitionType: 'CARD_FLIP', // 'DIFFUSION' (全界面扩散) | 'CARD_FLIP' (牌面翻转)
+            clickX: null,
+            clickY: null
         };
+        let lastPointerX = null;
+        let lastPointerY = null;
+        window.addEventListener('click', (ev) => {
+            lastPointerX = ev.clientX;
+            lastPointerY = ev.clientY;
+        }, true);
 
         function isCellInCloudShape(col, row) {
             for (const p of PROJECTS) {
@@ -3309,6 +3328,8 @@ export function expiryTone(days) {
                         domLabel.textContent = project.title;
                         domLabel.addEventListener('click', (ev) => {
                             ev.stopPropagation();
+                            pageTransition.clickX = ev.clientX;
+                            pageTransition.clickY = ev.clientY;
                             if (pageTransition.state === 'IDLE') {
                                 triggerEnterNewPage(project.id);
                             }
@@ -5125,7 +5146,7 @@ export function expiryTone(days) {
                 } else {
                     t1 = '[ CHECK UPDATE ]';
                 }
-                t2 = '[ <- MATRIX ]';
+                t2 = '[ MATRIX ]';
             } else if (ch === 'overview' || ch === 'gateway') {
                 t1 = WBState.overviewMode === 'TRAFFIC' ? '[ RESOURCE CURVE ]' : '[ TRAFFIC CURVE ]';
             } else if (ch === 'accounts') {
@@ -8641,17 +8662,44 @@ export function expiryTone(days) {
 
             soundscape.triggerTransitionSweep(true);
             if (projectId !== 'sphere') {
-                let targetCol = Math.floor(GRID_COLS * 0.5);
-                let targetRow = Math.floor(GRID_ROWS * 0.5);
-                if (typeof pageTransition.clickX === 'number' && typeof pageTransition.clickY === 'number') {
+                let targetCol = null;
+                let targetRow = null;
+
+                let px = (typeof pageTransition.clickX === 'number') ? pageTransition.clickX : null;
+                let py = (typeof pageTransition.clickY === 'number') ? pageTransition.clickY : null;
+
+                if (px === null || py === null) {
+                    if (typeof lastPointerX === 'number' && typeof lastPointerY === 'number') {
+                        px = lastPointerX;
+                        py = lastPointerY;
+                    }
+                }
+
+                if (px !== null && py !== null) {
                     let bestTile = null, bestDist = Infinity;
                     for (let i = 0; i < gridTiles.length; i++) {
                         const gt = gridTiles[i];
-                        const d = Math.hypot(pageTransition.clickX - gt.stableScreenX, pageTransition.clickY - gt.stableScreenY);
+                        const d = Math.hypot(px - gt.stableScreenX, py - gt.stableScreenY);
                         if (d < bestDist) { bestDist = d; bestTile = gt; }
                     }
-                    if (bestTile) { targetCol = bestTile.c; targetRow = bestTile.r; }
+                    if (bestTile) {
+                        targetCol = bestTile.c;
+                        targetRow = bestTile.r;
+                    }
                 }
+
+                // 无指针（如快捷键）时兜底根据 PROJECTS 查找 targetCol/targetRow，绝不盲目回退到正中心
+                if (targetCol === null || targetRow === null) {
+                    const matchedProj = PROJECTS.find(p => p.id === projectId);
+                    if (matchedProj) {
+                        targetCol = matchedProj.col;
+                        targetRow = matchedProj.row;
+                    } else {
+                        targetCol = Math.floor(GRID_COLS * 0.5);
+                        targetRow = Math.floor(GRID_ROWS * 0.5);
+                    }
+                }
+
                 spawnGridHighlightWave(targetCol, targetRow, 1.6, true);
             }
 
@@ -8694,6 +8742,8 @@ export function expiryTone(days) {
 
             pageTransition.state = 'CONVERGING_TO_GRID';
             pageTransition.startTime = performance.now();
+            pageTransition.clickX = null;
+            pageTransition.clickY = null;
             gridTiles.forEach(t => { t._disintegrated = false; });
 
             // 若当前为粒子模式，触发稀疏星尘微风汇聚重组动效
@@ -8771,9 +8821,18 @@ export function expiryTone(days) {
             } finally { statusPollRunning = false; }
         }, 10000);
 
+        let isEmailCopying = false;
+        let emailCopyTimer = null;
+        function updateBottomRightUptime() {
+            if (isEmailCopying) return;
+            const el = document.getElementById('email-text');
+            if (el) el.textContent = `[ UPTIME // ${formatUptime(WBState.uptimeSec)} ]`;
+        }
+
         // 秒级实时心跳：静默更新数值（animate=false，绝不重播入场动画或产生抖动）
         setInterval(() => {
             WBState.uptimeSec++;
+            updateBottomRightUptime();
             if (IS_PROD_ENV) {
                 if (pageTransition.state === 'IN_PAGE') {
                     updateEditorialKeyFigures(false);
@@ -9750,18 +9809,39 @@ export function expiryTone(days) {
                     '0': 'customization'
                 };
                 if (chapterKeys[e.key]) switchChapterInPlace(chapterKeys[e.key]);
+            } else if (pageTransition.state === 'IDLE') {
+                const chapterKeys = {
+                    '1': 'overview', '2': 'accounts', '3': 'egress',
+                    '4': 'models',   '5': 'tasks',    '6': 'usage',
+                    '7': 'packages', '8': 'logs',     '9': 'encryption',
+                    '0': 'customization'
+                };
+                if (chapterKeys[e.key]) {
+                    pageTransition.clickX = null;
+                    pageTransition.clickY = null;
+                    lastPointerX = null;
+                    lastPointerY = null;
+                    triggerEnterNewPage(chapterKeys[e.key]);
+                }
             }
         });
 
-        document.getElementById('btn-copy-email').addEventListener('click', () => {
-            const endpoint = 'http://127.0.0.1:7863/v1';
-            navigator.clipboard?.writeText(endpoint);
-            const emailText = document.getElementById('email-text');
-            scrambleText(emailText, '[ ENDPOINT COPIED TO CLIPBOARD ]', 350);
-            setTimeout(() => {
-                scrambleText(emailText, '[ 127.0.0.1:7863/V1 ]', 400);
-            }, 2200);
-        });
+        const btnCopyEmail = document.getElementById('btn-copy-email');
+        if (btnCopyEmail) {
+            btnCopyEmail.addEventListener('click', () => {
+                const endpoint = 'http://127.0.0.1:7863/v1';
+                navigator.clipboard?.writeText(endpoint);
+                const emailText = document.getElementById('email-text');
+                isEmailCopying = true;
+                if (emailCopyTimer) clearTimeout(emailCopyTimer);
+                if (emailText) scrambleText(emailText, '[ ENDPOINT COPIED TO CLIPBOARD ]', 350);
+                emailCopyTimer = setTimeout(() => {
+                    isEmailCopying = false;
+                    const el = document.getElementById('email-text');
+                    if (el) scrambleText(el, `[ UPTIME // ${formatUptime(WBState.uptimeSec)} ]`, 400);
+                }, 2200);
+            });
+        }
 
         async function refreshEgressView(nodeID = null) {
             if (WBState._egressRefreshing) return;
