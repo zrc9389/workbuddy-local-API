@@ -1739,18 +1739,23 @@ export function expiryTone(days) {
         function startAppropriateLoginSoundtrack() {
             if (typeof soundscape === 'undefined' || !soundscape) return;
             soundscape.loginSoundtrackTriggered = true;
-            if (soundscape._loginTrackStarted) {
+
+            const resumeAnyPausedAudio = () => {
                 if (soundscape.ctx && soundscape.ctx.state === 'suspended') {
                     soundscape.ctx.resume().catch(() => {});
                 }
                 if (soundscape.customAudio && soundscape.customAudio.paused) {
                     soundscape.customAudio.play().catch(() => {});
                 }
+            };
+
+            if (soundscape._loginTrackStarted) {
+                resumeAnyPausedAudio();
                 return;
             }
             soundscape._loginTrackStarted = true;
 
-            // 1. 优先从内存或本地存储读取用户自定义音乐
+            // 优先获取用户选定的自定义音乐
             let activeUrl = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_url')) || '';
             let activeId = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_id')) || '';
 
@@ -1766,12 +1771,26 @@ export function expiryTone(days) {
                 soundscape.playCustomBackgroundTrack(activeUrl, false);
                 if (soundscape.customAudio) {
                     soundscape.customAudio.volume = 0.7 / 3;
-                    soundscape.customAudio.play().catch(() => {});
+                    const p = soundscape.customAudio.play();
+                    if (p && typeof p.catch === 'function') {
+                        p.catch(() => {
+                            // 浏览器原生自动播放受限时：在用户对页面的任意首次动作（触屏、移动、键盘按键、焦点）立即无缝起播
+                            ['pointerdown', 'mousedown', 'keydown', 'focus', 'click', 'touchstart'].forEach(evt => {
+                                window.addEventListener(evt, resumeAnyPausedAudio, { once: true, passive: true });
+                                document.addEventListener(evt, resumeAnyPausedAudio, { once: true, passive: true });
+                            });
+                        });
+                    }
                 }
             } else {
                 soundscape.initForLogin();
                 if (soundscape.ctx && soundscape.ctx.state === 'suspended') {
-                    soundscape.ctx.resume().catch(() => {});
+                    soundscape.ctx.resume().catch(() => {
+                        ['pointerdown', 'mousedown', 'keydown', 'focus', 'click', 'touchstart'].forEach(evt => {
+                            window.addEventListener(evt, resumeAnyPausedAudio, { once: true, passive: true });
+                            document.addEventListener(evt, resumeAnyPausedAudio, { once: true, passive: true });
+                        });
+                    });
                 }
             }
         }
