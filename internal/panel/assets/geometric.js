@@ -1750,11 +1750,20 @@ export function expiryTone(days) {
             }
             soundscape._loginTrackStarted = true;
 
-            const savedMusicUrl = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_url')) || '';
-            const savedMusicId = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_id')) || '';
+            // 1. 优先从内存或本地存储读取用户自定义音乐
+            let activeUrl = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_url')) || '';
+            let activeId = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_id')) || '';
 
-            if (savedMusicUrl && savedMusicId !== 'm-default') {
-                soundscape.playCustomBackgroundTrack(savedMusicUrl, false);
+            if (!activeUrl && WBState.customization && Array.isArray(WBState.customization.musicList)) {
+                const found = WBState.customization.musicList.find(m => m.id === WBState.customization.activeMusicId);
+                if (found && found.url) {
+                    activeUrl = found.url;
+                    activeId = found.id;
+                }
+            }
+
+            if (activeUrl && activeId !== 'm-default') {
+                soundscape.playCustomBackgroundTrack(activeUrl, false);
                 if (soundscape.customAudio) {
                     soundscape.customAudio.volume = 0.7 / 3;
                     soundscape.customAudio.play().catch(() => {});
@@ -1796,6 +1805,23 @@ export function expiryTone(days) {
             } catch (e) {
                 console.warn('Login audio preload deferred:', e);
             }
+
+            // 在首屏加载期间异步拉取公共音乐配置，确保在 100~0 回归时即可直接播放用户选定的音乐
+            (async () => {
+                try {
+                    const music = await safeApiFetch('/panel/api/music', {}, 2500);
+                    if (music && Array.isArray(music.musicList)) {
+                        WBState.customization.musicList = music.musicList;
+                        WBState.customization.activeMusicId = music.activeMusicId;
+                        WBState.customization.randomMusic = music.randomMusic;
+                        const curMusic = music.musicList.find(m => m.id === music.activeMusicId);
+                        if (curMusic && typeof localStorage !== 'undefined') {
+                            localStorage.setItem('wb_active_music_id', curMusic.id || '');
+                            localStorage.setItem('wb_active_music_url', curMusic.url || '');
+                        }
+                    }
+                } catch (_) {}
+            })();
 
             const startTime = performance.now();
             let lastDisplayedInt = -1;
