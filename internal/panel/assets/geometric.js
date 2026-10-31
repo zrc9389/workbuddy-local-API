@@ -770,7 +770,7 @@ export function expiryTone(days) {
                                         hasTriggeredEnd = false;
                                         const p = this.customAudio.play();
                                         if (p !== undefined) p.catch(() => {});
-                                        const targetVol = this.isMuted ? 0.0 : 0.7;
+                                        const targetVol = this.isMuted ? 0.0 : ((typeof mainSceneActive !== 'undefined' && mainSceneActive) ? 0.7 : (0.7 / 3));
                                         this.fadeAudio(this.customAudio, 0.0, targetVol, fadeMs);
                                         return;
                                     } catch (e) {}
@@ -786,7 +786,7 @@ export function expiryTone(days) {
                         if (generation === this.audioGeneration) notifyEditorialStatus('MUSIC // PLAYBACK FAILED');
                     });
                     this.customAudio = newAudio;
-                    const targetVol = this.isMuted ? 0.0 : 0.7;
+                    const targetVol = this.isMuted ? 0.0 : ((typeof mainSceneActive !== 'undefined' && mainSceneActive) ? 0.7 : (0.7 / 3));
                     this.fadeAudio(newAudio, 0.0, targetVol, fadeMs);
                     const playPromise = newAudio.play();
                     if (playPromise !== undefined) {
@@ -1798,13 +1798,12 @@ export function expiryTone(days) {
         
         // 全局手势唤醒：浏览器策略默认挂起无手势音频上下文，只要用户在开机期间移动鼠标或点击屏幕，立即唤醒
         const earlyAudioUnlock = () => {
-            if (typeof soundscape !== 'undefined' && soundscape && soundscape.ctx) {
-                if (soundscape.ctx.state === 'suspended') {
-                    soundscape.ctx.resume().then(() => {
-                        startAppropriateLoginSoundtrack();
-                    }).catch(() => {});
-                } else {
-                    startAppropriateLoginSoundtrack();
+            if (typeof soundscape !== 'undefined' && soundscape) {
+                if (soundscape.customAudio && soundscape.customAudio.paused) {
+                    soundscape.customAudio.play().catch(() => {});
+                }
+                if (soundscape.ctx && soundscape.ctx.state === 'suspended') {
+                    soundscape.ctx.resume().catch(() => {});
                 }
             }
         };
@@ -1820,7 +1819,7 @@ export function expiryTone(days) {
 
             // 在加载阶段预热登录页音频；进入密码框时只需恢复已创建的 AudioContext。
             try {
-                if (typeof soundscape !== 'undefined' && soundscape) soundscape.initForLogin();
+                if (typeof soundscape !== 'undefined' && soundscape) { const savedId = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_id')) || ''; if (!savedId || savedId === 'm-default') soundscape.initForLogin(); }
             } catch (e) {
                 console.warn('Login audio preload deferred:', e);
             }
@@ -1989,8 +1988,11 @@ export function expiryTone(days) {
                             promptBox.classList.add('flex');
                             try {
                                 if (typeof soundscape !== 'undefined' && soundscape) {
-                                    soundscape.initForLogin();
-                                    soundscape.activateLoginAudio();
+                                    if (soundscape.customAudio && soundscape.customAudio.paused) {
+                                        soundscape.customAudio.play().catch(() => {});
+                                    } else if (!soundscape._loginTrackStarted) {
+                                        startAppropriateLoginSoundtrack();
+                                    }
                                     if (soundscape.ctx && soundscape.ctx.state === 'suspended') {
                                         const resume = soundscape.ctx.resume();
                                         if (resume && typeof resume.catch === 'function') resume.catch(() => {});
@@ -2143,9 +2145,12 @@ export function expiryTone(days) {
             // 在真实点击或回车的同步调用栈中解锁音频上下文；不能等网络
             // 登录返回后再 resume，否则浏览器可能把它当成无手势自动播放。
             if (withSound && soundscape) {
-                soundscape.initForLogin();
+                if (soundscape.customAudio) {
+                    if (soundscape.customAudio.paused) soundscape.customAudio.play().catch(() => {});
+                } else {
+                    startAppropriateLoginSoundtrack();
+                }
                 if (soundscape.ctx?.state === 'suspended') soundscape.ctx.resume().catch(() => {});
-                soundscape.activateLoginAudio();
                 soundscape.prepareMediaGesture();
             }
             if (logoutPromise && !(await logoutPromise)) {
