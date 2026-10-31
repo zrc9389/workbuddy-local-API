@@ -140,12 +140,12 @@ func (m *Manager) testNode(ctx context.Context, n Node) {
 	current.Status = "testing"
 	m.nodes[n.ID] = current
 	m.mu.Unlock()
-	one, cancel := context.WithTimeout(ctx, 6*time.Second)
+	one, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
 	defer cancel()
 	var result struct {
 		Delay int `json:"delay"`
 	}
-	path := "/providers/proxies/" + url.PathEscape(n.Provider) + "/" + url.PathEscape(n.Name) + "/healthcheck?url=" + url.QueryEscape(delayTestURL) + "&timeout=5000"
+	path := "/providers/proxies/" + url.PathEscape(n.Provider) + "/" + url.PathEscape(n.Name) + "/healthcheck?url=" + url.QueryEscape(delayTestURL) + "&timeout=2000"
 	err := m.core.Request(one, "GET", path, nil, &result)
 	now := time.Now().UTC()
 	m.mu.Lock()

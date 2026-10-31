@@ -223,3 +223,27 @@ func TestPackagesSkipsTokenIsolatedAccount(t *testing.T) {
 		t.Fatalf("response: %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestImportRevivesDisabledAccount(t *testing.T) {
+	p := ioTestPanel(t)
+	w := httptest.NewRecorder()
+	p.AccountsImport(w, httptest.NewRequest("POST", "/", strings.NewReader(`{"uid":"safe-disabled","accessToken":"initial-tok"}`)))
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	p.cfg.Pool.Disable("safe-disabled", "12153 session dead")
+	if st, ok := p.cfg.Pool.Status("safe-disabled"); !ok || !st.Blocked {
+		t.Fatal("expected account to be disabled")
+	}
+	w = httptest.NewRecorder()
+	p.AccountsImport(w, httptest.NewRequest("POST", "/", strings.NewReader(`{"uid":"safe-disabled","accessToken":"refreshed-tok","refreshToken":"new-refresh-token"}`)))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"retained":["safe-disabled"]`) {
+		t.Fatalf("unexpected import response: %d %s", w.Code, w.Body.String())
+	}
+	if st, ok := p.cfg.Pool.Status("safe-disabled"); !ok || st.Blocked {
+		t.Fatal("expected disabled status to be cleared after reimport")
+	}
+	if len(p.cfg.Pool.List()) != 1 {
+		t.Fatalf("expected 1 deduplicated account, got %d", len(p.cfg.Pool.List()))
+	}
+}

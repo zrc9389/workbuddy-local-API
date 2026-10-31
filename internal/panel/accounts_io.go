@@ -214,10 +214,16 @@ func (p *Panel) AccountsImport(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 		}
-		if p.cfg.Pool.AuthByUID(a.UID) != nil {
+		if existing := p.cfg.Pool.AuthByUID(a.UID); existing != nil {
 			if unlock != nil {
 				unlock()
 			}
+			// 修复同 UID 新凭证不会无条件继承旧 disabled 状态：
+			// 若已有账号被禁用，且本次导入提供了有效的刷新令牌，则解除其历史禁用标记，避免健康记录被旧禁用吞掉
+			if st, ok := p.cfg.Pool.Status(a.UID); ok && st.Blocked && a.RefreshTokenValue() != "" {
+				p.cfg.Pool.ReviveDisabled(a.UID)
+			}
+
 			retained = append(retained, a.UID)
 			continue
 		}

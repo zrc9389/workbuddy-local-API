@@ -2029,6 +2029,7 @@ export function expiryTone(days) {
                 pwdContainer.classList.remove('access-denied-shake');
                 isAuthenticating = false;
             }, 500);
+            setTimeout(() => { accessKeyInput.classList.remove('access-denied-border'); }, 1200);
         }
 
         async function submitPasswordAndEnter(withSound = true) {
@@ -2237,8 +2238,9 @@ export function expiryTone(days) {
             }
         };
 
-        let currentWeatherKey = 'overcast';
-        let blendedTheme = JSON.parse(JSON.stringify(WEATHER_THEMES.overcast));
+        let currentWeatherKey = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_theme')) || 'overcast';
+        if (!WEATHER_THEMES[currentWeatherKey]) currentWeatherKey = 'overcast';
+        let blendedTheme = JSON.parse(JSON.stringify(WEATHER_THEMES[currentWeatherKey]));
 
         function lerpNum(a, b, t) {
             return a + (b - a) * t;
@@ -3891,7 +3893,8 @@ export function expiryTone(days) {
                     const ringWidth = 1.65;
                     if (ringDelta < ringWidth) {
                         const ringProfile = Math.cos((ringDelta / ringWidth) * (Math.PI * 0.5));
-                        waveBoost = Math.max(waveBoost, ringProfile * hw.intensity);
+                        const waveDecay = hw.isFullScreenNoDecay ? 1.0 : Math.max(0, 1 - hw.radius / hw.maxRadius);
+                        waveBoost = Math.max(waveBoost, ringProfile * hw.intensity * waveDecay);
                     }
                 }
                 t.waveGlow = Math.max(t.waveGlow * 0.88, waveBoost);
@@ -3949,7 +3952,10 @@ export function expiryTone(days) {
 
                 if (pageTransition.progress > 0.001) {
                     // 关键动效：由中心 (centerDist = 0) 向四周 (centerDist = 1.3) 依次触发翻转或扩散
-                    const delay = Math.min(0.52, t.centerDist * 0.40);
+                    const oCol = (typeof pageTransition.originCol === 'number') ? pageTransition.originCol : (GRID_COLS - 1) * 0.5;
+                    const oRow = (typeof pageTransition.originRow === 'number') ? pageTransition.originRow : (GRID_ROWS - 1) * 0.5;
+                    const relDist = Math.hypot((t.c - oCol) / (GRID_COLS * 0.5), (t.r - oRow) / (GRID_ROWS * 0.5));
+                    const delay = Math.min(0.52, relDist * 0.40);
                     const localP = Math.max(0, Math.min(1, (pageTransition.progress - delay) / (1 - delay)));
                     // 三次缓动曲线
                     const easeP = localP < 0.5
@@ -4520,12 +4526,12 @@ export function expiryTone(days) {
                     { id: 'm-default', date: '2026-10-24 12:00', name: 'Canopy Ambient // 默认雨林氛围音', isDefault: true, url: '' },
                 ],
                 randomMotto: false,
-                activeSloganId: 's-1',
+                activeSloganId: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_slogan_id')) || 's-1',
                 sloganList: [
                     { id: 's-1', date: '2026-10-24 12:00', name: 'SILENT ARCHITECTURE', text: 'SILENT ARCHITECTURE // 静默架构 · 跨域协议中继与多租户网关' },
                 ],
                 randomTheme: false,
-                activeTheme: 'overcast',
+                activeTheme: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_theme')) || 'overcast',
                 themeList: [
                     { id: 'overcast', name: 'OVERCAST // 阴天极简' },
                     { id: 'dusk',     name: 'DUSK // 黄昏微光' },
@@ -5008,6 +5014,9 @@ export function expiryTone(days) {
             if (state === "busy" || state === "yellow") {
                 WBState.ringState = "busy";
                 if (window.triggerModelSpinAcceleration) window.triggerModelSpinAcceleration(durationMs || 0);
+                WBState._ringTimer = setTimeout(() => {
+                    if (WBState.ringState === "busy") setPreviewFrameState("idle");
+                }, (durationMs > 0 ? durationMs : 10000));
             } else if (state === "error" || state === "red") {
                 WBState.ringState = "error";
                 if (canvasEl) {
@@ -5630,6 +5639,7 @@ export function expiryTone(days) {
                                 </div>
                                 <div class="inline-flex items-center space-x-5 py-0.5 max-w-sm">
                                     <button class="editorial-text-btn text-white text-[11.5px] px-0.5" data-action="open-oauth">[ 跳转浏览器授权 &rarr; ]</button>
+                                    <button class="editorial-text-btn text-[11.5px] px-0.5 text-white/70 hover:text-white" data-action="reset-oauth">[ 重置 ]</button>
                                     <button id="btn-oauth-status" class="editorial-text-btn text-[11.5px] px-0.5" data-action="copy-oauth">[ 复制授权链接 ]</button>
                                 </div>
                                 <!-- 兜底导入：适度收拢上方单元格，留出充足间距彻底避免与下方紧贴 -->
@@ -5637,7 +5647,7 @@ export function expiryTone(days) {
                                     <div class="flex justify-between items-center text-[11.5px] tracking-[0.12em] text-white/45 mb-1">
                                         <span class="flex items-center space-x-1.5"><span class="inline-block w-1.5 h-1.5 rounded-full bg-white/40"></span><span>导入账号凭据 JSON（单个对象或数组）</span></span>
                                     </div>
-                                    <div class="w-full pb-1 mb-3">
+                                    <div class="w-full pb-0.5 mb-1">
                                         <textarea id="inp-account-credentials" class="editorial-input credential-paste w-full font-mono text-[12px]" rows="2" wrap="off" autocomplete="off" placeholder="粘贴凭据 JSON"></textarea>
                                     </div>
                                 </div>
@@ -5793,12 +5803,13 @@ export function expiryTone(days) {
                     }
 
                     // 出口检测连通性着色：出口变色而非账号归属地变色 (通=绿色, 不通=红色, 相同地区=黄色)
-                    let egressCls = 'text-white/65 hover:text-white';
+                    let regionCls = 'text-white/45';
                     if (WBState.egressProbed) {
-                        if (acc._probeResult === 'FAIL') egressCls = 'tone-fault';
-                        else if (acc._probeResult === 'DUPLICATE') egressCls = 'tone-guard';
-                        else if (acc._probeResult === 'PASS') egressCls = 'tone-forced';
+                        if (acc._probeResult === 'FAIL') regionCls = 'tone-fault input-error-shake font-medium';
+                        else if (acc._probeResult === 'DUPLICATE' || acc._probeResult === 'LOCAL') regionCls = 'tone-guard font-medium';
+                        else if (acc._probeResult === 'PASS') regionCls = 'tone-forced font-medium';
                     }
+                    let egressCls = 'text-white/65 hover:text-white';
 
                     const vIdx = (WBState.accountPage * pageSize + idx) * 2;
                     // 账号池排版重构：取消两端散开的 justify-between，改为一体化紧凑等宽流式对齐
@@ -5812,7 +5823,7 @@ export function expiryTone(days) {
                                  style="grid-template-columns: 108px 46px 74px 62px; column-gap: 10px;"
                                  data-action="select-account-egress" data-uid="${escapeDisplayText(acc.uid)}" data-name="${acc.name}">
                                 <span class="text-white font-mono text-[11.5px] tracking-tight text-left truncate" title="${acc.name}">${acc.name}</span>
-                                <span class="text-white/45 text-[10.5px] font-['Space_Grotesk'] text-left tracking-wider">${acc.region}</span>
+                                <span class="${regionCls} text-[10.5px] font-['Space_Grotesk'] text-left tracking-wider" title="地区状态">${acc.region}</span>
                                 <span class="text-white/90 font-['Space_Grotesk'] tabular-nums text-left">${quotaStr}</span>
                                 <span class="text-[11px] ${statusCls} text-left tracking-tight">${statusText}</span>
                             </div>
@@ -6735,6 +6746,7 @@ export function expiryTone(days) {
                 WBState.oauthPollTimer = null;
                 WBState.accountSubmode = null;
                 loadAuthenticatedPanelData().then(() => renderEditorialStage(true));
+                WBState.oauthWaiting = false; setPreviewFrameState('success', 800);
                 notifyEditorialStatus('授权完成，正在加载账号');
                 return;
             }
@@ -6808,6 +6820,9 @@ export function expiryTone(days) {
                 if (!WBState.accountSubmode || pollAttempts > 60) {
                     clearInterval(WBState.oauthPollTimer);
                     WBState.oauthPollTimer = null;
+                    WBState.oauthWaiting = false; setPreviewFrameState('idle');
+                    notifyEditorialStatus('授权等待超时');
+                    renderEditorialStage(false);
                     return;
                 }
                 try {
@@ -7399,13 +7414,19 @@ export function expiryTone(days) {
             });
 
             WBState.accounts.forEach(acc => {
+                const isDirect = !acc.egress || acc.egress === 'Direct' || acc.egress === 'DIRECT' || acc.egress === '本机出口';
+                if (isDirect) {
+                    acc._probeResult = 'LOCAL'; // 未选择出口节点统一变黄（视为本机出口）
+                    dupCount++;
+                    return;
+                }
                 const node = WBState.nodes.find(n => n.name === acc.egress);
                 const nodePrefix = (acc.egress || '').split('-')[0] || acc.region || 'GLOBAL';
-                if (!node || node.timeout) {
-                    acc._probeResult = 'FAIL'; // 不通: 红色
+                if (!node || node.timeout || node.status === 'error') {
+                    acc._probeResult = 'FAIL'; // 超时/不通: 红色
                     failCount++;
                 } else if ((regionUsage[nodePrefix] || 0) > 1) {
-                    acc._probeResult = 'DUPLICATE'; // 相同地区: 黄色
+                    acc._probeResult = 'DUPLICATE'; // 相同地区: 黄色警示
                     dupCount++;
                 } else {
                     acc._probeResult = 'PASS'; // 通且独占地区: 绿色
@@ -8546,7 +8567,7 @@ export function expiryTone(days) {
 
         function selectCustomSlogan(id) {
             WBState.customization.randomMotto = false;
-            WBState.customization.activeSloganId = id;
+            WBState.customization.activeSloganId = id; try { if (typeof localStorage !== 'undefined') localStorage.setItem('wb_active_slogan_id', id); } catch (_) {}
             const s = WBState.customization.sloganList.find(x => x.id === id);
             soundscape.triggerTileNote(5);
             notifyEditorialStatus('MOTTO', 'SET -> ' + (s ? s.name : id));
@@ -8626,6 +8647,8 @@ export function expiryTone(days) {
         }
 
         function switchChapterInPlace(chapterId) {
+            setPreviewFrameState('idle');
+            WBState.egressProbed = false;
             if (WBState.currentChapter === chapterId) return;
             soundscape.triggerTileNote(6);
             populateProjectPageContent(chapterId, true);
@@ -8700,7 +8723,9 @@ export function expiryTone(days) {
                     }
                 }
 
-                spawnGridHighlightWave(targetCol, targetRow, 1.6, true);
+                pageTransition.originCol = targetCol;
+                pageTransition.originRow = targetRow;
+                spawnGridHighlightWave(targetCol, targetRow, 1.25, false);
             }
 
             const w = window.innerWidth;
@@ -8728,6 +8753,8 @@ export function expiryTone(days) {
         }
 
         function triggerReturnToMatrix() {
+            setPreviewFrameState('idle');
+            WBState.egressProbed = false;
             if (pageTransition.state !== 'IN_PAGE' && pageTransition.state !== 'EXPANDING_TO_PAGE') return;
 
             soundscape.triggerTransitionSweep(false);
@@ -8877,46 +8904,43 @@ export function expiryTone(days) {
             pageTransition.clickX = e.clientX;
             pageTransition.clickY = e.clientY;
 
-            if (hoveredTile && hoveredTile.project) {
-                triggerEnterNewPage(hoveredTile.project.id);
-                return;
-            }
-
-            let bestProjTile = null;
-            let minProjDist = Infinity;
+            // 1. 寻找屏幕点击位置最近的网格瓦片
+            let closestTile = null;
+            let minTileDist = Infinity;
             for (let i = 0; i < gridTiles.length; i++) {
-                const gt = gridTiles[i];
-                if (!gt.project) continue;
-                const dRender = Math.hypot(e.clientX - gt.screenX, e.clientY - gt.screenY);
-                const dStable = Math.hypot(e.clientX - gt.stableScreenX, e.clientY - gt.stableScreenY);
-                const effectiveDist = Math.min(dRender, dStable);
-                const hitRadius = Math.max(76, gt.screenSize * 3.4);
-                if (effectiveDist <= hitRadius && effectiveDist < minProjDist) {
-                    minProjDist = effectiveDist;
-                    bestProjTile = gt;
+                const t = gridTiles[i];
+                const d = Math.hypot(e.clientX - t.stableScreenX, e.clientY - t.stableScreenY);
+                if (d < minTileDist) {
+                    minTileDist = d;
+                    closestTile = t;
                 }
             }
-            if (bestProjTile) {
-                triggerEnterNewPage(bestProjTile.project.id);
-                return;
-            }
 
-            if (hoveredTile) {
-                let nearestProj = null;
-                let minGridD = Infinity;
-                PROJECTS.forEach(p => {
-                    const d = Math.hypot(p.col - hoveredTile.c, p.row - hoveredTile.r);
-                    if (d < minGridD) { minGridD = d; nearestProj = p; }
-                });
-                if (nearestProj && minGridD <= 1.7) {
-                    triggerEnterNewPage(nearestProj.id);
+            // 若距离最近瓦片超过网格步长的 1.5 倍，判定为点击在边缘空白空旷区，绝不误触菜单项
+            const maxAllowDist = closestTile ? (closestTile.screenSize * 1.5) : 80;
+            if (closestTile && minTileDist <= maxAllowDist) {
+                // 2. 严格限制判定范围：目标及周围 8 格构成的 3x3 (切比雪夫距离 <= 1)
+                const cands = [];
+                for (let i = 0; i < PROJECTS.length; i++) {
+                    const p = PROJECTS[i];
+                    if (Math.abs(p.col - closestTile.c) <= 1 && Math.abs(p.row - closestTile.r) <= 1) {
+                        const distToProj = Math.hypot(closestTile.c - p.col, closestTile.r - p.row);
+                        cands.push({ proj: p, dist: distToProj });
+                    }
+                }
+                if (cands.length > 0) {
+                    // 重叠区归最近目标
+                    cands.sort((a, b) => a.dist - b.dist);
+                    triggerEnterNewPage(cands[0].proj.id);
                     return;
                 }
+
             }
 
-            disturbGridAtScreenPos(e.clientX, e.clientY, 130, 18);
+            // 未命中 3x3 范围：仅产生局部轻柔水波与微扰动，绝不误触进入页面
+            disturbGridAtScreenPos(e.clientX, e.clientY, 90, 12);
             const waterLineY = window.innerHeight * (4 / 7);
-            spawnPondRipple(e.clientX, Math.max(e.clientY, waterLineY + 18), 75, 0.60);
+            spawnPondRipple(e.clientX, Math.max(e.clientY, waterLineY + 18), 65, 0.50);
         });
 
         function switchWeatherTheme(weatherKey) {
@@ -8930,7 +8954,7 @@ export function expiryTone(days) {
                 }
             });
             if (window.WBState && WBState.customization) {
-                WBState.customization.activeTheme = weatherKey;
+                WBState.customization.activeTheme = weatherKey; try { if (typeof localStorage !== 'undefined') localStorage.setItem('wb_active_theme', weatherKey); } catch (_) {}
                 if (WBState.currentChapter === 'customization') {
                     updateEditorialKeyFigures(false);
                     renderEditorialStage(false);
@@ -9942,7 +9966,7 @@ export function expiryTone(days) {
                 WBState.loginStates[WBState.loginRealm] = result.state;
                 if (authWindow) authWindow.location.href = authURL.href;
                 else notifyEditorialStatus('浏览器阻止了新窗口，请复制授权链接');
-                finishFeedback('success'); // Link obtained; authorization completion is reported separately.
+                WBState.oauthWaiting = true; setPreviewFrameState('busy', 0); // Link obtained; authorization completion is reported separately.
                 startOAuthPolling();
                 renderEditorialStage(false);
             };
@@ -10094,7 +10118,7 @@ function bootGeometricRuntime() {
     Object.assign(window, { renderEditorialStage, notifyEditorialStatus, setVertexHover,
         syncDynamicBottomButtons, switchCustomizationTab, selectCustomMusic,
         deleteCustomMusic, selectCustomSlogan, deleteCustomSlogan, selectCustomTheme,
-        handleCustomMusicFileSelected, openCustomMusicPicker });
+        handleCustomMusicFileSelected, openCustomMusicPicker, setPreviewFrameState, switchChapterInPlace, probeAllAccountEgress, triggerReturnToMatrix });
     initEditorialEventDelegation(document);
     const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (typeof window !== 'undefined' && window.requestAnimationFrame ? window.requestAnimationFrame : (cb => setTimeout(cb, 16)));
     if (typeof updateResponsiveScale === 'function') updateResponsiveScale();
@@ -10102,6 +10126,12 @@ function bootGeometricRuntime() {
     if (typeof renderIntroGrid === 'function') raf(renderIntroGrid);
     if (typeof startStrictLoadingSequence === 'function') startStrictLoadingSequence();
 
+    if (typeof switchWeatherTheme === 'function' && currentWeatherKey) {
+        switchWeatherTheme(currentWeatherKey);
+    }
+    if (typeof applyCurrentMottoToHome === 'function') {
+        applyCurrentMottoToHome();
+    }
     if (typeof initMainWorld === 'function') initMainWorld();
     if (typeof renderMainWorld === 'function') raf(renderMainWorld);
     if (typeof renderProjectArtifactPreview === 'function') raf(renderProjectArtifactPreview);
@@ -10117,3 +10147,19 @@ if (typeof document !== 'undefined') {
     }
 }
 export { initEditorialEventDelegation, handleDataAction, bootGeometricRuntime };
+
+window.resetOAuthLoginLink = () => {
+    if (WBState.oauthPollTimer) {
+        clearInterval(WBState.oauthPollTimer);
+        WBState.oauthPollTimer = null;
+    }
+    if (WBState.loginAuthUrls) WBState.loginAuthUrls[WBState.loginRealm] = '';
+    if (WBState.loginStates) WBState.loginStates[WBState.loginRealm] = '';
+    WBState.loginAuthUrl = '';
+    WBState.loginState = '';
+    WBState.oauthWaiting = false;
+    WBState.oauthPollStatus = 'IDLE';
+    setPreviewFrameState('idle');
+    notifyEditorialStatus('RESET');
+    renderEditorialStage(false);
+};

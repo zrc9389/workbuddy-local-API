@@ -463,6 +463,7 @@
         }
 
         #input-access-key {
+            transition: border-color 1.2s ease, box-shadow 1.2s ease, color 0.3s ease !important;
             background-color: rgba(10, 12, 10, 0.88) !important;
             -webkit-box-shadow: 0 0 0 1000px rgba(10, 12, 10, 0.88) inset !important;
             box-shadow: 0 0 0 1000px rgba(10, 12, 10, 0.88) inset !important;

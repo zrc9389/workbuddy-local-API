@@ -35,6 +35,9 @@ export function handleDataAction(el, ev) {
         case 'open-oauth':
             if (typeof globalObj.openOAuthLoginLink === 'function') globalObj.openOAuthLoginLink();
             return true;
+        case 'reset-oauth':
+            if (typeof globalObj.resetOAuthLoginLink === 'function') globalObj.resetOAuthLoginLink();
+            return true;
         case 'copy-oauth':
             if (typeof globalObj.copyOAuthLoginLink === 'function') globalObj.copyOAuthLoginLink();
             return true;
