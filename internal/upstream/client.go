@@ -486,6 +486,7 @@ func ParseRateReset(body string) (time.Time, bool) {
 //     拦截形态。判在通用 4xx 兜底**之前**：此前该形态落 ErrClient → 只换号不罚 →
 //     连环 403。带业务信封的 403 已被上方各层捕获，走不到本层。
 //  11. 内容策略/参数错误/其他 4xx —— 通用兜底。
+//
 // ErrorClassificationMetrics 错误分类可观测度量快照
 type ErrorClassificationMetrics struct {
 	Total          int64            `json:"total"`

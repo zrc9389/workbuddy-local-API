@@ -430,10 +430,19 @@ func (m *Manager) UpdateSubscription(ctx context.Context, id string, name *strin
 		p.Name = uniqueSubscriptionName(next.Providers, id, *name)
 	}
 	enabledChanged := false
+	var unbindUIDs []string
 	if enabled != nil {
 		enabledChanged = p.Enabled != *enabled
-		if enabledChanged && !*enabled && m.bindingCountLocked(id) > 0 {
-			return Subscription{}, ErrSubscriptionInUse
+		if enabledChanged && !*enabled {
+			filtered := make([]bindingRecord, 0, len(next.Bindings))
+			for _, b := range next.Bindings {
+				if b.Provider == id {
+					unbindUIDs = append(unbindUIDs, b.UID)
+					continue
+				}
+				filtered = append(filtered, b)
+			}
+			next.Bindings = filtered
 		}
 		p.Enabled = *enabled
 	}
@@ -455,6 +464,11 @@ func (m *Manager) UpdateSubscription(ctx context.Context, id string, name *strin
 	}
 	if err := m.apply(ctx, old, next); err != nil {
 		return Subscription{}, err
+	}
+	for _, uid := range unbindUIDs {
+		if m.opts.OnUnbind != nil {
+			_ = m.opts.OnUnbind(uid)
+		}
 	}
 	return m.Subscription(id)
 }
@@ -557,8 +571,13 @@ func (m *Manager) RemoveSubscriptionAndUnbind(ctx context.Context, id string, se
 	if index < 0 {
 		return ErrSubscriptionNotFound
 	}
-	if m.bindingCountLocked(id) > 0 && setDirect == nil {
-		return ErrSubscriptionInUse
+	if setDirect == nil {
+		setDirect = func(uid, expected string) (func() error, error) {
+			if m.opts.OnUnbind != nil {
+				_ = m.opts.OnUnbind(uid)
+			}
+			return func() error { return nil }, nil
+		}
 	}
 	if !m.core.Available() {
 		return ErrUnavailable

@@ -47,6 +47,7 @@ type Options struct {
 	Dir         string
 	Binary      string
 	IdleTimeout time.Duration
+	OnUnbind    func(uid string) error
 }
 type Binding struct {
 	UID     string `json:"uid"`

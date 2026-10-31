@@ -54,11 +54,40 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		Stream bool   `json:"stream"`
 		Model  string `json:"model"`
 	}
+	// 1. Fast Path：首先尝试从头部快速反序列化
 	peekBytes := payload.Peek(64 * 1024)
-	if err := json.Unmarshal(peekBytes, &peek); err != nil || peek.Model == "" {
+	fastErr := json.Unmarshal(peekBytes, &peek)
+	if fastErr != nil || peek.Model == "" {
+		// 2. Slow Path：头部无法闭合或未找到 model，使用精准扫描
 		if !payload.IsSpool {
-			writeOpenAIError(w, 400, "invalid_request", "invalid JSON")
-			return
+			// 内存请求（<= 256KiB）：先尝试对完整内存切片反序列化
+			if err := json.Unmarshal(payload.Memory, &peek); err == nil && peek.Model != "" {
+				// 完整内存反序列化成功
+			} else {
+				// 容错：使用 jsonscan 从内存切片中提取 model 和 stream 控制字段
+				spans, scanErr := jsonscan.Object(bytes.NewReader(payload.Memory))
+				if scanErr == nil {
+					for _, span := range spans {
+						if span.Key != "model" && span.Key != "stream" {
+							continue
+						}
+						if span.End-span.Start > 65536 {
+							scanErr = errors.New("control field too large")
+							break
+						}
+						val := payload.Memory[span.Start:span.End]
+						if span.Key == "model" {
+							_ = json.Unmarshal(val, &peek.Model)
+						} else {
+							_ = json.Unmarshal(val, &peek.Stream)
+						}
+					}
+				}
+				if scanErr != nil || peek.Model == "" {
+					writeOpenAIError(w, 400, "invalid_request", "invalid JSON")
+					return
+				}
+			}
 		}
 		ra, closer, rerr := payload.OpenReaderAt()
 		if rerr != nil {

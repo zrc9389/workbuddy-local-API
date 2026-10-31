@@ -392,7 +392,7 @@ func TestOverviewAndPackagesRobustness(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("unmarshal overview failed: %v", err)
 		}
-	if resp["version"] != "3.0.1" || resp["ok"] != true {
+		if resp["version"] != "3.0.1" || resp["ok"] != true {
 			t.Fatalf("unexpected overview response: %v", resp)
 		}
 	}

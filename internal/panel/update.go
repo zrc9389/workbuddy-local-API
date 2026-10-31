@@ -191,11 +191,11 @@ func newUpdateChecker(source UpdateSource, current string, transport http.RoundT
 			Prerelease bool          `json:"prerelease"`
 			Assets     []updateAsset `json:"assets"`
 		}
-		if json.Unmarshal(data, &release) != nil || release.Draft || release.Prerelease {
-			return result, updateError("invalid_release", "invalid stable release response")
+		if json.Unmarshal(data, &release) != nil || release.Draft || release.Prerelease || isPrereleaseTag(release.Tag) {
+			return result, updateError("invalid_release", "prerelease or preview releases are rejected; only stable releases accepted")
 		}
 		latest, err := parseUpdateVersion(release.Tag)
-		if err != nil {
+		if err != nil || len(latest.pre) > 0 {
 			return result, updateError("invalid_version", "release tag is not a semantic version")
 		}
 		result.LatestVersion = release.Tag
@@ -438,4 +438,14 @@ func safeUpdateRedirect(req *http.Request, via []*http.Request) error {
 		return updateError("untrusted_redirect", fmt.Sprintf("redirect to untrusted host %q is forbidden", host))
 	}
 	return nil
+}
+
+func isPrereleaseTag(tag string) bool {
+	lower := strings.ToLower(tag)
+	return strings.Contains(lower, "preview") ||
+		strings.Contains(lower, "beta") ||
+		strings.Contains(lower, "rc") ||
+		strings.Contains(lower, "alpha") ||
+		strings.Contains(lower, "test") ||
+		strings.Contains(lower, "dev")
 }

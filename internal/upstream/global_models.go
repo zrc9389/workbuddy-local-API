@@ -59,6 +59,7 @@ type fetchGlobalModelsCache struct {
 	infos    []ModelInfo // 成功缓存：对象形态的全字段条目（窄表/失败形态为 nil）
 	fetched  time.Time
 	lastFail time.Time
+	wait     chan struct{}
 }
 
 // globalModelsTTL / globalModelsFailCooldown 探测缓存时长：成功 1h，失败 5min 负缓存。
@@ -116,16 +117,33 @@ func (c *Client) fetchGlobalModels(a *auth.Auth, force bool) (names []string, in
 		return nil, nil
 	}
 
-	c.globalModels.Lock()
-	defer c.globalModels.Unlock()
-	if !force && len(c.globalModels.names) > 0 && time.Since(c.globalModels.fetched) < globalModelsTTL {
-		names, infos := c.globalModels.names, c.globalModels.infos
-		return names, infos
+	for {
+		c.globalModels.Lock()
+		if !force && len(c.globalModels.names) > 0 && time.Since(c.globalModels.fetched) < globalModelsTTL {
+			names, infos := c.globalModels.names, c.globalModels.infos
+			c.globalModels.Unlock()
+			return names, infos
+		}
+		if !force && !c.globalModels.lastFail.IsZero() && time.Since(c.globalModels.lastFail) < globalModelsFailCooldown {
+			c.globalModels.Unlock()
+			return nil, nil
+		}
+		if c.globalModels.wait == nil {
+			c.globalModels.wait = make(chan struct{})
+			c.globalModels.Unlock()
+			break
+		}
+		wait := c.globalModels.wait
+		c.globalModels.Unlock()
+		<-wait
 	}
-	if !force && !c.globalModels.lastFail.IsZero() && time.Since(c.globalModels.lastFail) < globalModelsFailCooldown {
-		// 负缓存冷却期内：避免反复打上游，直接按失败处理（无静态回落）。
-		return nil, nil
-	}
+
+	defer func() {
+		c.globalModels.Lock()
+		close(c.globalModels.wait)
+		c.globalModels.wait = nil
+		c.globalModels.Unlock()
+	}()
 
 	names, infos, efforts, defaults, err := c.probeGlobalModels(a)
 	if err != nil || len(names) == 0 {

@@ -93,3 +93,43 @@ func TestRunRecordsOKOutcome(t *testing.T) {
 	assertRFC3339(t, "last_run_at", st.LastRunAt)
 	assertRFC3339(t, "last_finished_at", st.LastFinishedAt)
 }
+
+// 维护结果超过 24 小时自动清理
+func TestMaintenanceResultPrunedAfter24Hours(t *testing.T) {
+	s := New(pool.New(""), func(context.Context, string, string) (string, error) {
+		return "done", nil
+	})
+	s.state = Status{
+		RunID:          "m-old",
+		Running:        false,
+		LastRunAt:      time.Now().Add(-25 * time.Hour).Format(time.RFC3339),
+		LastFinishedAt: time.Now().Add(-25 * time.Hour).Format(time.RFC3339),
+		LastResult:     "ok",
+		LastFailed:     0,
+		Steps: []Step{
+			{Name: "token", State: "ok"},
+		},
+	}
+	// 超过 24h 后 Status() 自动清理
+	st := s.Status()
+	if st.LastResult != "" || len(st.Steps) != 0 {
+		t.Fatalf("expected pruned status after 24h, got result=%q, steps=%d", st.LastResult, len(st.Steps))
+	}
+
+	// 23h 未满 24h 保留
+	s.state = Status{
+		RunID:          "m-recent",
+		Running:        false,
+		LastRunAt:      time.Now().Add(-23 * time.Hour).Format(time.RFC3339),
+		LastFinishedAt: time.Now().Add(-23 * time.Hour).Format(time.RFC3339),
+		LastResult:     "ok",
+		LastFailed:     0,
+		Steps: []Step{
+			{Name: "token", State: "ok"},
+		},
+	}
+	stRecent := s.Status()
+	if stRecent.LastResult != "ok" || len(stRecent.Steps) != 1 {
+		t.Fatalf("expected retained status within 24h, got result=%q, steps=%d", stRecent.LastResult, len(stRecent.Steps))
+	}
+}

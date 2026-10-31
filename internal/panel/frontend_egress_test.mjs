@@ -67,8 +67,8 @@ test('egress binds by node ID and refreshes subscriptions individually', async (
   module.bootGeometricRuntime();
   globalThis.renderEditorialStage(false);
   const markup=dom.$('editorial-stage-body').innerHTML;
-  assert.match(markup,/熔断 —/); assert.doesNotMatch(markup,/熔断 undefined/);
-  assert.match(markup,/\[启用\]/); assert.match(markup,/失败/); assert.match(markup,/未测速/);
+  assert.doesNotMatch(markup,/熔断/);
+  assert.match(markup,/\[启用\]/); assert.match(markup,/超时/); assert.match(markup,/未测速/);
   assert.doesNotMatch(markup,/>0ms</);
 });
 

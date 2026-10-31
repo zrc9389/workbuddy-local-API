@@ -298,6 +298,9 @@ func (p *Pool) RecordTokenUsage(uid string, delta TokenUsageDelta) {
 	}
 	if delta.HasLatencyMs && delta.LatencyMs >= 0 {
 		usage.LastLatencyMs = delta.LatencyMs
+		if delta.Model != "" {
+			p.recordModelLatencyLocked(delta.Model, delta.LatencyMs)
+		}
 	}
 	if delta.HasTokensPerSecond && delta.TokensPerSecond >= 0 {
 		speed := delta.TokensPerSecond
@@ -714,4 +717,53 @@ func (p *Pool) BlockedCount() int {
 		}
 	}
 	return cnt
+}
+
+func (p *Pool) RecordModelLatency(model string, latencyMs int64) {
+	if p == nil || latencyMs < 0 || model == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.recordModelLatencyLocked(model, latencyMs)
+}
+
+func (p *Pool) recordModelLatencyLocked(model string, latencyMs int64) {
+	if p.modelLatencies == nil {
+		p.modelLatencies = make(map[string][]int64)
+	}
+	samples := append(p.modelLatencies[model], latencyMs)
+	if len(samples) > 20 {
+		samples = append([]int64{}, samples[len(samples)-20:]...)
+	}
+	p.modelLatencies[model] = samples
+}
+
+func (p *Pool) ModelLatencies(model string) []int64 {
+	if p == nil {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.modelLatencies == nil {
+		return nil
+	}
+	samples := p.modelLatencies[model]
+	if len(samples) == 0 {
+		return nil
+	}
+	out := make([]int64, len(samples))
+	copy(out, samples)
+	return out
+}
+
+func (p *Pool) ClearModelLatency(model string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.modelLatencies != nil {
+		delete(p.modelLatencies, model)
+	}
 }

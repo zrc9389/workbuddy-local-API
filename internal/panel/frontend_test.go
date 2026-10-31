@@ -63,7 +63,7 @@ func TestFrontendModules(t *testing.T) {
 	if err != nil {
 		t.Fatal("Node is required for frontend verification: ", err)
 	}
-	cmd := exec.Command(node, "--test", "frontend_api_contract_test.mjs", "frontend_csp_event_proxy_test.mjs", "frontend_delete_cancel_test.mjs", "frontend_geometry_contract_test.mjs", "frontend_production_entry_test.mjs", "frontend_task_button_test.mjs", "frontend_egress_test.mjs", "frontend_model_refresh_test.mjs", "frontend_audio_cycle_test.mjs", "frontend_animation_performance_test.mjs", "frontend_session_regression_test.mjs")
+	cmd := exec.Command(node, "--test", "frontend_api_contract_test.mjs", "frontend_csp_event_proxy_test.mjs", "frontend_delete_cancel_test.mjs", "frontend_geometry_contract_test.mjs", "frontend_production_entry_test.mjs", "frontend_task_button_test.mjs", "frontend_egress_test.mjs", "frontend_model_refresh_test.mjs", "frontend_audio_cycle_test.mjs", "frontend_animation_performance_test.mjs", "frontend_session_regression_test.mjs", "frontend_phase1_behavior_test.mjs")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("frontend module contracts failed: %v\n%s", err, out)

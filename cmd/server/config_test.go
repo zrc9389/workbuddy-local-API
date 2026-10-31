@@ -611,7 +611,7 @@ func TestWriteDefault(t *testing.T) {
 	if c.Listen != "127.0.0.1:7863" || c.AuthDir != "./auths" || c.StateFile != "./data/state.json" {
 		t.Errorf("generated defaults off: %+v", c)
 	}
-	if len(c.Schedule.CheckinHours) == 0 || c.Schedule.CheckinEnabled || c.Schedule.TravelEnabled || c.Schedule.ActivityEnabled || c.Schedule.KeepaliveEnabled || c.Schedule.GrowthEnabled || c.Schedule.BlackcatEnabled || c.Schedule.BalanceRefreshEnabled {
+	if len(c.Schedule.CheckinHours) == 0 || !c.Schedule.CheckinEnabled || !c.Schedule.TravelEnabled || !c.Schedule.ActivityEnabled || !c.Schedule.KeepaliveEnabled || !c.Schedule.GrowthEnabled || !c.Schedule.BlackcatEnabled || !c.Schedule.BalanceRefreshEnabled {
 		t.Errorf("generated schedule off: %+v", c.Schedule)
 	}
 	// 已存在的文件不覆盖：二次写入同一路径必须报错

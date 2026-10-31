@@ -21,7 +21,6 @@ const (
 	// config upstream.cli_version 可覆盖（空 = 内置默认）。
 	defaultCliVersion = "2.137.1"
 
-
 	originRefererCN     = "https://www.codebuddy.cn"
 	originRefererGlobal = "https://www.workbuddy.ai"
 )

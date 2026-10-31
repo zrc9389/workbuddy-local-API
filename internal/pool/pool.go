@@ -16,6 +16,7 @@ type Pool struct {
 	balanceGuardLow int64
 	mu              sync.RWMutex
 	byUID           map[string]*entry
+	modelLatencies  map[string][]int64
 	stateFp         string
 	dirty           atomic.Bool // 内存有变更待落盘
 	// store 池状态快照镜像（redisstore.Store）；nil = 无需镜像（未配置 Redis / Noop 之外也可能 nil）。

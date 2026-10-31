@@ -379,13 +379,6 @@ func ParseConfig(raw []byte) (*Config, error) {
 func WriteDefault(path string) (string, error) {
 	key := "" // No API key: local-only gateway.
 	c := Default()
-	c.Schedule.CheckinEnabled = false
-	c.Schedule.TravelEnabled = false
-	c.Schedule.ActivityEnabled = false
-	c.Schedule.KeepaliveEnabled = false
-	c.Schedule.BlackcatEnabled = false
-	c.Schedule.GrowthEnabled = false
-	c.Schedule.BalanceRefreshEnabled = false
 	_ = c.normalize() // Default() 全合法，normalize 仅补齐 header/idle 超时的展示值
 	out, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {

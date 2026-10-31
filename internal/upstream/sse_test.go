@@ -934,7 +934,6 @@ func TestCreditPackagesExpiryTimestamp(t *testing.T) {
 	}
 }
 
-
 type dummyCloser struct {
 	io.Reader
 	closed bool

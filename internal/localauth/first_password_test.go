@@ -109,9 +109,9 @@ func TestFirstPasswordSetupAndDefaultPasswordBypass(t *testing.T) {
 			t.Fatalf("expected 200 for direct password save in default mode, got %d: %s", w.Code, w.Body.String())
 		}
 		var resp struct {
-			OK              bool   `json:"ok"`
-			Authenticated   bool   `json:"authenticated"`
-			DefaultPassword bool   `json:"default_password"`
+			OK              bool `json:"ok"`
+			Authenticated   bool `json:"authenticated"`
+			DefaultPassword bool `json:"default_password"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatal(err)

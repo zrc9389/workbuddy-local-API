@@ -75,13 +75,15 @@ func TestDisableRemovesNodesAndProtectsBindings(t *testing.T) {
 		t.Fatal(err)
 	}
 	disabled := false
-	if _, err := m.UpdateSubscription(context.Background(), first.ID, nil, &disabled); !errors.Is(err, ErrSubscriptionInUse) {
-		t.Fatalf("disable bound subscription = %v, want in use", err)
-	}
-	if err := m.DeleteAccountBinding(context.Background(), "bound-account"); err != nil {
-		t.Fatal(err)
-	}
 	updated, err := m.UpdateSubscription(context.Background(), first.ID, nil, &disabled)
+	if err != nil || updated.Enabled || updated.NodeCount != 0 {
+		t.Fatalf("disabled subscription = %+v, %v", updated, err)
+	}
+	for _, b := range m.Nodes().Bindings {
+		if b.UID == "bound-account" {
+			t.Fatal("bound account should be unbound on subscription disable")
+		}
+	}
 	if err != nil || updated.Enabled || updated.NodeCount != 0 {
 		t.Fatalf("disabled subscription = %+v, %v", updated, err)
 	}
@@ -183,14 +185,13 @@ func TestDeleteSubscriptionConflictAndCapacity(t *testing.T) {
 	if _, err := m.Bind(context.Background(), "bound-account", node.ID, func(string) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.RemoveSubscription(context.Background(), first.ID); !errors.Is(err, ErrSubscriptionInUse) {
-		t.Fatalf("delete bound subscription = %v, want in use", err)
-	}
-	if err := m.DeleteAccountBinding(context.Background(), "bound-account"); err != nil {
-		t.Fatal(err)
-	}
 	if err := m.RemoveSubscription(context.Background(), first.ID); err != nil {
-		t.Fatal(err)
+		t.Fatalf("delete bound subscription failed: %v", err)
+	}
+	for _, b := range m.Nodes().Bindings {
+		if b.UID == "bound-account" {
+			t.Fatal("bound account should be unbound on subscription delete")
+		}
 	}
 	if got := m.Subscriptions(); len(got) != 1 {
 		t.Fatalf("subscriptions after delete = %d, want 1", len(got))

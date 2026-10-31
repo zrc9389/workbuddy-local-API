@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -118,6 +119,7 @@ type Panel struct {
 	logins  map[string]loginSession
 
 	modelPolicy    *modelpolicy.Store
+	deletionsMu    sync.Mutex
 	deletions      *deletionCoordinator
 	customMu       sync.RWMutex
 	customData     map[string]any
@@ -962,7 +964,21 @@ func (p *Panel) serveModels(w http.ResponseWriter, force bool) bool {
 				ageSeconds = int(res.age / time.Second)
 			}
 			for _, mi := range res.infos {
-				out = append(out, panelModelEntry("cn", mi, mi.Efforts, mi.DefaultEffort, p.cfg.Upstream.HTTP))
+				entry := panelModelEntry("cn", mi, mi.Efforts, mi.DefaultEffort, p.cfg.Upstream.HTTP)
+				if p.cfg.Pool != nil {
+					trend := p.cfg.Pool.ModelLatencies(mi.ID)
+					if len(trend) == 0 {
+						trend = p.cfg.Pool.ModelLatencies("cn:" + mi.ID)
+					}
+					if len(trend) > 0 {
+						entry["trend"] = trend
+						entry["ttft"] = trend[len(trend)-1]
+					} else {
+						entry["trend"] = []int64{}
+						entry["ttft"] = 0
+					}
+				}
+				out = append(out, entry)
 			}
 		}
 	}
@@ -999,7 +1015,21 @@ func (p *Panel) serveModels(w http.ResponseWriter, force bool) bool {
 					if remoteDefault == "" {
 						remoteDefault = mi.DefaultEffort
 					}
-					out = append(out, panelModelEntry("global", mi, remoteEfforts, remoteDefault, p.cfg.Upstream.HTTP))
+					entry := panelModelEntry("global", mi, remoteEfforts, remoteDefault, p.cfg.Upstream.HTTP)
+					if p.cfg.Pool != nil {
+						trend := p.cfg.Pool.ModelLatencies(mi.ID)
+						if len(trend) == 0 {
+							trend = p.cfg.Pool.ModelLatencies("global:" + mi.ID)
+						}
+						if len(trend) > 0 {
+							entry["trend"] = trend
+							entry["ttft"] = trend[len(trend)-1]
+						} else {
+							entry["trend"] = []int64{}
+							entry["ttft"] = 0
+						}
+					}
+					out = append(out, entry)
 				}
 			}
 		}
@@ -1244,11 +1274,31 @@ func (p *Panel) accountBalance(w http.ResponseWriter, r *http.Request) {
 }
 
 // accountRemove 移除账号：先出池（立即落盘 state），再删 auth 文件。
+
+func (p *Panel) ensureDeletionCoordinator() (*deletionCoordinator, error) {
+	p.deletionsMu.Lock()
+	defer p.deletionsMu.Unlock()
+	if p.deletions != nil {
+		return p.deletions, nil
+	}
+	if p.cfg.DeletionJournalPath == "" {
+		return nil, errors.New("deletion journal not configured")
+	}
+	coordinator, err := newDeletionCoordinator(p.cfg.DeletionJournalPath)
+	if err != nil {
+		return nil, err
+	}
+	p.deletions = coordinator
+	return coordinator, nil
+}
+
 func (p *Panel) accountRemove(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
 	if p.deletions == nil {
-		writeErr(w, http.StatusServiceUnavailable, "account deletion journal unavailable")
-		return
+		if _, err := p.ensureDeletionCoordinator(); err != nil {
+			writeErr(w, http.StatusServiceUnavailable, "account deletion journal unavailable")
+			return
+		}
 	}
 	unlock := p.deletions.lockFor(uid)
 	defer unlock()
@@ -1405,8 +1455,16 @@ func (p *Panel) accountDeletionStages(uid, credential string, parent context.Con
 func (p *Panel) accountDeletionRetry(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
 	if p.deletions == nil {
-		writeErr(w, http.StatusServiceUnavailable, "account deletion journal unavailable")
-		return
+		if _, err := p.ensureDeletionCoordinator(); err != nil {
+			writeErr(w, http.StatusServiceUnavailable, "account deletion journal unavailable")
+			return
+		}
+	}
+	if p.deletions == nil {
+		if _, err := p.ensureDeletionCoordinator(); err != nil {
+			writeErr(w, http.StatusServiceUnavailable, "account deletion journal unavailable")
+			return
+		}
 	}
 	unlock := p.deletions.lockFor(uid)
 	defer unlock()

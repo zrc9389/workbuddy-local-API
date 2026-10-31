@@ -128,6 +128,9 @@ func TestUpdateChecker(t *testing.T) {
 		{"older", `{"tag_name":"v0.1.9"}`, "0.2.0-local", "v0.1.9", 200, false, ""},
 		{"invalid tag", `{"tag_name":"nightly"}`, "0.2.0", "", 200, false, "invalid_version"},
 		{"oversize", strings.Repeat("x", (1<<20)+1), "0.2.0", "", 200, false, "response_too_large"},
+		{"prerelease flag", "{\"tag_name\":\"v0.3.0\",\"prerelease\":true}", "0.2.0-local", "", 200, false, "invalid_release"},
+		{"preview tag", "{\"tag_name\":\"v0.3.0-preview\"}", "0.2.0-local", "", 200, false, "invalid_release"},
+		{"rc tag", "{\"tag_name\":\"v0.3.0-rc1\"}", "0.2.0-local", "", 200, false, "invalid_release"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			response = tc.body

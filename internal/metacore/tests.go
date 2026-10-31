@@ -170,8 +170,8 @@ func (m *Manager) testNode(ctx context.Context, n Node) {
 		current.DelayMS = &delay
 	}
 	current.History = append(current.History, History{Delay: result.Delay, Time: now, Status: current.Status})
-	if len(current.History) > 10 {
-		current.History = append([]History{}, current.History[len(current.History)-10:]...)
+	if len(current.History) > 7 {
+		current.History = append([]History{}, current.History[len(current.History)-7:]...)
 	}
 	m.nodes[n.ID] = current
 	if m.state.NodeHistory == nil {

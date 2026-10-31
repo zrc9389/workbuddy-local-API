@@ -1,9 +1,9 @@
-﻿// Responsibilities split from the gateway handler; behavior preserved.
+// Responsibilities split from the gateway handler; behavior preserved.
 package server
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"

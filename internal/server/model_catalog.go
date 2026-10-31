@@ -16,6 +16,7 @@ var dynamicModelsCache struct {
 	ids      []upstream.ModelInfo
 	fetched  time.Time // 最近一次成功拉取时间
 	lastFail time.Time // 最近一次拉取失败时间（负缓存）
+	wait     chan struct{}
 }
 
 const (
@@ -207,18 +208,33 @@ func (h *Handler) fetchGlobalModels() ([]string, *auth.Auth) {
 // 无冷却窗口，客户端重试即放大请求量——负缓存正是为此设计（见 handler_test 吸收
 // 上游 9832283 的注释）；且 cachedModelsSnapshot（gateway_hint 判定）依赖缓存写入。
 func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
-	dynamicModelsCache.RLock()
-	if len(dynamicModelsCache.ids) > 0 && time.Since(dynamicModelsCache.fetched) < dynamicModelsTTL {
-		out := dynamicModelsCache.ids
-		dynamicModelsCache.RUnlock()
-		return out
+	for {
+		dynamicModelsCache.Lock()
+		if len(dynamicModelsCache.ids) > 0 && time.Since(dynamicModelsCache.fetched) < dynamicModelsTTL {
+			out := dynamicModelsCache.ids
+			dynamicModelsCache.Unlock()
+			return out
+		}
+		if !dynamicModelsCache.lastFail.IsZero() && time.Since(dynamicModelsCache.lastFail) < modelsFetchFailCooldown {
+			dynamicModelsCache.Unlock()
+			return nil
+		}
+		if dynamicModelsCache.wait == nil {
+			dynamicModelsCache.wait = make(chan struct{})
+			dynamicModelsCache.Unlock()
+			break
+		}
+		wait := dynamicModelsCache.wait
+		dynamicModelsCache.Unlock()
+		<-wait
 	}
-	// 失败负缓存：冷却期内不再请求上游。
-	if !dynamicModelsCache.lastFail.IsZero() && time.Since(dynamicModelsCache.lastFail) < modelsFetchFailCooldown {
-		dynamicModelsCache.RUnlock()
-		return nil
-	}
-	dynamicModelsCache.RUnlock()
+
+	defer func() {
+		dynamicModelsCache.Lock()
+		close(dynamicModelsCache.wait)
+		dynamicModelsCache.wait = nil
+		dynamicModelsCache.Unlock()
+	}()
 
 	uids := h.cfg.Pool.AvailableUIDsForRealm("cn")
 	if len(uids) == 0 {

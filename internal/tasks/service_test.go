@@ -97,10 +97,16 @@ func TestTaskLocksBoundedAndReleased(t *testing.T) {
 
 func TestAccountDeletionFenceReleasesAfterCompletion(t *testing.T) {
 	s := New(Config{MaxActiveAccounts: 1})
-	if err := s.BeginAccountDeletion("a"); err != nil { t.Fatal(err) }
-	if s.TryLockAccount("a") { t.Fatal("deleting account admitted a new task") }
+	if err := s.BeginAccountDeletion("a"); err != nil {
+		t.Fatal(err)
+	}
+	if s.TryLockAccount("a") {
+		t.Fatal("deleting account admitted a new task")
+	}
 	s.EndAccountDeletion("a")
-	if !s.TryLockAccount("a") { t.Fatal("completed deletion left account fenced") }
+	if !s.TryLockAccount("a") {
+		t.Fatal("completed deletion left account fenced")
+	}
 	s.UnlockAccount("a")
 }
 

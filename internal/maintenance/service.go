@@ -60,6 +60,15 @@ func New(p *pool.Pool, fn Action) *Service {
 func (s *Service) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.state.Running && s.state.LastFinishedAt != "" {
+		if t, err := time.Parse(time.RFC3339, s.state.LastFinishedAt); err == nil {
+			if time.Since(t) > 24*time.Hour {
+				s.state.LastResult = ""
+				s.state.LastFailed = 0
+				s.state.Steps = []Step{}
+			}
+		}
+	}
 	out := s.state
 	out.Steps = append([]Step{}, s.state.Steps...)
 	for i := range out.Steps {

@@ -1486,7 +1486,7 @@ export function expiryTone(days) {
             }));
             const points = Array.isArray(data.series) ? data.series.slice(-24) : [];
             if (points.length >= 2) {
-                const series = { labels: points.map(point => String(point.t).slice(11, 16)),
+                const series = { labels: points.map(point => { if (!point.t) return ''; const d = new Date(point.t); if (isNaN(d.getTime())) return String(point.t).slice(11, 16); const bd = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000); return `${String(bd.getHours()).padStart(2, '0')}:${String(bd.getMinutes()).padStart(2, '0')}`; }),
                     inVals: points.map(point => point.prompt_tokens || 0),
                     outVals: points.map(point => point.completion_tokens || 0) };
                 WBState.usage24h = series;
@@ -1898,7 +1898,7 @@ export function expiryTone(days) {
                             requestAnimationFrame(() => {
                                 promptBox.style.opacity = '1';
                                 if (accessKeyInput) accessKeyInput.focus();
-                                if (btnEnterSystem) scrambleText(btnEnterSystem, '[ ACCESS WORKSPACE ]', 480);
+                                void checkPasswordSessionInitialState();
                             });
                         }, 240);
                     }
@@ -1919,6 +1919,64 @@ export function expiryTone(days) {
         let logoutResetTimer = null;
         let authTransitionEpoch = 0;
         let logoutPromise = null;
+
+        let passwordUiMode = 'AUTH';
+        let defaultPasswordSetup = false;
+
+        function updatePasswordUiState(mode, message = '') {
+            passwordUiMode = mode;
+            const accessKeyInput = document.getElementById('input-access-key');
+            const pwdHint = document.getElementById('password-hint');
+            const enterBtn = document.getElementById('btn-enter-system');
+            const btnSpan = enterBtn ? (enterBtn.querySelector('span') || enterBtn) : null;
+
+            if (mode === 'INIT') {
+                const text = '[ INITIALIZE WORKSPACE ]';
+                if (enterBtn) enterBtn.setAttribute('data-text', text);
+                if (btnSpan) btnSpan.textContent = text;
+                if (accessKeyInput) accessKeyInput.placeholder = 'CREATE ACCESS KEY';
+                if (pwdHint) {
+                    pwdHint.classList.remove('text-[#ff5c74]');
+                    pwdHint.textContent = message || 'INITIAL SETUP // CREATE YOUR ACCESS KEY';
+                    pwdHint.style.opacity = '1';
+                }
+            } else if (mode === 'DENIED') {
+                const text = '[ RE-ENTER KEY ]';
+                if (enterBtn) enterBtn.setAttribute('data-text', text);
+                if (btnSpan) btnSpan.textContent = text;
+                if (accessKeyInput) accessKeyInput.placeholder = 'RE-ENTER ACCESS KEY';
+                if (pwdHint) {
+                    pwdHint.classList.add('text-[#ff5c74]');
+                    pwdHint.textContent = message || '[ ACCESS DENIED // INVALID ACCESS KEY ]';
+                    pwdHint.style.opacity = '1';
+                }
+            } else {
+                const text = '[ ACCESS WORKSPACE ]';
+                if (enterBtn) enterBtn.setAttribute('data-text', text);
+                if (btnSpan) btnSpan.textContent = text;
+                if (accessKeyInput) accessKeyInput.placeholder = 'ENTER ACCESS KEY';
+                if (pwdHint) {
+                    pwdHint.classList.remove('text-[#ff5c74]');
+                    pwdHint.textContent = message || 'ENTER ACCESS KEY TO UNLOCK WORKSPACE';
+                    pwdHint.style.opacity = '1';
+                }
+            }
+        }
+
+        async function checkPasswordSessionInitialState() {
+            try {
+                const sessionRes = await safeApiFetch('/auth/session', {}, 2500);
+                if (sessionRes && sessionRes.default_password) {
+                    defaultPasswordSetup = true;
+                    updatePasswordUiState('INIT');
+                } else {
+                    defaultPasswordSetup = false;
+                    updatePasswordUiState('AUTH');
+                }
+            } catch (_) {
+                updatePasswordUiState('AUTH');
+            }
+        }
 
         function triggerAccessDeniedAnimation(message = '[ ACCESS DENIED // INVALID ACCESS KEY ]') {
             const accessKeyInput = document.getElementById('input-access-key');
@@ -1945,14 +2003,7 @@ export function expiryTone(days) {
 
             pwdContainer.classList.add('access-denied-shake');
             accessKeyInput.classList.add('access-denied-border');
-            
-            if (pwdHint) {
-                pwdHint.classList.add('text-[#ff5c74]');
-                scrambleText(pwdHint, message, 320);
-            }
-            if (enterBtn) {
-                scrambleText(enterBtn, '[ RE-ENTER KEY ]', 260);
-            }
+            updatePasswordUiState('DENIED', message);
 
             setTimeout(() => {
                 pwdContainer.classList.remove('access-denied-shake');
@@ -2083,6 +2134,11 @@ export function expiryTone(days) {
         if (accessKeyInput) {
             accessKeyInput.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') submitPasswordAndEnter(true);
+            });
+            accessKeyInput.addEventListener('input', () => {
+                if (passwordUiMode === 'DENIED') {
+                    updatePasswordUiState(defaultPasswordSetup ? 'INIT' : 'AUTH');
+                }
             });
         }
 
@@ -3323,15 +3379,16 @@ export function expiryTone(days) {
             });
         }
 
-        function spawnGridHighlightWave(col, row, intensity = 1.0) {
+        function spawnGridHighlightWave(col, row, intensity = 1.0, isFullScreenNoDecay = false) {
             if (gridHighlightWaves.length > 10) gridHighlightWaves.shift();
             gridHighlightWaves.push({
                 col,
                 row,
                 radius: 0.1,
-                maxRadius: 9.5,
-                speed: 0.22,
-                intensity
+                maxRadius: isFullScreenNoDecay ? 45.0 : 9.5,
+                speed: isFullScreenNoDecay ? 0.38 : 0.22,
+                intensity,
+                isFullScreenNoDecay
             });
         }
 
@@ -3773,9 +3830,15 @@ export function expiryTone(days) {
             for (let wIdx = gridHighlightWaves.length - 1; wIdx >= 0; wIdx--) {
                 const hw = gridHighlightWaves[wIdx];
                 hw.radius += hw.speed;
-                hw.intensity *= 0.962;
-                if (hw.radius > hw.maxRadius || hw.intensity < 0.03) {
-                    gridHighlightWaves.splice(wIdx, 1);
+                if (hw.isFullScreenNoDecay) {
+                    if (hw.radius > hw.maxRadius) {
+                        gridHighlightWaves.splice(wIdx, 1);
+                    }
+                } else {
+                    hw.intensity *= 0.962;
+                    if (hw.radius > hw.maxRadius || hw.intensity < 0.03) {
+                        gridHighlightWaves.splice(wIdx, 1);
+                    }
                 }
             }
 
@@ -4384,6 +4447,8 @@ export function expiryTone(days) {
             accountNodePage: 0,
             accountSubmode: null, // null | 'LOGIN' | 'IMPORT'
             loginRealm: 'CN',
+            loginAuthUrls: { CN: '', GLOBAL: '' },
+            loginStates: { CN: '', GLOBAL: '' },
             ingestMode: 'OAUTH',
             loginAuthUrl: 'https://auth.workbuddy.cn/oauth/device?user_code=WB-89F2-K41A',
 
@@ -5549,7 +5614,7 @@ export function expiryTone(days) {
                                 <!-- 兜底导入：适度收拢上方单元格，留出充足间距彻底避免与下方紧贴 -->
                                 <div class="pt-1 border-t border-white/10 mt-1">
                                     <div class="flex justify-between items-center text-[11.5px] tracking-[0.12em] text-white/45 mb-1">
-                                        <span>导入账号凭据 JSON（单个对象或数组）</span>
+                                        <span class="flex items-center space-x-1.5"><span class="inline-block w-1.5 h-1.5 rounded-full bg-white/40"></span><span>导入账号凭据 JSON（单个对象或数组）</span></span>
                                     </div>
                                     <div class="w-full pb-1 mb-3">
                                         <textarea id="inp-account-credentials" class="editorial-input credential-paste w-full font-mono text-[12px]" rows="2" wrap="off" autocomplete="off" placeholder="粘贴凭据 JSON"></textarea>
@@ -5579,9 +5644,10 @@ export function expiryTone(days) {
                             const isOccupied = Boolean(owner);
                             const isTimeout = Boolean(n.timeout);
                             let rankGroup = 0;
+                            const isUnavailable = Boolean(n.timeout || n.status === 'error');
                             if (isCurrent) rankGroup = -1;
-                            else if (isTimeout) rankGroup = 1;
-                            else if (isOccupied) rankGroup = 2;
+                            else if (isOccupied) rankGroup = 1;
+                            else if (isUnavailable) rankGroup = 2;
                             return { ...n, owner, isCurrent, isOccupied, isTimeout, rankGroup };
                         }).sort((a, b) => {
                             if (a.rankGroup !== b.rankGroup) return a.rankGroup - b.rankGroup;
@@ -5598,7 +5664,7 @@ export function expiryTone(days) {
                             let nameCls = 'text-white/82';
                             let rightHtml = '';
                             let borderCls = 'border-white/10 hover:border-white/40 cursor-pointer';
-                            const latencyLabel = n.status === 'error' ? '失败' : n.status === 'untested' ? '未测速' : n.status === 'testing' ? '测速中' : `${n.ping}ms`;
+                            const latencyLabel = Boolean(n.timeout || n.status === 'error') ? '超时' : n.status === 'untested' ? '未测速' : n.status === 'testing' ? '测速中' : `${n.ping}ms`;
                             const latencyClass = n.status === 'error' ? 'tone-fault' : n.status === 'untested' || n.status === 'testing' ? 'text-white/45' : n.ping < 800 ? 'tone-forced' : 'tone-guard';
 
                             if (n.isTimeout) {
@@ -5613,7 +5679,7 @@ export function expiryTone(days) {
                                 nameCls = 'text-white/70';
                                 borderCls = 'border-white/10 hover:border-white/40 cursor-pointer';
                                 rightHtml = n.status === 'error'
-                                    ? `<span class="text-[10px] tone-fault tabular-nums-left whitespace-nowrap shrink-0">失败</span>`
+                                    ? `<span class="text-[10px] tone-fault tabular-nums-left whitespace-nowrap shrink-0">超时</span>`
                                     : `<span class="text-[10px] tone-guard tabular-nums-left whitespace-nowrap shrink-0">已绑定</span>`;
                             } else {
                                 rightHtml = `<span class="text-[10.5px] ${latencyClass} tabular-nums-left whitespace-nowrap">${latencyLabel}</span>`;
@@ -5634,7 +5700,8 @@ export function expiryTone(days) {
                                     <div class="flex items-center space-x-4 text-xs text-left">
                                         <span class="text-white font-medium">${acc.name}</span>
                                         <span class="text-white/40 text-[11px]">${acc.region}</span>
-                                        <span class="text-white/42 text-[11px] tabular-nums-left">熔断 ${escapeDisplayText(acc.breakerAt || '—')}</span>
+                                        ${(acc.state === 'BLOCKED' || acc.state === 'TOKEN_EXPIRED' || acc.state === 'UNAUTHORIZED') ? '' : `<span class="text-white/42 text-[11px] tabular-nums-left">熔断 ${escapeDisplayText(acc.breakerAt || '—')}</span>`}
+                                        
                                         <button class="editorial-text-btn text-white" data-action="toggle-account-manual" data-uid="${escapeDisplayText(acc.uid)}">[${curModeLabel}]</button>
                                     </div>
                                     <button class="editorial-text-btn" data-action="clear-selected-account">&larr; 返回列表</button>
@@ -6064,7 +6131,11 @@ export function expiryTone(days) {
                 commitStageMarkup(container, `
                     <div class="space-y-3 pt-0.5">
                         <div class="flex justify-between items-center text-[10.5px] tracking-[0.14em] text-white/45">
-                            <span id="usage-cursor-readout" class="tabular-nums-left">时刻 <strong class="text-white font-normal">${ds.labels[hIdx]}</strong> &mdash; 输出 ${ds.outVals[hIdx]}K / 输入 ${ds.inVals[hIdx]}K</span>
+                            <div class="flex items-center space-x-3 tabular-nums-left">
+                                <span id="usage-cursor-readout">时刻 <strong class="text-white font-normal">${ds.labels[hIdx]}</strong> &mdash; 输出 ${ds.outVals[hIdx]}K / 输入 ${ds.inVals[hIdx]}K</span>
+                                <span class="text-white/28">|</span>
+                                <span class="text-white/60">区间累计: 输出 ${((ds.outVals.reduce((a,b)=>a+b,0))/1000).toFixed(2)}M / 输入 ${((ds.inVals.reduce((a,b)=>a+b,0))/1000).toFixed(2)}M</span>
+                            </div>
                             <div class="space-x-4">
                                 <button class="editorial-tab ${WBState.usageRange==='6H'?'active':''}" data-action="set-usage-range" data-range="6H">6H</button>
                                 <button class="editorial-tab ${WBState.usageRange==='24H'?'active':''}" data-action="set-usage-range" data-range="24H">24H</button>
@@ -6173,11 +6244,11 @@ export function expiryTone(days) {
                         const vIdx = idx * 4 + 1;
                         return `
                             <div class="editorial-row py-2.5 grid items-center gap-x-4 text-xs text-left cursor-pointer"
-                                 style="grid-template-columns: minmax(100px, 1.4fr) 58px 76px 42px minmax(80px, 1fr) 58px;"
+                                 style="grid-template-columns: 140px 60px 84px 48px 100px 50px; column-gap: 16px;"
                                  data-action="select-package-uid" data-uid="${escapeDisplayText(acc.uid)}"
                                  data-hover-vertex="${vIdx}" data-hover-label="ACC // ${acc.name.toUpperCase()}"
                                  >
-                                <span class="text-white font-medium max-w-[130px] truncate text-left" title="${acc.name}">${acc.name}</span>
+                                <span class="text-white font-medium font-mono text-[11.5px] truncate text-left w-[140px] shrink-0" title="${acc.name}">${acc.name}</span>
                                 <span class="text-white/52 text-[11px] tabular-nums-left">${activePacks.length} 个包</span>
                                 <span class="text-white/90 font-['Space_Grotesk'] tabular-nums-left w-[76px] shrink-0">${balNum.toLocaleString()}</span>
                                 <div class="flex items-center">${renderHairlineMeter(ratio, 42)}</div>
@@ -7329,7 +7400,8 @@ export function expiryTone(days) {
 
             notifyEditorialStatus(`PROBED ALL ${WBState.accounts.length} ACCOUNT EGRESS // ${passCount} PASS, ${failCount} FAIL, ${dupCount} DUP REGION`);
             setTimeout(() => {
-                setPreviewFrameState("success", 800);
+                const allTimedOut = failCount > 0 && passCount === 0 && dupCount === 0;
+                setPreviewFrameState(allTimedOut ? "error" : "success", 800);
             }, 1200);
             renderEditorialStage(true);
         }
@@ -8568,7 +8640,20 @@ export function expiryTone(days) {
             }
 
             soundscape.triggerTransitionSweep(true);
-            spawnGridHighlightWave(Math.floor(GRID_COLS * 0.5), Math.floor(GRID_ROWS * 0.5), 1.45);
+            if (projectId !== 'sphere') {
+                let targetCol = Math.floor(GRID_COLS * 0.5);
+                let targetRow = Math.floor(GRID_ROWS * 0.5);
+                if (typeof pageTransition.clickX === 'number' && typeof pageTransition.clickY === 'number') {
+                    let bestTile = null, bestDist = Infinity;
+                    for (let i = 0; i < gridTiles.length; i++) {
+                        const gt = gridTiles[i];
+                        const d = Math.hypot(pageTransition.clickX - gt.stableScreenX, pageTransition.clickY - gt.stableScreenY);
+                        if (d < bestDist) { bestDist = d; bestTile = gt; }
+                    }
+                    if (bestTile) { targetCol = bestTile.c; targetRow = bestTile.r; }
+                }
+                spawnGridHighlightWave(targetCol, targetRow, 1.6, true);
+            }
 
             const w = window.innerWidth;
             const h = window.innerHeight;
@@ -8626,7 +8711,6 @@ export function expiryTone(days) {
             setTimeout(() => {
                 projectPageView.classList.add('hidden');
                 projectPageView.classList.remove('flex');
-                spawnGridHighlightWave(Math.floor(GRID_COLS * 0.5), Math.floor(GRID_ROWS * 0.5), 1.15);
             }, 1020);
         }
 
@@ -8769,12 +8853,11 @@ export function expiryTone(days) {
                     triggerEnterNewPage(nearestProj.id);
                     return;
                 }
-                spawnGridHighlightWave(hoveredTile.c, hoveredTile.r, 1.25);
             }
 
-            disturbGridAtScreenPos(e.clientX, e.clientY, 180, 36);
+            disturbGridAtScreenPos(e.clientX, e.clientY, 130, 18);
             const waterLineY = window.innerHeight * (4 / 7);
-            spawnPondRipple(e.clientX, Math.max(e.clientY, waterLineY + 18), 90, 0.78);
+            spawnPondRipple(e.clientX, Math.max(e.clientY, waterLineY + 18), 75, 0.60);
         });
 
         function switchWeatherTheme(weatherKey) {
@@ -9720,10 +9803,10 @@ export function expiryTone(days) {
                     notifyEditorialStatus('节点测速完成：' + status.completed + '，失败 ' + status.failed);
                     const selected = nodeID ? WBState.nodes.find(n => n.id === nodeID) : null;
                     const boundFailure = WBState.nodes.some(n => n.bindingCount > 0 && (n.timeout || n.status === 'error'));
-                    const allFailed = status.total > 0 && status.failed >= status.total;
-                    const ringFailed = status.cancelled || boundFailure || (!nodeID && allFailed);
+                    const allTimeout = status.total > 0 && status.failed >= status.total;
+                    const ringFailed = status.cancelled || boundFailure || (!nodeID && allTimeout);
                     const nodeFailed = nodeID && (!selected || selected.timeout || selected.status === 'error');
-                    finishFeedback(status.cancelled || nodeFailed || (!nodeID && allFailed) ? 'error' : 'success', ringFailed ? 'error' : 'success');
+                    finishFeedback(status.cancelled || nodeFailed || (!nodeID && allTimeout) ? 'error' : 'success', ringFailed ? 'error' : 'success');
                 }
                 renderEditorialStage(false);
                 finishFeedback.rebind();
@@ -9756,8 +9839,10 @@ export function expiryTone(days) {
             };
             window.switchLoginRealm = (realm) => {
                 WBState.loginRealm = realm;
-                WBState.loginAuthUrl = '';
-                WBState.loginState = '';
+                if (!WBState.loginAuthUrls) WBState.loginAuthUrls = { CN: '', GLOBAL: '' };
+                if (!WBState.loginStates) WBState.loginStates = { CN: '', GLOBAL: '' };
+                WBState.loginAuthUrl = WBState.loginAuthUrls[realm] || '';
+                WBState.loginState = WBState.loginStates[realm] || '';
                 renderEditorialStage(false);
             };
             window.openOAuthLoginLink = async () => {
@@ -9771,6 +9856,10 @@ export function expiryTone(days) {
                 if (authURL.protocol !== 'https:' || authURL.username || authURL.password) { finishFeedback('error'); if (authWindow) authWindow.close(); notifyEditorialStatus('授权链接无效'); return; }
                 WBState.loginState = result.state;
                 WBState.loginAuthUrl = authURL.href;
+                if (!WBState.loginAuthUrls) WBState.loginAuthUrls = { CN: '', GLOBAL: '' };
+                if (!WBState.loginStates) WBState.loginStates = { CN: '', GLOBAL: '' };
+                WBState.loginAuthUrls[WBState.loginRealm] = authURL.href;
+                WBState.loginStates[WBState.loginRealm] = result.state;
                 if (authWindow) authWindow.location.href = authURL.href;
                 else notifyEditorialStatus('浏览器阻止了新窗口，请复制授权链接');
                 finishFeedback('success'); // Link obtained; authorization completion is reported separately.
