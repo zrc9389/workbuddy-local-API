@@ -1859,6 +1859,25 @@ export function expiryTone(days) {
                         requestAnimationFrame(stepCounter);
                     }
                 } else if (phase === 'REWIND_TO_0') {
+                    if (!soundscape.loginSoundtrackTriggered) {
+                        soundscape.loginSoundtrackTriggered = true;
+                        try {
+                            if (typeof soundscape !== 'undefined' && soundscape) {
+                                soundscape.initForLogin();
+                                soundscape.activateLoginAudio();
+                                // 如果用户先前在个性化中配置了自定义音乐，优先播放该音乐
+                                const customUrl = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_url')) || '';
+                                if (customUrl) {
+                                    soundscape.playCustomBackgroundTrack(customUrl, false);
+                                }
+                                if (soundscape.ctx && soundscape.ctx.state === 'suspended') {
+                                    soundscape.ctx.resume().catch(() => {});
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('100~0 rewind audio start deferred:', e);
+                        }
+                    }
                     const rewindElapsed = now - rewindStartTime;
                     const rewindDuration = 520;
                     const t = Math.min(1, rewindElapsed / rewindDuration);
@@ -2138,11 +2157,15 @@ export function expiryTone(days) {
                 if (withSound && typeof soundscape !== 'undefined' && soundscape && typeof soundscape.triggerErrorSound === 'function') {
                     soundscape.triggerErrorSound();
                 }
+                triggerAccessDeniedAnimation(failureMessage, false);
                 const inpKey = document.getElementById('input-access-key');
-                if (inpKey) {
-                    setTimeout(() => { inpKey.value = ''; }, 480);
-                }
-                triggerAccessDeniedAnimation(failureMessage);
+                // 输错后保留 1.2 秒供用户辨识错误，随后清空输入并平滑恢复初始状态
+                setTimeout(() => {
+                    if (inpKey) inpKey.value = '';
+                    if (passwordUiMode === 'DENIED' || passwordUiMode === 'EMPTY_DENIED') {
+                        updatePasswordUiState(defaultPasswordSetup ? 'INIT' : 'AUTH');
+                    }
+                }, 1200);
             }
         }
 
@@ -3416,8 +3439,8 @@ export function expiryTone(days) {
                 col,
                 row,
                 radius: 0.1,
-                maxRadius: isFullScreenNoDecay ? 45.0 : 16.5,
-                speed: isFullScreenNoDecay ? 0.38 : 0.12,
+                maxRadius: isFullScreenNoDecay ? 45.0 : 18.2,
+                speed: isFullScreenNoDecay ? 0.38 : 0.11,
                 intensity,
                 isFullScreenNoDecay
             });
@@ -4963,7 +4986,7 @@ export function expiryTone(days) {
             let stateLabel = '正常';
             let stateCls = 'tone-normal';
             if (WBState.tasks.pausedAll || WBState.tasks.scheduleEnabled === false) {
-                stateLabel = WBState.tasks.pausedAll ? '已暂停' : (WBState.tasks.running ? '排程停用 · 运行中' : '排程停用');
+                stateLabel = WBState.tasks.pausedAll ? '已暂停' : '排程停用';
                 stateCls = 'tone-paused';
             } else if (isCur && !hasFault) {
                 stateLabel = '执行中';
@@ -5198,6 +5221,19 @@ export function expiryTone(days) {
                 t1 = '[ START ALL TASKS ]';
                 t2 = WBState.tasks.scheduleEnabled === false ? '[ ENABLE ALL TASKS ]' : '[ DISABLE ALL TASKS ]';
             } else if (ch === 'usage') {
+                // 动态基于实时北京时间 (UTC+8) 生成小时刻度，末尾对齐当前所在小时，杜绝 24:00
+                const bjNow = new Date(Date.now() + 8 * 3600000);
+                const curBjH = bjNow.getUTCHours();
+                WBState.usage24h.labels = [];
+                for (let s = 6; s >= 0; s--) {
+                    const h = (curBjH - s * 4 + 48) % 24;
+                    WBState.usage24h.labels.push(String(h).padStart(2, '0') + ':00');
+                }
+                WBState.usage6h.labels = [];
+                for (let s = 5; s >= 0; s--) {
+                    const h = (curBjH - s + 48) % 24;
+                    WBState.usage6h.labels.push(String(h).padStart(2, '0') + ':00');
+                }
                 t1 = WBState.usageView === 'CURVE' ? '[ MODEL RANK ]' : '[ TIME CURVE ]';
                 t2 = WBState.usageRange === '24H' ? '[ TIME: 6H ]' : '[ TIME: 24H ]';
             } else if (ch === "packages") {
@@ -5212,6 +5248,13 @@ export function expiryTone(days) {
                     t2 = WBState.packageListSort === "USAGE" ? "[ SORT: NAME ]" : "[ SORT: USAGE ]";
                 }
             } else if (ch === 'logs') {
+                const bjNowLogs = new Date(Date.now() + 8 * 3600000);
+                const curLogH = bjNowLogs.getUTCHours();
+                WBState.errorModelSeries.labels = [];
+                for (let s = 6; s >= 0; s--) {
+                    const h = (curLogH - s * 4 + 48) % 24;
+                    WBState.errorModelSeries.labels.push(String(h).padStart(2, '0') + ':00');
+                }
                 t1 = WBState.logView === 'LIST' ? '[ ERROR MODEL ]' : '[ LOG ARCHIVE ]';
             } else if (ch === 'encryption') {
                 t1 = '[ √ SAVE ]';
@@ -5297,7 +5340,7 @@ export function expiryTone(days) {
                         const avgTtft = measured.length ? Math.round(measured.reduce((s, m) => s + m.ttft, 0) / measured.length) : null;
                 l1.textContent = WBState.modelRealmFilter === 'ALL' ? '可用模型' : `${WBState.modelRealmFilter} 模型`;
                 v1.textContent = `${list.length}`;
-                l2.textContent = '目录缓存'; v2.textContent = WBState.modelCacheHot ? '热命中' : '已同步';
+                l2.textContent = '目录缓存'; v2.textContent = (WBState.modelsLastRefreshed && (Date.now() - WBState.modelsLastRefreshed < 86400000)) ? '已同步' : '热命中';
                 l3.textContent = '平均首字延迟'; v3.textContent = avgTtft === null ? '—' : `${avgTtft} ms`;
             } else if (ch === 'tasks' || ch === 'scheduler') {
                 const faultSteps = WBState.tasks.steps.filter(s => (s.failures?.length || 0) > 0).length;
@@ -5663,16 +5706,16 @@ export function expiryTone(days) {
                                     <div class="text-[12.5px] font-mono text-white/90 border-b border-white/15 pb-1 max-w-xl fade-truncate selectable-text">${escapeDisplayText(WBState.loginAuthUrl || '请点击下方按钮获取授权链接')}</div>
                                 </div>
                                 <div class="inline-flex items-center space-x-5 py-0.5 max-w-sm">
-                                    <button class="editorial-text-btn text-white text-[11.5px] px-0.5" data-action="open-oauth">[ 跳转浏览器授权 &rarr; ]</button>
+                                    <button class="editorial-text-btn ${WBState.oauthWaiting ? 'tone-guard font-medium animate-pulse' : 'text-white'} text-[11.5px] px-0.5" data-action="open-oauth">${WBState.oauthWaiting ? '[ 授权等待中 (慢闪)... ]' : '[ 跳转浏览器授权 &rarr; ]'}</button>
                                     <button class="editorial-text-btn text-[11.5px] px-0.5 text-white/70 hover:text-white" data-action="reset-oauth">[ 重置 ]</button>
                                     <button id="btn-oauth-status" class="editorial-text-btn text-[11.5px] px-0.5" data-action="copy-oauth">[ 复制授权链接 ]</button>
                                 </div>
                                 <!-- 兜底导入：适度收拢上方单元格，留出充足间距彻底避免与下方紧贴 -->
-                                <div class="pt-1 border-t border-white/10 mt-1">
-                                    <div class="flex justify-between items-center text-[11.5px] tracking-[0.12em] text-white/45 mb-1">
-                                        <span class="flex items-center space-x-1.5"><span class="inline-block w-1.5 h-1.5 rounded-full bg-white/40"></span><span>导入账号凭据 JSON（单个对象或数组）</span></span>
+                                <div class="border-t border-white/10 pt-0.5 mt-0.5">
+                                    <div class="flex justify-between items-center text-[11px] tracking-[0.1em] text-white/45 mb-0.5">
+                                        <span class="flex items-center space-x-1"><span class="inline-block w-1.5 h-1.5 rounded-full bg-white/40"></span><span>导入账号凭据 JSON（单个对象或数组）</span></span>
                                     </div>
-                                    <div class="max-w-xl pb-0.5 mb-1">
+                                    <div class="max-w-xl">
                                         <textarea id="inp-account-credentials" class="editorial-input credential-paste w-full font-mono text-[12.5px] text-white/90" rows="2" wrap="off" autocomplete="off" placeholder="粘贴凭据 JSON"></textarea>
                                     </div>
                                 </div>
@@ -5829,12 +5872,13 @@ export function expiryTone(days) {
 
                     // 出口检测连通性着色：出口变色而非账号归属地变色 (通=绿色, 不通=红色, 相同地区=黄色)
                     let regionCls = 'text-white/45';
-                    if (WBState.egressProbed) {
-                        if (acc._probeResult === 'FAIL') regionCls = 'tone-fault input-error-shake font-medium';
-                        else if (acc._probeResult === 'DUPLICATE' || acc._probeResult === 'LOCAL') regionCls = 'tone-guard font-medium';
-                        else if (acc._probeResult === 'PASS') regionCls = 'tone-forced font-medium';
-                    }
                     let egressCls = 'text-white/65 hover:text-white';
+                    if (WBState.egressProbed) {
+                        // 依规范：变色作用于出口节点而非国家分类。独占地区=绿色，同地区/未分配=黄色，超时=红色
+                        if (acc._probeResult === 'FAIL') egressCls = 'tone-fault font-medium underline';
+                        else if (acc._probeResult === 'DUPLICATE' || acc._probeResult === 'LOCAL') egressCls = 'tone-guard font-medium';
+                        else if (acc._probeResult === 'PASS') egressCls = 'tone-forced font-medium';
+                    }
 
                     const vIdx = (WBState.accountPage * pageSize + idx) * 2;
                     // 账号池排版重构：取消两端散开的 justify-between，改为一体化紧凑等宽流式对齐
@@ -6091,7 +6135,7 @@ export function expiryTone(days) {
                     let stateLabel = st.backendState === 'pending' ? '待运行' : '正常';
                     let stateCls = 'tone-normal';
                     if (WBState.tasks.pausedAll || WBState.tasks.scheduleEnabled === false) {
-                        stateLabel = WBState.tasks.pausedAll ? '已暂停' : (WBState.tasks.running ? '排程停用 · 运行中' : '排程停用');
+                        stateLabel = WBState.tasks.pausedAll ? '已暂停' : '排程停用';
                         stateCls = 'tone-paused';
                     } else if (isCur && !hasFault) {
                         stateLabel = '执行中';
@@ -6193,9 +6237,8 @@ export function expiryTone(days) {
                                 <span class="text-white/28">|</span>
                                 <span class="text-white/60">区间累计: 输出 ${((ds.outVals.reduce((a,b)=>a+b,0))/1000).toFixed(2)}M / 输入 ${((ds.inVals.reduce((a,b)=>a+b,0))/1000).toFixed(2)}M</span>
                             </div>
-                            <div class="space-x-4">
-                                <button class="editorial-tab ${WBState.usageRange==='6H'?'active':''}" data-action="set-usage-range" data-range="6H">6H</button>
-                                <button class="editorial-tab ${WBState.usageRange==='24H'?'active':''}" data-action="set-usage-range" data-range="24H">24H</button>
+                            <div class="text-[10px] text-white/40 tracking-wider font-mono">
+                                [ 24H 北京时间时序 ]
                             </div>
                         </div>
                         <div class="relative w-full h-[132px]">
@@ -6413,7 +6456,7 @@ export function expiryTone(days) {
                                     <span id="pkg-model-readout">时段 ${initP.day}天 — 存活积分 ${initP.survival.toFixed(1)}% / 预计到期 ${initP.expAcc} 账号 / 临期包 ${initP.packs}</span>
                                     <span class="text-white/60 font-mono">已知到期包剩余占比</span>
                                 </div>
-                                <svg viewBox="0 0 520 70" class="w-full h-[70px] overflow-visible">
+                                <svg viewBox="0 0 520 86" class="w-full h-[86px] overflow-visible">
                                     ${clipDef}
                                     <line x1="40" y1="0" x2="40" y2="70" stroke="#ff5c74" stroke-width="1" stroke-dasharray="2 3" opacity="0.65" />
                                     <line x1="210" y1="0" x2="210" y2="70" stroke="rgba(255,255,255,0.22)" stroke-width="1" stroke-dasharray="2 3" />
@@ -6422,11 +6465,9 @@ export function expiryTone(days) {
                                         <polyline fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="1.35" points="${curvePts}" />
                                         ${points.map(p => `<circle cx="${p.x}" cy="${p.y}" r="2.5" fill="#ffffff" opacity="0.9" />`).join('')}
                                     </g>
+                                    ${points.map(p => `<text x="${p.x}" y="82" fill="rgba(255,255,255,0.38)" font-size="9" font-family="Space Grotesk, monospace" text-anchor="middle">${p.day}D</text>`).join('')}
                                     <line id="pkg-model-cursor" x1="${initP.x}" y1="0" x2="${initP.x}" y2="68" stroke="#f0c987" stroke-width="1.2" opacity="0.8" />
                                 </svg>
-                                <div class="flex justify-between items-center text-[9px] tracking-[0.14em] text-white/35 mt-1.5 font-mono">
-                                    <span>1D</span><span>3D</span><span>5D</span><span>10D</span><span>20D</span><span>30D</span>
-                                </div>
                             </div>
                             <div class="grid grid-cols-6 gap-2 pt-1 text-[10.5px]">
                                 ${points.map((p, idx) => `
