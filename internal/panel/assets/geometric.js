@@ -1774,11 +1774,7 @@ export function expiryTone(days) {
                     const p = soundscape.customAudio.play();
                     if (p && typeof p.catch === 'function') {
                         p.catch(() => {
-                            // 浏览器原生自动播放受限时：在用户对页面的任意首次动作（触屏、移动、键盘按键、焦点）立即无缝起播
-                            ['pointerdown', 'mousedown', 'keydown', 'focus', 'click', 'touchstart'].forEach(evt => {
-                                window.addEventListener(evt, resumeAnyPausedAudio, { once: true, passive: true });
-                                document.addEventListener(evt, resumeAnyPausedAudio, { once: true, passive: true });
-                            });
+                            // 浏览器原生自动播放受限时，由全局 capture 阶段的 triggerAudioOnUserGesture 接管
                         });
                     }
                 }
@@ -1786,32 +1782,37 @@ export function expiryTone(days) {
                 soundscape.initForLogin();
                 if (soundscape.ctx && soundscape.ctx.state === 'suspended') {
                     soundscape.ctx.resume().catch(() => {
-                        ['pointerdown', 'mousedown', 'keydown', 'focus', 'click', 'touchstart'].forEach(evt => {
-                            window.addEventListener(evt, resumeAnyPausedAudio, { once: true, passive: true });
-                            document.addEventListener(evt, resumeAnyPausedAudio, { once: true, passive: true });
-                        });
+                        // 由全局 capture 阶段的 triggerAudioOnUserGesture 接管
                     });
                 }
             }
         }
 
         
-        // 全局手势唤醒：浏览器策略默认挂起无手势音频上下文，只要用户在开机期间移动鼠标或点击屏幕，立即唤醒
-        const earlyAudioUnlock = () => {
-            if (typeof soundscape !== 'undefined' && soundscape) {
-                if (soundscape.customAudio && soundscape.customAudio.paused) {
+        // 全局手势捕获唤醒：在捕获阶段拦截真实物理交互（点击任意区域、敲击键盘、轻触屏幕），过滤脚本伪手势并唤醒自选音乐
+        const triggerAudioOnUserGesture = (e) => {
+            if (e && e.isTrusted === false) return; // 过滤程序模拟的伪事件（如 input.focus()）
+            if (typeof soundscape === 'undefined' || !soundscape) return;
+            if (soundscape.customAudio) {
+                if (soundscape.customAudio.paused) {
                     soundscape.customAudio.play().catch(() => {});
                 }
-                if (soundscape.ctx && soundscape.ctx.state === 'suspended') {
-                    soundscape.ctx.resume().catch(() => {});
-                }
+            } else if (!soundscape._loginTrackStarted) {
+                startAppropriateLoginSoundtrack();
+            }
+            if (soundscape.ctx && soundscape.ctx.state === 'suspended') {
+                soundscape.ctx.resume().catch(() => {});
             }
         };
         if (typeof window !== 'undefined') {
             ['pointerdown', 'mousedown', 'keydown', 'touchstart', 'click'].forEach(evt => {
-                window.addEventListener(evt, earlyAudioUnlock, { passive: true });
+                window.addEventListener(evt, triggerAudioOnUserGesture, { capture: true, passive: true });
+                if (typeof document !== 'undefined') {
+                    document.addEventListener(evt, triggerAudioOnUserGesture, { capture: true, passive: true });
+                }
             });
         }
+
 
         function startStrictLoadingSequence() {
             const statusEl = document.getElementById('loading-status');

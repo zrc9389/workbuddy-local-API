@@ -125,7 +125,12 @@ func (p *Panel) assets(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "assets unavailable", 500)
 		return
 	}
+	// 彻底禁用浏览器 304 缓存回退：清理条件请求头，强制始终返回 200 最新内容
+	r.Header.Del("If-Modified-Since")
+	r.Header.Del("If-None-Match")
 	setSecurityHeaders(w)
+	w.Header().Del("Last-Modified")
+	w.Header().Del("ETag")
 	http.StripPrefix("/panel/assets/", http.FileServer(http.FS(sub))).ServeHTTP(w, r)
 }
 
