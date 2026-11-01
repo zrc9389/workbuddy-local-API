@@ -1,5 +1,6 @@
 import { initEditorialEventDelegation, handleDataAction } from './editorial-events.js';
 'use strict';
+let mainSceneActive = false;
 // CN 是模型家族筛选，不改变上游提供的路由域；仅识别明确的模型名前缀。
 export function isChineseModel(model) {
     const matches = value => {
@@ -372,9 +373,9 @@ export function expiryTone(days) {
                 ];
             }
 
-            initForLogin() {
+            initForLogin(skipDefault = false) {
                 if (this.isInitialized && this.ctx) {
-                    if (this.ctx.state === 'suspended') this.ctx.resume();
+                    if (this.ctx.state ===  suspended) this.ctx.resume().catch(() => {});
                     return;
                 }
                 const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -385,15 +386,17 @@ export function expiryTone(days) {
                 this.masterGain.connect(this.ctx.destination);
 
                 this.defaultAmbientGain = this.ctx.createGain();
-                this.defaultAmbientGain.gain.value = 1.0;
+                this.defaultAmbientGain.gain.value = skipDefault ? 0.0 : 1.0;
                 this.defaultAmbientGain.connect(this.masterGain);
 
                 this.isMuted = false;
                 this.isInitialized = true;
-                this.isCustomActive = false;
+                this.isCustomActive = skipDefault;
 
-                this.startRainAmbience();
-                this.startAmbientPadLoop();
+                if (!skipDefault) {
+                    this.startRainAmbience();
+                    this.startAmbientPadLoop();
+                }
             }
 
             startLoginAudioFallback() {
@@ -1790,9 +1793,13 @@ export function expiryTone(days) {
 
         
         // 全局手势捕获唤醒：在捕获阶段拦截真实物理交互（点击任意区域、敲击键盘、轻触屏幕），过滤脚本伪手势并唤醒自选音乐
+        // 全局手势捕获唤醒：在捕获阶段拦截真实物理交互（点击任意区域、敲击键盘、轻触屏幕），过滤脚本伪手势并唤醒自选音乐与点音反馈
         const triggerAudioOnUserGesture = (e) => {
             if (e && e.isTrusted === false) return; // 过滤程序模拟的伪事件（如 input.focus()）
-            if (typeof soundscape === 'undefined' || !soundscape) return;
+            if (typeof soundscape === undefined || !soundscape) return;
+            if (soundscape.ctx && soundscape.ctx.state === suspended) {
+                soundscape.ctx.resume().catch(() => {});
+            }
             if (soundscape.customAudio) {
                 if (soundscape.customAudio.paused) {
                     soundscape.customAudio.play().catch(() => {});
@@ -1800,8 +1807,11 @@ export function expiryTone(days) {
             } else if (!soundscape._loginTrackStarted) {
                 startAppropriateLoginSoundtrack();
             }
-            if (soundscape.ctx && soundscape.ctx.state === 'suspended') {
-                soundscape.ctx.resume().catch(() => {});
+            // 任意物理点击触发清脆谐波点音
+            if (e && (e.type === click || e.type === pointerdown || e.type === touchstart)) {
+                if (typeof soundscape.triggerTileNote === 'function') {
+                    soundscape.triggerTileNote(Math.floor(Math.random() * 5));
+                }
             }
         };
         if (typeof window !== 'undefined') {
@@ -1820,7 +1830,9 @@ export function expiryTone(days) {
 
             // 在加载阶段预热登录页音频；进入密码框时只需恢复已创建的 AudioContext。
             try {
-                if (typeof soundscape !== 'undefined' && soundscape) { const savedId = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_id')) || ''; if (!savedId || savedId === 'm-default') soundscape.initForLogin(); }
+                    const savedId = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_music_id')) || '';
+                    const isCustom = Boolean(savedId && savedId !== 'm-default');
+                    soundscape.initForLogin(isCustom);
             } catch (e) {
                 console.warn('Login audio preload deferred:', e);
             }
@@ -3328,7 +3340,7 @@ export function expiryTone(days) {
             ctx.restore();
         }
 
-        let mainSceneActive = false;
+        // mainSceneActive hoisted to module top
         let mainEnterTimestamp = 0;
         let gridTiles = [];
         let tileMap = {};
