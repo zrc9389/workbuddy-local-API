@@ -240,8 +240,8 @@ func (a *Auth) Wrap(next http.Handler) http.Handler {
 			a.serve(w, r)
 			return
 		}
-		isPublicAudio := (r.Method == "GET" || r.Method == "HEAD") && (r.URL.Path == "/panel/api/music" || strings.HasPrefix(r.URL.Path, "/panel/api/music/file/"))
-		admin := (r.URL.Path == "/status" || strings.HasPrefix(r.URL.Path, "/panel/api/") || strings.HasPrefix(r.URL.Path, "/admin/")) && !isPublicAudio
+		isPublicPanelResource := (r.Method == "GET" || r.Method == "HEAD") && (r.URL.Path == "/panel/api/music" || strings.HasPrefix(r.URL.Path, "/panel/api/music/file/") || r.URL.Path == "/panel/api/customization")
+		admin := (r.URL.Path == "/status" || strings.HasPrefix(r.URL.Path, "/panel/api/") || strings.HasPrefix(r.URL.Path, "/admin/")) && !isPublicPanelResource
 		if admin {
 			if isWrite(r) && r.URL.Path != "/panel/api/music/upload" {
 				limit := int64(4 << 20)

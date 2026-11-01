@@ -1825,10 +1825,13 @@ export function expiryTone(days) {
                 console.warn('Login audio preload deferred:', e);
             }
 
-            // 在首屏加载期间异步拉取公共音乐配置，确保在 100~0 回归时即可直接播放用户选定的音乐
+            // 在首屏加载期间异步并行拉取系统级公共音乐与全局个性化配置（标语与主题），确保未登录首页为所有访客展示系统级定制文案与主题
             (async () => {
                 try {
-                    const music = await safeApiFetch('/panel/api/music', {}, 2500);
+                    const [music, customRes] = await Promise.all([
+                        safeApiFetch('/panel/api/music', {}, 2500),
+                        safeApiFetch('/panel/api/customization', {}, 2500)
+                    ]);
                     if (music && Array.isArray(music.musicList)) {
                         WBState.customization.musicList = music.musicList;
                         WBState.customization.activeMusicId = music.activeMusicId;
@@ -1837,6 +1840,29 @@ export function expiryTone(days) {
                         if (curMusic && typeof localStorage !== 'undefined') {
                             localStorage.setItem('wb_active_music_id', curMusic.id || '');
                             localStorage.setItem('wb_active_music_url', curMusic.url || '');
+                        }
+                    }
+                    if (customRes && typeof customRes === 'object') {
+                        const container = customRes.data && typeof customRes.data === 'object' ? customRes.data : customRes;
+                        const saved = container.customization && typeof container.customization === 'object' ? container.customization : container;
+                        if (Array.isArray(saved.sloganList) && saved.sloganList.length > 0) {
+                            WBState.customization.sloganList = saved.sloganList.filter(s => s && typeof s.id === 'string' && typeof s.name === 'string' && typeof s.text === 'string');
+                            try { if (typeof localStorage !== 'undefined') localStorage.setItem('wb_slogan_list', JSON.stringify(WBState.customization.sloganList)); } catch (_) {}
+                        }
+                        if (typeof saved.activeSloganId === 'string' && WBState.customization.sloganList.some(s => s.id === saved.activeSloganId)) {
+                            WBState.customization.activeSloganId = saved.activeSloganId;
+                            try { if (typeof localStorage !== 'undefined') localStorage.setItem('wb_active_slogan_id', saved.activeSloganId); } catch (_) {}
+                        }
+                        if (typeof saved.randomMotto === 'boolean') {
+                            WBState.customization.randomMotto = saved.randomMotto;
+                        }
+                        if (typeof saved.activeTheme === 'string') {
+                            WBState.customization.activeTheme = saved.activeTheme;
+                            try { if (typeof localStorage !== 'undefined') localStorage.setItem('wb_active_theme', saved.activeTheme); } catch (_) {}
+                            if (typeof switchWeatherTheme === 'function') switchWeatherTheme(saved.activeTheme);
+                        }
+                        if (typeof applyCurrentMottoToHome === 'function') {
+                            applyCurrentMottoToHome();
                         }
                     }
                 } catch (_) {}
@@ -8754,6 +8780,25 @@ export function expiryTone(days) {
             syncDynamicBottomButtons();
         }
 
+        async function syncCustomizationToBackend() {
+            if (!IS_PROD_ENV) return;
+            try {
+                const payload = {
+                    sloganList: WBState.customization.sloganList,
+                    activeSloganId: WBState.customization.activeSloganId,
+                    randomMotto: WBState.customization.randomMotto,
+                    activeTheme: WBState.customization.activeTheme,
+                    randomTheme: WBState.customization.randomTheme
+                };
+                await safeApiFetch('/panel/api/customization', {
+                    method: 'POST',
+                    body: JSON.stringify({ customization: payload })
+                }, 10000);
+            } catch (e) {
+                console.warn('Sync customization to backend failed:', e);
+            }
+        }
+
         function selectCustomSlogan(id) {
             WBState.customization.randomMotto = false;
             WBState.customization.activeSloganId = id; try { if (typeof localStorage !== 'undefined') { localStorage.setItem('wb_active_slogan_id', id); localStorage.setItem('wb_slogan_list', JSON.stringify(WBState.customization.sloganList)); } } catch (_) {}
@@ -8764,6 +8809,7 @@ export function expiryTone(days) {
             updateEditorialKeyFigures(false);
             renderEditorialStage(false);
             syncDynamicBottomButtons();
+            syncCustomizationToBackend();
         }
 
         function deleteCustomSlogan(id) {
@@ -8776,6 +8822,7 @@ export function expiryTone(days) {
             updateEditorialKeyFigures(false);
             renderEditorialStage(false);
             syncDynamicBottomButtons();
+            syncCustomizationToBackend();
         }
 
         function selectCustomTheme(themeId) {
@@ -8787,6 +8834,8 @@ export function expiryTone(days) {
             updateEditorialKeyFigures(false);
             renderEditorialStage(false);
             syncDynamicBottomButtons();
+            try { if (typeof localStorage !== 'undefined') localStorage.setItem('wb_active_theme', themeId); } catch (_) {}
+            syncCustomizationToBackend();
         }
 
         function cycleCustomTheme() {
