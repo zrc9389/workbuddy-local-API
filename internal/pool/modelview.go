@@ -42,7 +42,7 @@ type ModelLockRow struct {
 
 // ModelLockView 汇总当前所有「有未过期模型级限流」的 (域, 模型)，按不可用优先排序。
 //
-// 为什么需要它：选号失败时上游只回 no_healthy_account（issue #102），ModelBlocked 虽
+// 为什么需要它：选号失败时上游只回 no_healthy_account，ModelBlocked 虽
 // 已把「号都在、只是都对这个模型关闭」从「池子真没号」里区分出来，但那是一次请求
 // 失败后的单模型回答；运维仍看不到「此刻一共哪些模型不能用、分别还要锁多久」。
 // 本视图把 (域, 模型) 维度聚合成一张清单补齐这一点。

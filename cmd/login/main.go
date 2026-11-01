@@ -46,7 +46,7 @@ const (
 // 登录 state 落盘路径（var 便于测试替换临时文件）
 // Portable across OSes: the upstream hardcoded "/tmp/...", which on
 // Windows resolves to <drive>:\tmp\... and aborts the OAuth flow with
-// "The system cannot find the path specified". os.TempDir() is /tmp on Linux.
+// "The system cannot find the path specified". os.TempDir is /tmp on Linux.
 var stateFile = filepath.Join(os.TempDir(), "wb2api-login-state.json")
 
 // exitFunc 供测试替换（默认 os.Exit；测试持临时替换为 panic 以进程内捕获 fatal）。
@@ -90,7 +90,7 @@ func doJSON(client *http.Client, method, fullURL string, headers func(*http.Requ
 	if headers != nil {
 		headers(req)
 	} else {
-		// 缺省头：CN origin（与原 commonHeaders() 行为一致，零回归）
+		// 缺省头：CN origin（与原 commonHeaders 行为一致，零回归）
 		commonHeaders(originRefererCN)(req)
 	}
 	resp, err := client.Do(req)
@@ -125,7 +125,7 @@ type loginState struct {
 	Realm string `json:"realm,omitempty"` // url 落盘时写回的 realm，poll 读回校验防混域
 }
 
-// realm 取值枚举（与 internal/auth 的 Realm() 归一化输出一致）。
+// realm 取值枚举（与 internal/auth 的 Realm 归一化输出一致）。
 const (
 	realmCN     = "cn"
 	realmGlobal = "global"

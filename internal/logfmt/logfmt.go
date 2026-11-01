@@ -69,7 +69,7 @@ func Label(uid, nick string) string {
 // DisplayWidth 返回 s 的终端显示列宽：CJK / 全角 / emoji 记 2 列，其余记 1 列。
 //
 // 存在意义：账号昵称是用户自定的中文（"猫" 是 3 字节但占 2 列，"sample" 是 6 字节占
-// 6 列），用 len()（字节数）做表格对齐会导致列宽忽宽忽窄。Go 标准库没有显示宽度函数，
+// 6 列），用 len（字节数）做表格对齐会导致列宽忽宽忽窄。Go 标准库没有显示宽度函数，
 // 本仓库不引 go-runewidth（保持零第三方依赖），故内置这份覆盖常见宽字符区段的判定。
 func DisplayWidth(s string) int {
 	w := 0

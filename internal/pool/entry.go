@@ -9,7 +9,7 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 )
 
-// degradeReason 连败降权（issue #114）写 reason 的固定文案：与冷却域的
+// degradeReason 连败降权写 reason 的固定文案：与冷却域的
 // reason（"429 rate limit" / "waf 403 block" / "余额不足"）共用一个字段，
 // 运维在 /status 一处即可看到「为什么被降权/冷却」，不新增台账字段。
 const degradeReason = "consecutive failures"
@@ -86,11 +86,11 @@ type Status struct {
 	Until                    time.Time `json:"until,omitempty"`
 	Reason                   string    `json:"reason,omitempty"`
 	SoftStreak               int       `json:"soft_streak,omitempty"` // 连续软冷却次数（指数退避指数，见 entry.softStreak）
-	// RateLimitedModels 当前仍在限额的模型列表（issue #36 限额台账）。
+	// RateLimitedModels 当前仍在限额的模型列表。
 	// 仅「带解析时间 6004」触发的模型级独立冷却（modelCooldowns 未到期条目）时非空，
 	// 每模型一行；运维据此看到"账号 A 的模型 X 还在限额中，预计 Z 时间恢复"。到期即消失（零回归）。
 	RateLimitedModels []RateLimitedModel `json:"rate_limited_models,omitempty"`
-	// Realm 账号域（cn/global，auth.Realm() 计算值；含 global.enabled 开关闸）。
+	// Realm 账号域（cn/global，auth.Realm 计算值；含 global.enabled 开关闸）。
 	// 供面板/状态接口按域分组展示。
 	Realm string `json:"realm,omitempty"`
 	// Enterprise 企业版账号（auth.EnterpriseID 非空，计算值不落盘）。
@@ -141,7 +141,7 @@ type ModelCostStatus struct {
 	Samples int `json:"samples,omitempty"`
 }
 
-// RateLimitedModel 单个被限流模型的台账行（issue #36）。
+// RateLimitedModel 单个被限流模型的台账行。
 type RateLimitedModel struct {
 	Model string `json:"model"`
 	// Kind 区分限流与模型不可用：6004 是 rate_limit，11102 是 model_unavailable。
@@ -248,7 +248,7 @@ type entry struct {
 	// 重学（再吃 2 次失败才禁用，期间每次都白打一轮上游）；清零点（refresh/chat 成功、
 	// 手工复活）同样落盘，重启后不残留旧计数。
 	sessionDeadFails int
-	// consecutiveFails 连续失败计数（连败降权，issue #114）——「不知道原因的兜底」：
+	// consecutiveFails 连续失败计数（连败降权）——「不知道原因的兜底」：
 	// 覆盖 ErrClient（未知 4xx）与传输层失败（连不上上游）这类 applyErrorPolicy
 	// default 分支不罚号的形态。与 sessionDeadFails 同构但独立计数：12153 的终态
 	// 是 Disable，这里的终态是临时出池（degradeUntil）。清零点：NoteSuccess。
@@ -306,7 +306,7 @@ func (e *entry) healthy(now time.Time) bool {
 
 // modelExempt 报告账号是否处于「6004 模型级软冷却」形态：存在任一有效的 6004
 // 模型级冷却（modelCooldowns 非空），且尚未禁用、未熔断。
-// 此形态下账号仅对限流中的模型不可用，对其他模型仍可选（issue #31）。
+// 此形态下账号仅对限流中的模型不可用，对其他模型仍可选。
 // healthyForModel 与 ServableNow 共用本谓词，保证 chat 选号与探活口径一致。
 // 调用方负责 now 与冷却有效性的判断（本方法只看形态，不看冷却是否已过期）。
 func (e *entry) modelExempt() bool {
@@ -459,7 +459,7 @@ type stateAccount struct {
 	SessionDeadFails int `json:"session_dead_fails"`
 	// ConsecutiveFails 连续失败计数（连败降权进度，见 entry.consecutiveFails）。
 	ConsecutiveFails int `json:"consecutive_fails"`
-	// DegradeUntil 连败降权截止（issue #114）。仅未过期才持久化（落盘/恢复均惰性
+	// DegradeUntil 连败降权截止。仅未过期才持久化（落盘/恢复均惰性
 	// 过滤），避免降权期重启失忆；过期/零值不写。指针语义同 BreakerUntil。
 	DegradeUntil *time.Time `json:"degrade_until,omitempty"`
 	// BreakerUntil 熔断截止（指数退避）。仅未过期才持久化（落盘/恢复均惰性过滤），
@@ -524,14 +524,14 @@ const (
 // 避免测试/裸用池时退避无上限。
 const defaultSoftRateMax = 2 * time.Hour
 
-// defaultDegrade* 连败降权默认参数（issue #114）：连败 5 次临时出池 10 分钟。
+// defaultDegrade* 连败降权默认参数：连败 5 次临时出池 10 分钟。
 const (
 	defaultDegradeThreshold   = 5
 	defaultDegradeCooldown    = 10 * time.Minute
 	defaultDegradeCooldownMax = 2 * time.Hour
 )
 
-// defaultCostExploreInterval costTier 条件探索的默认窗口（issue #136 方案 a′）。
+// defaultCostExploreInterval costTier 条件探索的默认窗口。
 // 取 30m：≤ 48 次/天/模型 的探索上限算术（24h/30m=48），与池规模和 QPS 无关。
 // 探索=搭车改道（把一个既有真实用户请求改道给 tier 1 号），零新增上游请求；
 // 增量成本只是「该请求本可打免费号、实际打了可能收费的号」的期望计费差，

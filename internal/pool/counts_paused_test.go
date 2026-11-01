@@ -6,7 +6,7 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 )
 
-// TestCountsPausedSeparate 暂停号在两种口径下的计数（issue #125）。
+// TestCountsPausedSeparate 暂停号在两种口径下的计数。
 //
 // CountsDetailed 把 paused 并入 disabled —— 那是 /status 的「不可用」口径，对监控与
 // 脚本是稳定契约；CountsDetailedWithPaused 则分开返回，供面板回答「禁用几个、

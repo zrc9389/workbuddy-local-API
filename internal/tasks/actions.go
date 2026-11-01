@@ -202,7 +202,7 @@ var mpTaskCodes = map[string]bool{
 	"Sequential_Tasks_2": true, // 小程序选中专家并完成有效对话（mp 指纹 expert_actual_use）
 	"Sequential_Tasks_3": true, // 小程序完成 5 次对话（与 Tasks_1 同形状，target=5 逐条累加）
 	// Tasks_4..7 存在性已实测（accept 返回 prerequisite not met 链式依赖；Tasks_8 not
-	// found 封顶）。链条每日零点解锁一环（task locked until 次日），判据为 issue #42
+	// found 封顶）。链条每日零点解锁一环（task locked until 次日），判据为 
 	// 描述 + mpsrc 事件形状预置，解锁后逐个实测校正。
 	"Sequential_Tasks_4": true,
 	"Sequential_Tasks_5": true,
@@ -432,7 +432,7 @@ func runSequentialChat5(p *Service, a *auth.Auth) (string, error) {
 
 // runSequentialChat10 完成 Sequential_Tasks_6「在小程序内完成 10 次有效对话」（预留）。
 // 判据假定与 Tasks_1/3 同形状（mini chat_request_send），target 由任务自带（回读），
-// runMPMiniChatTask 按差额补报——issue #42 称 target=10，以解锁后实际下发为准。
+// runMPMiniChatTask 按差额补报——称 target=10，以解锁后实际下发为准。
 // 真人节奏间隔同样适用（mpChatEventGap）：9 条 × ~50s ≈ 8 分钟/账号，夜间队列可接受。
 func runSequentialChat10(p *Service, a *auth.Auth) (string, error) {
 	return p.runMPMiniChatTask(a, "Sequential_Tasks_6", false)

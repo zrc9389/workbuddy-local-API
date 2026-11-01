@@ -147,7 +147,7 @@ func TestExtractKeyPriority(t *testing.T) {
 		{`{"metadata":{"user_id":"mu"}}`, ""},                                                  // user_id 已剔除粘性键（粒度过粗），回落轮换
 		{`{"metadata":{"conversation_id":123}}`, ""},                                           // 非字符串 → 空
 		{`not-json`, ""}, // 非法 JSON → 空
-		// issue #35：客户端实际发 camelCase conversationId，ExtractKey 必须识别。
+		// 客户端实际发 camelCase conversationId，ExtractKey 必须识别。
 		{`{"conversationId":"abc"}`, "abc"},                                            // 顶层 camelCase
 		{`{"metadata":{"conversationId":"abc"}}`, "abc"},                               // metadata.camelCase
 		{`{"metadata":{"conversation_id":"snake","conversationId":"camel"}}`, "snake"}, // snake 优先于 camel

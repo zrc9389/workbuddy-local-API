@@ -130,7 +130,7 @@ func (p *Pool) load() {
 }
 
 // applyAccountsLocked 用持久化账号状态覆盖/插入 byUID（placeholder 凭证，Add 时换全）。
-// 本地 load() 与 Redis 快照恢复共用；调用方必须已持有 p.mu。
+// 本地 load 与 Redis 快照恢复共用；调用方必须已持有 p.mu。
 func (p *Pool) applyAccountsLocked(accounts map[string]stateAccount) {
 	now := time.Now()
 	for uid, s := range accounts {

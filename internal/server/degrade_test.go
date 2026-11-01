@@ -44,7 +44,7 @@ func TestNextMidnightCSTCrossMonth(t *testing.T) {
 	}
 }
 
-// TestDegradeGateActiveTriggered Active() 在 Trigger 后为 true，过期后为 false。
+// TestDegradeGateActiveTriggered Active 在 Trigger 后为 true，过期后为 false。
 func TestDegradeGateActiveTriggered(t *testing.T) {
 	var g degradeGate
 	if g.Active() {

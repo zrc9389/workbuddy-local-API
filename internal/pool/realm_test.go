@@ -15,16 +15,16 @@ func realmPool(t *testing.T) *Pool {
 	auth.SetGlobalEnabled(true)
 	t.Cleanup(func() { auth.SetGlobalEnabled(true) })
 	p := New("")
-	// CN 账号（显式 cn realm 或空 realm+cn domain 均可）→ Realm()=="cn"
+	// CN 账号（显式 cn realm 或空 realm+cn domain 均可）→ Realm=="cn"
 	p.Add(&auth.Auth{UID: "cn1", Domain: "www.codebuddy.cn"})
 	p.Add(&auth.Auth{UID: "cn2", Domain: ""}) // 空 domain → cn
-	// global 账号 → Realm()=="global"
+	// global 账号 → Realm=="global"
 	p.Add(&auth.Auth{UID: "g1", Domain: "www.workbuddy.ai"})
 	p.Add(&auth.Auth{UID: "g2", Domain: "workbuddy.ai"})
 	return p
 }
 
-// realmOf 直接读账号 realm（等价 e.a.Realm()）。
+// realmOf 直接读账号 realm（等价 e.a.Realm）。
 func realmOf(a *auth.Auth) string { return a.Realm() }
 
 func TestAvailableUIDsForRealm(t *testing.T) {

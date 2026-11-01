@@ -96,7 +96,7 @@ func isUpstreamTimeout(err error, clientGone bool) bool {
 //   - ErrServer → NoteError：喂单一连续失败计数器 fails + 累计错误 errTotal，
 //     达到 breakerThreshold 触发熔断（指数退避）。
 //   - 其他（default：ErrClient/ErrNone）→ 只换号不罚（防雪崩），不喂熔断；ErrClient
-//     额外喂连败计数（NoteFailures，issue #114）：未知 4xx 连败 N 次临时出池。
+//     额外喂连败计数（NoteFailures）：未知 4xx 连败 N 次临时出池。
 //
 // body 仅在 ErrSoftRate/ErrAccountFault 分支用于解析重置时间/分野；model 为请求
 // 携带的模型名。uerr 是 ChatStreamContext 返回的分类信封（可携带 RetryAfter）；
@@ -146,7 +146,7 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 			return
 		}
 		// 无重置时间 → 账号级有界退避（soft_rate 基数起、softStreak 翻倍、封顶
-		// soft_rate_max；已在冷却中的兜底探测不翻倍）。基数取 h.softCooldown()
+		// soft_rate_max；已在冷却中的兜底探测不翻倍）。基数取 h.softCooldown
 		// （热改优先），管理面板改 soft_rate 后立即生效。
 		h.cfg.Pool.CooldownSoftRate(uid, h.softCooldown(), time.Time{}, "429 rate limit")
 		if modelRateLimited {
@@ -205,7 +205,7 @@ func (h *Handler) applyErrorPolicy(uid string, kind upstream.ErrKind, body, mode
 		h.cfg.Pool.BlockModelBackoff(uid, model, upstream.ModelBlockReason)
 	default:
 		// 其余（ErrClient/ErrNone）：只换号不罚（防雪崩），不喂熔断。
-		// ErrClient（未知 4xx）喂连败计数（issue #114）：连续 N 次该形态失败 →
+		// ErrClient（未知 4xx）喂连败计数：连续 N 次该形态失败 →
 		// 账号临时出池（NoteFailures 达阈降权），单次/偶发不罚（不误伤）。ErrNone
 		// 到这里属防御路径（status>=400 但分类成功），语义不明不喂。
 		if kind == upstream.ErrClient {

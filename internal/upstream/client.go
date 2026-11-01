@@ -104,7 +104,7 @@ var hardMarkers = []string{
 // softRateMarkers 限流/节流关键词（小写比较 + 中文原文比较双通道）。
 // 上游在状态码非 429 时也会返回限流语义（如 200 + code 11140
 // "The model provider is rate-limiting requests."、400 + "rate limit"），
-// 此类响应若不识别，账号既不被冷却也不喂熔断，下次请求仍会被选中（issue #28）。
+// 此类响应若不识别，账号既不被冷却也不喂熔断，下次请求仍会被选中。
 //
 // 词表按子串匹配，宁缺毋滥：只收录明确指向「请求速率/模型用量被节流」的措辞。
 // 连字符形式（rate-limiting / rate-limited）需单列——Contains 不跨 '-'。
@@ -153,7 +153,7 @@ var contentBlockedMarkers = []string{
 	"illegal api invocation",
 }
 
-// badParamsMarkers 请求体解析失败关键词（issue #41 连带）：HTTP 400 + 上游
+// badParamsMarkers 请求体解析失败关键词：HTTP 400 + 上游
 // "Unmarshal chat params failed..."（code 11101）。这是"发给上游的 body 有问题"，
 // 与账号健康无关——不罚号，但仍轮转（commit B）。
 var badParamsMarkerMsg = "Unmarshal chat params failed"
@@ -210,7 +210,7 @@ func SoftRateResetLoc() *time.Location { return softRateResetLoc }
 
 // modelRateLimitCode 明确指向「模型级 429 限流」的业务 code。
 // 上游用它表达"该模型的使用量超限"（code 6004，msg 带「将在 … 重置」），
-// 而不是账号整体被限流——账号健康，只是这个模型此刻被限（issue #31）。
+// 而不是账号整体被限流——账号健康，只是这个模型此刻被限。
 const modelRateLimitCode = "6004"
 
 // softRateResetPatternCN/EN 匹配重置文案（CN「将在 … 重置」/ global 域英文
@@ -469,7 +469,7 @@ func ParseRateReset(body string) (time.Time, bool) {
 //     限流可指数退避等自愈，账号级故障等不来）。11140 的 model 级限流变体
 //     （rate-limiting 文案）因 marker 不含该文案而天然落到 softRateMarkers 层，
 //     不受影响。
-//  4. 429 + code 14018 —— 明确的账号积分耗尽，归 ErrHardCredit（issue #175）。
+//  4. 429 + code 14018 —— 明确的账号积分耗尽，归 ErrHardCredit。
 //     只认结构化业务码，不靠可能跨计费/限流两界的文案猜测。
 //  5. status==429 —— 限流状态码兜底（先于 hardMarkers）：429 body 高频携带
 //     "quota exceeded"/"额度不足" 等跨计费/限流两界的措辞，hardMarkers 先判会把
@@ -477,7 +477,7 @@ func ParseRateReset(body string) (time.Time, bool) {
 //     更权威的信号；真正的余额耗尽由 402（第 1 层）或 14018（第 4 层）捕获，
 //     非 429 状态码的 quota 措辞仍走下方 hardMarkers（第 6 层）。
 //  6. hardMarkers —— 非 429 响应携带计费关键词（200 业务信封 / 403 信封等）。
-//  7. softRateMarkers —— 非 429 状态码携带限流文案（issue #28 修复点）。
+//  7. softRateMarkers —— 非 429 状态码携带限流文案。
 //     位于此处可覆盖 200/400/403/5xx 各状态码。
 //  8. 11115 —— 「prompt is too long」请求级语义：判在 404/5xx 与通用 4xx 兜底
 //     之前（404 上打 11115 若落 ErrNotFound 会误冷却账号——上下文超限与账号无关）。
@@ -575,7 +575,7 @@ func classifyRaw(status int, body string) ErrKind {
 		}
 	}
 	// 14018 是明确的账号积分耗尽业务码。它必须先于通用 429 兜底，否则会被误判为
-	// 可自愈的软限流并在全池冷却时反复兜底选中（issue #175）。仅按结构化 code
+	// 可自愈的软限流并在全池冷却时反复兜底选中。仅按结构化 code
 	// 判定；无该 code 的 "credits exhausted" 文案仍保持普通 429 的软限流语义。
 	if status == http.StatusTooManyRequests && hasBusinessCode(body, "14018") {
 		return ErrHardCredit
@@ -644,7 +644,7 @@ func classifyRaw(status int, body string) ErrKind {
 			}
 		}
 		// 请求体解析失败（HTTP 400 + Unmarshal chat params failed / code 11101）：
-		// 这是"发给上游的 body 有问题"。网关侧截断已由 413 消灭（issue #41 commit A），
+		// 这是"发给上游的 body 有问题"。网关侧截断已由 413 消灭，
 		// 剩余来源是客户端 JSON 本身畸形——换了账号照样 400，不该罚号（白白冷却好号）。
 		// 归 ErrBadParams：不冷却/不熔断/不计错，且**不轮转**——11101 发生在上游解析
 		// 请求体阶段，还没走到模型路由，所以"不同账号可能有不同模型权限"其实是
@@ -742,11 +742,11 @@ type Client struct {
 
 	// GlobalEnabled 是否启用 global realm 路由（config global.enabled，缺省 true）。
 	// false 时即便用户 auth 写了 realm=global 也**不**路由到 global base——
-	// chatBase/billingBase 返回 CN base，路径也走 CN（双保险，与 auth.Realm() 的开关闸呼应）。
+	// chatBase/billingBase 返回 CN base，路径也走 CN（双保险，与 auth.Realm 的开关闸呼应）。
 	GlobalEnabled bool
 }
 
-// New 生产默认值。Transport 由 newTransport() 集中构造（连接层加固：真正禁 h2 /
+// New 生产默认值。Transport 由 newTransport 集中构造（连接层加固：真正禁 h2 /
 // TLS 握手超时 / 短 keepalive 探测 / 失败清池，参数见 transport.go——吸收上游
 // kongjianguan 4 连击实测经验）。
 func New() *Client {
@@ -792,8 +792,8 @@ func (c *Client) globalBillingBase() string {
 	return defaultGlobalBase
 }
 
-// globalOn 报告账号是否路由到 global 上游：GlobalEnabled 开且账号 Realm()==global。
-// 双保险：config 开关是第一道闸（上游侧），auth.Realm() 的开关闸是第二道（账号侧）。
+// globalOn 报告账号是否路由到 global 上游：GlobalEnabled 开且账号 Realm==global。
+// 双保险：config 开关是第一道闸（上游侧），auth.Realm 的开关闸是第二道（账号侧）。
 func (c *Client) globalOn(a *auth.Auth) bool {
 	return c.GlobalEnabled && a != nil && a.Realm() == "global"
 }
@@ -846,13 +846,13 @@ func (c *Client) chatBase(a *auth.Auth) string {
 }
 
 // prepareBody 组装出站请求体（脱敏开关由 Client.SanitizeFingerprints 控制）。
-// realm 为账号 Realm()（cn/global），供 efforts 缓存分桶（跨域 effort 集合不互相污染）。
+// realm 为账号 Realm（cn/global），供 efforts 缓存分桶（跨域 effort 集合不互相污染）。
 func (c *Client) prepareBody(body []byte, realm, uid, conversationID string) []byte {
 	efforts, defs := c.effortsSnapshot(realm), c.defaultEffortsSnapshot(realm)
 	if realmKey(realm) == "global" {
 		// global 域降级源 = 远端探测桶（权威）∪ 产品静态兜底表（全局 21 名内档位如
 		// deepseek-v4.1-flash ['high']）。当前探测桶为空时也按静态表降级，不全程透传
-		//（issue #84：往 WorkBuddy 上游发 low/max 非法，须降级到 high）。
+		//。
 		efforts, defs = globalEffortMap(efforts, defs)
 	}
 	body = PrepareBodyOptWithEffortsAndDefault(body, c.SanitizeFingerprints.Load(), efforts, defs)
@@ -1052,7 +1052,7 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 }
 
 // ChatStream 发 chat 请求并返回原始 SSE body 流（调用方负责 Close）。
-// 等价于 ChatStreamContext(context.Background(), ...)：不带调用方取消语义。
+// 等价于 ChatStreamContext(context.Background, ...)：不带调用方取消语义。
 // 需要客户端断开联动的调用方用 ChatStreamContext 传入请求 ctx。
 //
 // global realm：先打 /console/chat/completions，404/405 时同一 base 二次换 /v2/chat/completions
@@ -1062,7 +1062,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte, clientIP string, meta Cha
 }
 
 // ChatStreamContext 同 ChatStream，但从 ctx 派生请求 context：调用方（handler）传入
-// r.Context() 后，客户端断连/请求取消会立即中断在途上游调用、释放连接与账号在途名额，
+// r.Context 后，客户端断连/请求取消会立即中断在途上游调用、释放连接与账号在途名额，
 // 不再空转到 IdleTimeout。ctx 为 nil 时回落 Background。成功流的 cancel 仍由
 // monitorBody 的 Close 接管（reqCtx 取消与显式 Close 任一触发即断）。
 //
@@ -1209,7 +1209,7 @@ type ModelInfo struct {
 
 // dynModelEntry 上游模型目录（CN /console 与 global /v2 同构）的单条模型解析形态，
 // FetchModels 与 global_models.go 的探测共用。iconUrl/descriptionEn/生成参数等
-// 按「不透出」原则不解析。modelInfo() 是 dynEntry→ModelInfo 映射的单一事实来源，
+// 按「不透出」原则不解析。modelInfo 是 dynEntry→ModelInfo 映射的单一事实来源，
 // 杜绝两域映射漂移。
 type dynModelEntry struct {
 	ID   string `json:"id"`
@@ -1928,7 +1928,7 @@ func (c *Client) CreditPackages(a *auth.Auth) ([]CreditPackage, int64, int64, er
 					// DeductionEndTime 可抵扣窗口结束（epoch 毫秒）——「这个包什么时候
 					// 不能再花」的真失效时刻。CycleEndTime 是周期边界（额度重置点），
 					// 两者语义不同：判「用不完就没了」以本字段为准，CycleEndTime 兜底
-					//（OkRoromori 分支实测结论：请求参数叫 PackageEndTimeRange*，但
+					//（上游协议接口实测结论：请求参数叫 PackageEndTimeRange*，但
 					// 响应里 ExpiredTime 恒空，真正的失效时刻只有这里下发）。
 					DeductionEndTime int64 `json:"DeductionEndTime"`
 					// 发放时刻（epoch 毫秒）。

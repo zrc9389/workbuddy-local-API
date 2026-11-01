@@ -393,7 +393,7 @@ func TestLifecycleFlush(t *testing.T) {
 	}
 }
 
-// TestCacheHitRateAccumulation（issue #92）：桶累计 hit/miss，credit_by_model
+// TestCacheHitRateAccumulation：桶累计 hit/miss，credit_by_model
 // 与 totals 输出命中率；无缓存观测的桶不参与（rate 零值省略）。
 func TestCacheHitRateAccumulation(t *testing.T) {
 	r := New(t.TempDir() + "/usage.json")

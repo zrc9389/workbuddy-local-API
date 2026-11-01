@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// tokensPerSecond：分母应是「生成耗时」= 端到端 - TTFB（issue #34）。
+// tokensPerSecond：分母应是「生成耗时」= 端到端 - TTFB。
 //
 // 这条测试的价值在于把"没有观测就不扣"这一条钉住：非流式回复没有首个 data 帧，
 // 若实现改成"没测到就按某个默认 TTFB 扣"，速率会虚高，而单看代码很难发现。
@@ -25,7 +25,7 @@ func TestTokensPerSecond(t *testing.T) {
 		{"TTFB 占总耗时一半", 50, time.Second, 500 * time.Millisecond, 100, true, 0.01},
 		{"TTFB 超过总耗时 → 退回端到端，不得负/零分母", 100, 100 * time.Millisecond, 500 * time.Millisecond, 1000, true, 0.01},
 		{"TTFB 恰好等于总耗时 → 退回端到端", 100, 100 * time.Millisecond, 100 * time.Millisecond, 1000, true, 0.01},
-		// issue #127：假流式/攒批下发形态——首帧（=ttfb 观测点）与末帧几乎同时到，
+		// 假流式/攒批下发形态——首帧（=ttfb 观测点）与末帧几乎同时到，
 		// total−ttfb 只剩毫秒级。不得拿它当分母除出上万 tok/s 的幻数，退回端到端。
 		{"扣除后只剩 50ms（攒批下发）→ 退回端到端", 500, 5 * time.Second, 4950 * time.Millisecond, 100, true, 0.01},
 		{"扣除后不足 200ms 下限 → 退回端到端", 100, time.Second, 950 * time.Millisecond, 100, true, 0.01},
@@ -50,7 +50,7 @@ func TestTokensPerSecond(t *testing.T) {
 }
 
 // TestTokensPerSecondTTFBMonotonic 语义回归：TTFB 越大，扣减越多、速率越高。
-// 这正是 issue #34 的核心——修复前两者相等（TTFB 完全不影响结果）。
+// 这正是 的核心——修复前两者相等（TTFB 完全不影响结果）。
 func TestTokensPerSecondTTFBMonotonic(t *testing.T) {
 	const tok = 200
 	total := 2 * time.Second

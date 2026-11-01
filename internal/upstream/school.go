@@ -58,7 +58,7 @@ const mpReportPath = "/v2/report"
 // schoolOpenDayActivityID 开学季/校园日活动 id（事件 activityId 字段值，两域共用）。
 const schoolOpenDayActivityID = "school_open_day_2026"
 
-// mpEventBase 小程序埋点公共指纹（appservice wQ()+Ao() 对齐）。
+// mpEventBase 小程序埋点公共指纹（appservice wQ+Ao 对齐）。
 func mpEventBase(a *auth.Auth) map[string]any {
 	return map[string]any{
 		"timestamp":    time.Now().UnixMilli(),
@@ -186,7 +186,7 @@ func MiniChatModelEvent(conversationID, modelID, modelName string) map[string]an
 
 // MiniPlaybookEvents mp 指纹灵感事件组（Sequential_Tasks_7「体验灵感功能」判据
 // 载体，形状对齐 mpsrc main 73640/73665 发射点：playbook_cta_click →
-// playbook_prompt_send）。issue #42 称该任务为 PC 口径（+500c+5e）——PC 序列
+// playbook_prompt_send）。称该任务为 PC 口径（+500c+5e）——PC 序列
 // （DesktopPlaybookPromptSequence）已实测点亮 playbook_prompt，本组作为 mp 形态
 // 补充（任务在 mp 链上，判据究竟认哪侧待解锁实测）。
 func MiniPlaybookEvents(caseID, caseName string) []map[string]any {

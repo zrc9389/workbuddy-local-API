@@ -1,4 +1,4 @@
-// ids.go 会话头族 ID 的解析与生成（issue #35 后台聚合）。
+// ids.go 会话头族 ID 的解析与生成。
 //
 // 官方 CodeBuddy CLI 出站头族（X-Conversation-ID / X-Conversation-Request-ID /
 // X-Request-ID / X-B3-*），后台按 X-Conversation-Request-ID（对话轮）聚合请求；

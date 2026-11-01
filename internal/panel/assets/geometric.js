@@ -4647,9 +4647,18 @@ export function expiryTone(days) {
                 ],
                 randomMotto: false,
                 activeSloganId: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_slogan_id')) || 's-1',
-                sloganList: [
-                    { id: 's-1', date: '2026-10-24 12:00', name: 'SILENT ARCHITECTURE', text: 'SILENT ARCHITECTURE // 静默架构 · 跨域协议中继与多租户网关' },
-                ],
+                sloganList: (() => {
+                    try {
+                        const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('wb_slogan_list') : null;
+                        if (raw) {
+                            const list = JSON.parse(raw);
+                            if (Array.isArray(list) && list.length > 0) return list;
+                        }
+                    } catch (_) {}
+                    return [
+                        { id: 's-1', date: '2026-10-24 12:00', name: 'SILENT ARCHITECTURE', text: 'SILENT ARCHITECTURE // 静默架构 · 跨域协议中继与多租户网关' },
+                    ];
+                })(),
                 randomTheme: false,
                 activeTheme: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_theme')) || 'overcast',
                 themeList: [

@@ -92,7 +92,7 @@ func TestCooldownSoftForModelDoesNotClobberUntil(t *testing.T) {
 }
 
 // TestCooldownSoftForModelCapsUntilKeepsResetAt 6004 写 modelCooldowns：
-// until 截断到 soft_rate_max，reset_at 保留上游原始墙钟（issue #36 台账语义迁移）。
+// until 截断到 soft_rate_max，reset_at 保留上游原始墙钟。
 func TestCooldownSoftForModelCapsUntilKeepsResetAt(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})
@@ -114,7 +114,7 @@ func TestCooldownSoftForModelCapsUntilKeepsResetAt(t *testing.T) {
 }
 
 // TestHealthyForModelAfterModelSpecific6004 6004 只锁该模型：
-// 账号对触发模型不可选、对其他模型仍可选（issue #31 豁免保持）；账号级 healthy 仍真。
+// 账号对触发模型不可选、对其他模型仍可选；账号级 healthy 仍真。
 func TestHealthyForModelAfterModelSpecific6004(t *testing.T) {
 	p := New("")
 	p.Add(&auth.Auth{UID: "u1"})

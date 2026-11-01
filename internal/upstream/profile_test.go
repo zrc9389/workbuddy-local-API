@@ -1,4 +1,4 @@
-// profile_test.go 钉住账号资料拉取（issue #94）：Bearer + web 平台头可访问
+// profile_test.go 钉住账号资料拉取：Bearer + web 平台头可访问
 // /console/account；只解析 nickname，uid 不一致防串号；业务错误原样返回。
 package upstream
 

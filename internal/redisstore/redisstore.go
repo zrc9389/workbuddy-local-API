@@ -40,7 +40,7 @@ type Store interface {
 	LoadState() ([]byte, bool)
 	// Close 关停 Store：Upstash 等待已提交的异步写全部执行完再关底层连接
 	// （停机语义：最后一笔 Redis 镜像必须写完），之后新提交的写直接丢弃；幂等。
-	// Noop 为空操作。进程退出前在 pool.Close() 之后调用。
+	// Noop 为空操作。进程退出前在 pool.Close 之后调用。
 	Close() error
 }
 
@@ -163,7 +163,7 @@ func (u *Upstash) closeOnceGuard() {
 }
 
 // Close 等待已提交的异步写全部执行完毕，再关底层 redis 连接；幂等。
-// 之后新提交的写直接丢弃（goWrite 的 done 检查）。停机路径在 pool.Close() 后调用：
+// 之后新提交的写直接丢弃（goWrite 的 done 检查）。停机路径在 pool.Close 后调用：
 // pool 的最后一次 Flush→SaveState 已提交，本方法保证它写完才返回。
 func (u *Upstash) Close() error {
 	u.closeOnceGuard()

@@ -65,7 +65,7 @@ func TestRealmEmptyFallsBackToCN(t *testing.T) {
 	if got := a.Realm(); got != "cn" {
 		t.Errorf("Realm()=%q want cn", got)
 	}
-	// 显式 global → global（缺省开启，Realm() 不再因"未配置"而恒 cn）。
+	// 显式 global → global（缺省开启，Realm 不再因"未配置"而恒 cn）。
 	ag := &Auth{realm: "global"}
 	if got := ag.Realm(); got != "global" {
 		t.Errorf("Realm()=%q want global", got)
@@ -78,7 +78,7 @@ func TestRealmEmptyFallsBackToCN(t *testing.T) {
 }
 
 // TestRealmDefaultOnForCNZeroRegression 开关缺省开启时，老 CN 凭证（无 realm、无 domain）
-// Realm() 恒为 cn——「默认开启」不影响纯 CN 部署行为。
+// Realm 恒为 cn——「默认开启」不影响纯 CN 部署行为。
 func TestRealmDefaultOnForCNZeroRegression(t *testing.T) {
 	withGlobalEnabled(t)
 	cases := []*Auth{
@@ -215,7 +215,7 @@ func TestBackfillRealmDomain(t *testing.T) {
 	}
 }
 
-// TestBackfillRealmEscapeHatchFree 逃生门关闭时 backfill 仍按原始 domain 推断（不受 Realm() 降级影响）。
+// TestBackfillRealmEscapeHatchFree 逃生门关闭时 backfill 仍按原始 domain 推断（不受 Realm 降级影响）。
 func TestBackfillRealmEscapeHatchFree(t *testing.T) {
 	withGlobalDisabled(t) // 逃生门关闭：Realm() 恒 cn，但 backfill 不得被污染
 	a := &Auth{Domain: "www.workbuddy.ai"}

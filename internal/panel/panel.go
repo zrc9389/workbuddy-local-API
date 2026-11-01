@@ -702,7 +702,7 @@ func (p *Panel) overview(w http.ResponseWriter, r *http.Request) {
 	serviceMemory, serviceMemoryAvailable := serviceMemoryBytes()
 	cpuPercent, cpuAvailable := p.cpu.sample(time.Now(), serviceCPUUsage)
 	// 用 WithPaused 而不是 CountsDetailed：后者把暂停号并进 disabled（/status 的
-	// 「不可用」口径），而概况卡片要分开展示（issue #125）。
+	// 「不可用」口径），而概况卡片要分开展示。
 	var total, healthy, cooling, disabled, paused, inFlightFull int
 	var accounts []pool.Status
 	var modelLocks any
@@ -945,7 +945,7 @@ func (p *Panel) serveModels(w http.ResponseWriter, force bool) bool {
 	anyStale := false
 	ageSeconds := 0
 
-	// CN 域：有可用 CN 账号才查（此前无条件 Pool.Pick()+FetchModels——选中 global
+	// CN 域：有可用 CN 账号才查（此前无条件 Pool.Pick+FetchModels——选中 global
 	// 账号时打 CN 端点必然失败，混合池表现为偶发 502，纯 global 池必炸）。
 	if uids := p.cfg.Pool.AvailableUIDsForRealm("cn"); len(uids) > 0 {
 		if acct := p.cfg.Pool.AuthByUID(uids[0]); acct != nil {
@@ -1645,7 +1645,7 @@ func parseTimeParam(v string) time.Time {
 		if n <= 0 {
 			return time.Time{}
 		}
-		// 兼容秒与毫秒（前端可能直接把 Date.now() 传上来）。
+		// 兼容秒与毫秒（前端可能直接把 Date.now 传上来）。
 		if n > 1e12 {
 			return time.UnixMilli(n)
 		}

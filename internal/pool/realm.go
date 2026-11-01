@@ -10,7 +10,7 @@ import (
 // 3:1 是温和偏好，不是固定比例：账号组成变化会自然改变最终占比。
 const expiringVirtualSlots = 3
 
-// AvailableUIDsForRealm 同 AvailableUIDs，但仅返回 Realm()==realm 的账号。
+// AvailableUIDsForRealm 同 AvailableUIDs，但仅返回 Realm==realm 的账号。
 // realm=="" 退化为 AvailableUIDs（现状语义）。
 func (p *Pool) AvailableUIDsForRealm(realm string) []string {
 	p.mu.RLock()
@@ -75,7 +75,7 @@ func (p *Pool) WeightedAvailableUIDsForModelRealm(model, realm string) []string 
 	return out
 }
 
-// AvailableUIDsForModelRealm 同 AvailableUIDsForModel，但仅返回 Realm()==realm 的账号
+// AvailableUIDsForModelRealm 同 AvailableUIDsForModel，但仅返回 Realm==realm 的账号
 // （6004 模型豁免照常生效）。realm=="" 退化为 AvailableUIDsForModel。
 func (p *Pool) AvailableUIDsForModelRealm(model, realm string) []string {
 	p.mu.RLock()

@@ -1,4 +1,4 @@
-// profile.go Web 控制台账号资料（issue #94：改名后免重登同步昵称）。
+// profile.go Web 控制台账号资料。
 //
 // GET {webBase}/console/account，Bearer + x-client-platform: web（与 tasks/claim
 // 同一鉴权形态，实测 2026-10-01：无需 Web 会话 cookie）。

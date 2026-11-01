@@ -72,7 +72,7 @@ func main() {
 	sort.Strings(files)
 
 	up := upstream.New()
-	// trial 是 global 专属端点：必须开启 global realm 路由，否则 upstream.New() 的
+	// trial 是 global 专属端点：必须开启 global realm 路由，否则 upstream.New 的
 	// GlobalEnabled 零值 false 会把请求路由到 CN base（codebuddy.cn）而必然失败。
 	up.GlobalEnabled = true
 	var rows []trialRow

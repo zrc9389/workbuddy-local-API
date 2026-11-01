@@ -79,7 +79,7 @@ func TestRefreshUsageAndPruneStreamMatchOnDisk(t *testing.T) {
 	if err := r.archive.refreshUsage(); err != nil {
 		t.Fatal(err)
 	}
-	// New() already ran a startup prune, so expired rows are gone by now.
+	// New already ran a startup prune, so expired rows are gone by now.
 	if r.archive.count != 2 {
 		t.Fatalf("count = %d, want 2 persisted rows", r.archive.count)
 	}

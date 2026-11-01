@@ -179,7 +179,7 @@ func (c *Client) injectCodeBuddyRequest(req *http.Request) {
 	req.Header.Set("X-CodeBuddy-Request", "1")
 }
 
-// ChatMeta 一次 chat 出站的会话头族元数据（issue #35：后台按 X-Conversation-Request-ID
+// ChatMeta 一次 chat 出站的会话头族元数据（后台按 X-Conversation-Request-ID
 // 聚合请求，官方客户端一次 user send 内所有 tool call/重试/换号复用同一个 ID）。
 // handler 在轮转循环外生成 conversationID / conversationRequestID，循环内每次出站
 // 复用同值；TraceID 透传入站值（空 = 回落 conversationRequestID）。
@@ -257,7 +257,7 @@ func (c *Client) injectGlobalChatHeaders(req *http.Request, a *auth.Auth) {
 	req.Header.Set("X-Domain", "www.workbuddy.ai")
 }
 
-// injectConversationHeaders 注入官方客户端会话头族（issue #35 后台聚合）。
+// injectConversationHeaders 注入官方客户端会话头族。
 // 头族分四层，各司其职：
 //   - X-Conversation-ID：会话级，多轮稳定（body 的 conversationId）。空则不发——
 //     透传客户端原值优先，客户端没给就不伪造，避免误导后台建错会话。
@@ -302,7 +302,7 @@ func (c *Client) injectConversationHeaders(req *http.Request, meta ChatMeta) {
 
 // validTraceID 判断 B3 TraceId 是否合法：16 或 32 位 hex（大小写均可）。
 // 官方客户端生成的 conversationRequestId 是 32 位 hex（UUID 去横线），入站透传值
-// 可能是任意形状（含横线/超长/非 hex），直接塞进 B3 头会破坏链路关联（issue #35）。
+// 可能是任意形状（含横线/超长/非 hex），直接塞进 B3 头会破坏链路关联。
 func validTraceID(s string) bool {
 	if len(s) != 16 && len(s) != 32 {
 		return false

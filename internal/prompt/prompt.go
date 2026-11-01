@@ -1,7 +1,7 @@
 // Package prompt 提供网关自有系统提示词：内置默认 + 文件覆盖 + 降级中性提示词。
 //
 // 背景：客户端（Claude Code/Codex 等 CLI）在 system prompt 注入固定模板句，
-// 上游内容审核按逐字精确匹配误杀合法流量（issue #36/PR39 的 11128）。
+// 上游内容审核按逐字精确匹配误杀合法流量。
 // 方案：网关在出站前用自有系统提示词替换客户端 system/developer 消息，
 // 从源头消灭 system 来源的指纹误报（用户/assistant 消息里的指纹串仍由
 // internal/upstream/sanitize.go 清洗，两层叠加、互不替代）。
@@ -93,7 +93,7 @@ func Rewrite(body []byte, systemPrompt string) []byte {
 }
 
 // Append 解析 OpenAI 请求体并在"开头连续 system/developer 块"之后插入一条
-// 网关自有 system 提示词（issue #129 append 模式）：
+// 网关自有 system 提示词：
 //   - 开头连续块 = 从 messages[0] 起向后 role 为 system/developer（精确字符串
 //     匹配，与 Rewrite 删除口径一致）的消息；遇第一条非 system/developer
 //     消息（含非 map 消息、无 role 消息）即停；

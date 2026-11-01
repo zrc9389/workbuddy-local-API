@@ -37,7 +37,7 @@ func TestClassify(t *testing.T) {
 		{200, `{"code":10001,"msg":"积分不足，请充值"}`, ErrHardCredit},
 		{400, `{"code":1,"msg":"额度用尽"}`, ErrHardCredit},
 		{429, ``, ErrSoftRate},
-		// 限流文案（issue #28）：状态码不是 429 时也必须识别为软限流，
+		// 限流文案：状态码不是 429 时也必须识别为软限流，
 		// 否则账号不会被冷却，下次请求仍会被选中。
 		{200, `{"code":11140,"msg":"The model provider is rate-limiting requests. Please wait a moment and try again."}`, ErrSoftRate},
 		{400, `rate limit`, ErrSoftRate},
@@ -133,7 +133,7 @@ func TestIsModelRateLimit(t *testing.T) {
 		body string
 		want bool
 	}{
-		// 6004：模型级限流（issue #31 的核心场景）。
+		// 6004：模型级限流。
 		{`{"code":6004,"msg":"将在 2026-09-11 18:33:27 UTC+8 重置"}`, true},
 		{`{"code": 6004,"msg":"x"}`, true},
 		// 其他 code（非模型级限流）→ 不算。
@@ -365,7 +365,7 @@ func TestChatStreamHardCreditError(t *testing.T) {
 }
 
 // TestChatStreamReadsMultipleChunksOverRealTransport 走真实 net/http 传输层，
-// 回归 defer cancel() 导致第二块起 body Read 返回 context canceled 的断流 bug。
+// 回归 defer cancel 导致第二块起 body Read 返回 context canceled 的断流 bug。
 func TestChatStreamReadsMultipleChunksOverRealTransport(t *testing.T) {
 	const frames = 6
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

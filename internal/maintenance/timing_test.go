@@ -110,7 +110,7 @@ func TestMaintenanceResultPrunedAfter24Hours(t *testing.T) {
 			{Name: "token", State: "ok"},
 		},
 	}
-	// 超过 24h 后 Status() 自动清理
+	// 超过 24h 后 Status 自动清理
 	st := s.Status()
 	if st.LastResult != "" || len(st.Steps) != 0 {
 		t.Fatalf("expected pruned status after 24h, got result=%q, steps=%d", st.LastResult, len(st.Steps))

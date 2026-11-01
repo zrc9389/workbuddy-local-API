@@ -235,7 +235,7 @@ type Delta struct {
 	Credit           float64
 	HasCredit        bool
 	ModelRate        string
-	// CacheHitTokens / CacheMissTokens 前缀缓存命中/未命中观测（issue #92）。
+	// CacheHitTokens / CacheMissTokens 前缀缓存命中/未命中观测。
 	HasCacheTokens  bool
 	CacheHitTokens  int64
 	CacheMissTokens int64
@@ -732,7 +732,7 @@ func (r *Recorder) SnapshotWindow(w Window, nicks map[string]string, currentRate
 		}
 		acctAgg[b.UID].add(b)
 		// 一个账号只属于一个 realm，这里记下来供前端展示「域」列；
-		// keyed() 的 Realm 字段默认是空的（它按 key 分组，不知道 realm）。
+		// keyed 的 Realm 字段默认是空的（它按 key 分组，不知道 realm）。
 		if acctRealm[b.UID] == "" {
 			acctRealm[b.UID] = b.Realm
 		}

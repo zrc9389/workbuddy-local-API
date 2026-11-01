@@ -165,7 +165,7 @@ func (p *Pool) NoteError(uid string) {
 // NoteSuccess 成功请求累加成功计数、刷新 lastSuccess，并清空连续失败与熔断运行态。
 // 二进制模型：清 fails + retryCount + breakerUntil；不碰 until/coolKind（那些是即时冷却，各自到期）。
 // 额外清 softStreak：成功是账号已恢复的最强证据，连续软限流计数就此归零、退避回到基数。
-// 同样清 sessionDeadFails 与连败降权计数（consecutiveFails/degradeUntil，issue #114）：
+// 同样清 sessionDeadFails 与连败降权计数（consecutiveFails/degradeUntil）：
 // 成功证明账号当前可用，连败计数与临时出池截止一并归零。
 // **不碰 modelCooldowns**：6004 模型级 limit 每模型独立计时，其他模型成功不得抹掉
 // 本模型的冷却截止（这正是"每模型独立"的语义）。模型级冷却只由到期/复活/账号级
@@ -447,12 +447,12 @@ func (p *Pool) CountsDetailed() (total, healthy, cooling, disabled, inFlightFull
 // CountsDetailedWithPaused 同 CountsDetailed，但 paused 与 disabled 分开返回。
 //
 // 面板概况要回答「禁用几个、暂停几个」——暂停只关选号、照常签到保活，与禁用混成
-// 一个数字会让人误判池子的真实状况（issue #125）。
+// 一个数字会让人误判池子的真实状况。
 func (p *Pool) CountsDetailedWithPaused() (total, healthy, cooling, disabled, paused, inFlightFull int) {
 	return p.countsDetailedForRealm("")
 }
 
-// CountsDetailedForRealm 同 CountsDetailed，但仅统计 Realm()==realm 的账号；
+// CountsDetailedForRealm 同 CountsDetailed，但仅统计 Realm==realm 的账号；
 // realm=="" 不加谓词（= CountsDetailed）。供 /status 按域分组透出。
 func (p *Pool) CountsDetailedForRealm(realm string) (total, healthy, cooling, disabled, inFlightFull int) {
 	t, h, c, d, pz, f := p.countsDetailedForRealm(realm)
@@ -464,7 +464,7 @@ func (p *Pool) CountsDetailedForRealm(realm string) (total, healthy, cooling, di
 //
 // paused 单独返回、不并进 disabled：调用方按自己的口径决定合不合并。
 // /status 要的是「还能不能用」（暂停与禁用同样不可选，合并）；面板概况要的是
-// 「禁用几个、暂停几个」（分开，issue #125）。两种口径都合理，所以把选择权
+// 「禁用几个、暂停几个」（分开）。两种口径都合理，所以把选择权
 // 留在调用方，而不是让一个共享函数替所有人做决定。
 func (p *Pool) countsDetailedForRealm(realm string) (total, healthy, cooling, disabled, paused, inFlightFull int) {
 	p.mu.RLock()
@@ -503,7 +503,7 @@ func (p *Pool) ServableNow() bool {
 }
 
 // ServableForRealm 报告某 realm 是否可服务：存在至少一个该 realm 的 healthy 且未占满在途名额的账号。
-// 与 ServableNow 同口径（healthy 或模型豁免、排除 inFlightFull），仅叠加 Realm()==realm 谓词。
+// 与 ServableNow 同口径（healthy 或模型豁免、排除 inFlightFull），仅叠加 Realm==realm 谓词。
 // realm=="" 退化为 ServableNow（现状语义）。供 /healthz 按 realm 暴露 CN/global 各自可达性。
 func (p *Pool) ServableForRealm(realm string) bool {
 	p.mu.RLock()
@@ -518,7 +518,7 @@ func (p *Pool) ServableForRealm(realm string) bool {
 		}
 		// 存在性语义：账号级 healthy，或处于模型级豁免形态（6004 单模型软冷却——
 		// 对触发模型不可用，对其他模型仍可选）。探活无请求模型上下文，取"存在可服务
-		// 模型"与 chat 实际可达性等价（issue #31 探活侧补齐）。
+		// 模型"与 chat 实际可达性等价。
 		if e.healthy(now) || e.modelExempt() {
 			return true
 		}
@@ -562,7 +562,7 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 		State:   state,
 		Blocked: isBlocked,
 		UID:     uid,
-		// 限额台账（issue #36）：仅「带解析时间 6004 的模型级软冷却」仍在生效时非空，
+		// 限额台账：仅「带解析时间 6004 的模型级软冷却」仍在生效时非空，
 		// 每模型一行（modelCooldowns 内未到期的条目），多模型同时限流全部展示。
 		// 到期判据 = 该模型的独立冷却 until 未过；条件满足才输出，随到期自然消失，
 		// 普通软冷却（无模型级表）/硬冷却不产生台账（零回归）。
@@ -658,7 +658,7 @@ func (p *Pool) modelCostsStatusLocked(e *entry, now time.Time) []ModelCostStatus
 // 持久化
 // ---------------------------------------------------------------------------
 
-// rateLimitedModelsLocked 收集账号当前仍在限额的模型台账行（issue #36）。
+// rateLimitedModelsLocked 收集账号当前仍在限额的模型台账行。
 // modelCooldowns 未到期条目按模型名稳定排序输出；全部到期/空表返回 nil。
 // 调用方必须已持有锁（statusOf 只读路径持 RLock，本函数只读不写）。
 func (p *Pool) rateLimitedModelsLocked(e *entry, now time.Time) []RateLimitedModel {

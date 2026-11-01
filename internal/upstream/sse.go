@@ -80,7 +80,7 @@ func aggregate(r io.Reader, store *ResponseSpool, onText func(string) error) (ma
 		observerErr error
 	)
 	// appendContent 是「已取到正文」（gotAnyContent latch）的唯一写入点：delta 与
-	// message 两路 content 都必须经此并入，规约只有一份（issue #142）——
+	// message 两路 content 都必须经此并入，规约只有一份——
 	//   S1 空串不算「已取到正文」、不占 latch 名额：OpenAI 风格 role-only 首帧
 	//      （delta.content=""）和整条空 message 帧是常态帧，若空串置位 latch，
 	//      后续真正文会被 message 回退分支的 !gotAnyContent 守卫静默拒绝；
@@ -429,7 +429,7 @@ func mergeToolCallDelta(merged, delta map[string]any) {
 //
 // 两类消费模型在该形态下同时正确：
 //   - 累加型（官方 WorkBuddy/CodeBuddy `name += tc_function?.name || ""`）：
-//     后续分片 name 键缺失 → 追加空串，累积 name 保持唯一，不再拼成 Bash×帧数（issue #82）。
+//     后续分片 name 键缺失 → 追加空串，累积 name 保持唯一，不再拼成 Bash×帧数。
 //   - 覆盖型（hawklithm#2 / Grok Build `name ?? state.name` 或 `if (name) state.name = name`）：
 //     后续分片 name 键缺失 → 保留已建好的首帧 name，不被空串意外清空。
 //     键缺失是比空串更安全的形态：`??` 与 truthy 守卫对缺失键必然保留旧值，
@@ -610,7 +610,7 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string, 
 	toolCallSeen := map[int]bool{}
 
 	// firstID 透传流的消息级 id 基准：缓存首个非空上游 id，后续帧缺失/空串时复用
-	// （issue #35：同一条 SSE 消息所有帧共用一个真实 id，后台按 id 归并；此前中间帧
+	// （同一条 SSE 消息所有帧共用一个真实 id，后台按 id 归并；此前中间帧
 	// 一律补 chatcmpl-wb2api 哨兵，造成同流 id 分裂）。全流无真实 id → 才出现哨兵。
 	firstID := ""
 
@@ -769,7 +769,7 @@ func attachHintToErrorFrame(payload, hint string) string {
 
 // PureStream 低内存纯流式透传与原生 TCP 背压：
 // - 精简双层嵌套 Reader，避免每一帧都执行 json.Unmarshal；
-// - 单层 16KB 缓冲读取，匹配换行直接写出并调用 Flush()，由 TCP 内核自然消化背压；
+// - 单层 16KB 缓冲读取，匹配换行直接写出并调用 Flush，由 TCP 内核自然消化背压；
 // - 仅当单帧包含 "usage" 关键字时才对该末帧进行 Token 提取回调。
 func PureStream(w http.ResponseWriter, r io.Reader, opts ...StreamOption) error {
 	var o streamOptions
@@ -814,7 +814,7 @@ readLoop:
 					o.onErrorFrame(payload)
 				}
 			}
-			// 匹配换行直接写出并调用 Flush()，由 TCP 内核自然消化背压
+			// 匹配换行直接写出并调用 Flush，由 TCP 内核自然消化背压
 			if _, werr := io.WriteString(w, "data: "+payload+"\n\n"); werr != nil {
 				return werr
 			}

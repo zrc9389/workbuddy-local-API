@@ -842,7 +842,7 @@ func TestSoftStreakMissingInLegacyStateFile(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// issue #31：429 6004 模型级限流 → 按上游重置时间收窄冷却 + 模型级豁免选号
+// 429 6004 模型级限流 → 按上游重置时间收窄冷却 + 模型级豁免选号
 // ---------------------------------------------------------------------------
 
 func TestCooldownSoftForModelParsedUntil(t *testing.T) {
@@ -1005,7 +1005,7 @@ func TestSoftRateModelPersistsToState(t *testing.T) {
 	fp := filepath.Join(dir, "state.json")
 	p := New(fp)
 	p.Add(&auth.Auth{UID: "u1"})
-	// resetAt 必须显著晚于 now：传 time.Now() 会走"重置时间已过"分支把冷却压到 1ms。
+	// resetAt 必须显著晚于 now：传 time.Now 会走"重置时间已过"分支把冷却压到 1ms。
 	p.CooldownSoftForModel("u1", time.Minute, time.Now().Add(10*time.Minute), "glm-5.3", "429 rate limit")
 	p.Flush()
 	raw, err := os.ReadFile(fp)

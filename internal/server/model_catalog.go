@@ -201,7 +201,7 @@ func (h *Handler) fetchGlobalModels() ([]string, *auth.Auth) {
 // fetchDynamicModels 从第一个可用 CN 账号拉模型列表（含 contextWindow/maxTokens），
 // 缓存 10min。
 // 选号与 /panel/api/models 完全同口径（AvailableUIDsForRealm("cn") 首个 + AuthByUID），
-// 而非 Pool.Pick()：Pick 无 realm 过滤，混合池里可能选中 global 号去打 CN 端点，
+// 而非 Pool.Pick：Pick 无 realm 过滤，混合池里可能选中 global 号去打 CN 端点，
 // 表现为偶发失败/面板与 /v1/models 两套目录（PR #38 报告并给出的选号修复）。
 // 缓存 + 5min 负缓存按既有语义**保留**（#38 原案整体删除缓存被拒）：公开端点逐请求
 // 实时拉取 = 每次 2 个上游探测，客户端周期性刷新模型列表会持续打上游；上游故障时

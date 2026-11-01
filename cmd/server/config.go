@@ -66,7 +66,7 @@ type Config struct {
 	} `json:"logging"`
 
 	Server struct {
-		// ReadTimeout 入站请求读取（含 body 上传）总时长上限（issue #100）。
+		// ReadTimeout 入站请求读取（含 body 上传）总时长上限。
 		// http.Server 的 ReadTimeout 覆盖整个请求读取：大上下文/文件块请求经
 		// 反代链转发时上传可超过旧固定值 60s，被掐后客户端拿到
 		// 400 "read body: ... i/o timeout"。缺省 "300s"；"0" = 不限制
@@ -130,10 +130,10 @@ type Config struct {
 	} `json:"schedule"`
 
 	Global struct {
-		// Enabled global realm 路由开关。缺省 true：Realm() 正常把 realm=global/
+		// Enabled global realm 路由开关。缺省 true：Realm 正常把 realm=global/
 		// domain=workbuddy.ai 的账号判为 global 并路由 global base/路径。
 		// 显式 "enabled": false 关闭（逃生门，纯 CN 锁定：即便 auth 写了 realm=global
-		// 也不路由，auth.Realm() 双保险的第一道闸）。纯 CN 部署行为不变：CN 账号
+		// 也不路由，auth.Realm 双保险的第一道闸）。纯 CN 部署行为不变：CN 账号
 		// 恒判 cn，global base 只在 realm=global 的账号上被使用。
 		Enabled bool `json:"enabled"`
 		// ChatBase / BillingBase 国际版上游 base 覆盖；空 = 回落内置默认
@@ -179,7 +179,7 @@ type Config struct {
 	Prompt struct {
 		// Mode passthrough（默认）= 透传客户端原始 system（降级重试仍会切到 Degraded）；
 		// custom = 网关用自有系统提示词替换客户端 system/developer；
-		// append = 两者并用：开头连续 system/developer 块后插网关 system，既有消息逐字不动（issue #129）。
+		// append = 两者并用：开头连续 system/developer 块后插网关 system，既有消息逐字不动。
 		Mode string `json:"mode"` // "passthrough" / "custom" / "append"
 		// File 提示词文件路径；空 = 内置默认 defaultprompt.md；
 		// 路径非空但不可读 → 启动报错（fail fast，避免静默回落到内置默认）。
@@ -200,7 +200,7 @@ type Config struct {
 		BreakerThreshold   int    `json:"breaker_threshold"`    // 连续失败次数触发熔断，默认 3
 		BreakerCooldown    string `json:"breaker_cooldown"`     // 基础熔断时长，默认 "30m"
 		BreakerCooldownMax string `json:"breaker_cooldown_max"` // 指数退避封顶，默认 "6h"
-		// 连败降权（issue #114）：ErrClient/传输层这类「不罚号」失败连续计数，达阈
+		// 连败降权：ErrClient/传输层这类「不罚号」失败连续计数，达阈
 		// 临时出池。与冷却/熔断并存取更长者不叠加。默认 5 次 / 10m。
 		DegradeThreshold   int     `json:"degrade_threshold"`    // 连败次数触发降权，默认 5
 		DegradeCooldown    string  `json:"degrade_cooldown"`     // 降权时长（固定，非指数退避），默认 "10m"
@@ -209,14 +209,14 @@ type Config struct {
 		IdleWeightMax      float64 `json:"idle_weight_max"`      // 闲置补偿封顶，默认 5.0
 		// PreferExpiring 快过期积分加权开关，默认 true。开启且 expiring_soon 窗口内
 		// 存在有效批次时，该账号选号权重 ×3（虚拟实例，见 pool 路由加权）；
-		// 不按到期时间排序、与批次金额无关（issue #101 对齐实现口径）。
+		// 不按到期时间排序、与批次金额无关。
 		// 关闭后完全不使用到期信息选号。
 		PreferExpiring bool `json:"prefer_expiring"`
 		// ExpiringSoon 快过期积分窗口（如 "168h"=7天）：签到/余额刷新时，到期时间在
 		// 此窗口内的批次令账号命中上述 ×3 加权；窗口开大 → 命中账号变多、
 		// 偏好被稀释。空/0 = 禁用该加权门槛。
 		ExpiringSoon string `json:"expiring_soon"`
-		// CostExploreInterval costTier 条件探索窗口（issue #136 方案 a′）：tier 0
+		// CostExploreInterval costTier 条件探索窗口：tier 0
 		// 垄断层存在且 tier 1 有成员时，距上次探索 ≥ 窗口则本次 pick 生效层切
 		// tier 1-only（探索=搭车改道，零新增上游请求；成功即毕业，失败走既有
 		// 错误策略）。默认 "30m"（≤48 次/天/模型）；"0" 关停（完全回到现状行为）；
@@ -246,9 +246,9 @@ type Config struct {
 	SessionGCInterval      time.Duration `json:"-"`
 	BalanceRefreshInterval time.Duration `json:"-"` // 0 = 不启动（enabled=false）
 	ExpiringSoonDur        time.Duration `json:"-"`
-	// CostExploreIntervalDur 解析后的 costTier 探索窗口（issue #136）；0 = 关停。
+	// CostExploreIntervalDur 解析后的 costTier 探索窗口；0 = 关停。
 	CostExploreIntervalDur time.Duration `json:"-"`
-	// ServerReadTimeoutDur 解析后的入站请求读取上限（issue #100）；0 = 不限制。
+	// ServerReadTimeoutDur 解析后的入站请求读取上限；0 = 不限制。
 	ServerReadTimeoutDur time.Duration `json:"-"`
 	RetentionWindowDur   time.Duration `json:"-"`
 }
@@ -279,7 +279,7 @@ func Default() *Config {
 	c.Schedule.KeepaliveHours = []int{22}
 	c.Schedule.BlackcatHours = []int{23}
 	c.Schedule.GrowthHours = []int{1}
-	// 开关「缺省 true」靠这几行实现：Load 先取 Default() 再 json.Unmarshal 覆盖，
+	// 开关「缺省 true」靠这几行实现：Load 先取 Default 再 json.Unmarshal 覆盖，
 	// 键缺席（或为 null）时字段原样保留 true，只有显式 false 才关。
 	c.Schedule.CheckinEnabled = true
 	c.Schedule.GrowthEnabled = true
@@ -291,7 +291,7 @@ func Default() *Config {
 	c.Schedule.BalanceRefreshMinutes = 5
 	c.Panel.SubscriptionRefreshHours = 48
 	c.Upstream.TimeoutSeconds = 120
-	// HeaderTimeoutSeconds/IdleTimeoutSeconds 默认 0（未设置态），回落见 normalize()。
+	// HeaderTimeoutSeconds/IdleTimeoutSeconds 默认 0（未设置态），回落见 normalize。
 	c.Upstream.HeaderTimeoutSeconds = 0
 	c.Upstream.IdleTimeoutSeconds = 0
 	// Global.Enabled 缺省 true（纯 CN 行为不变：CN 账号恒判 cn，global base 不被使用）；
@@ -323,7 +323,7 @@ func Default() *Config {
 	c.Pool.IdleWeightMax = 5.0
 	c.Pool.PreferExpiring = true
 	c.Pool.ExpiringSoon = "168h" // 快过期窗口默认 7 天：官方活动奖励积分多在两周内过期
-	// costTier 探索默认 30m（issue #136：垄断破除 + 搭车改道零新增请求）；"0" 关停。
+	// costTier 探索默认 30m；"0" 关停。
 	c.Pool.CostExploreInterval = "30m"
 	c.SessionSticky.Enabled = true
 	c.SessionSticky.TTL = "30m"
@@ -517,7 +517,7 @@ func (c *Config) normalize() error {
 	if c.RetentionWindowDur, err = time.ParseDuration(c.Logging.RetentionWindow); err != nil || c.RetentionWindowDur <= 0 {
 		return fmt.Errorf("logging.retention_window must be a positive duration")
 	}
-	// 入站读取上限（issue #100）：空值回落默认 300s；"0" 合法（不限制）；
+	// 入站读取上限：空值回落默认 300s；"0" 合法（不限制）；
 	// 负值无语义，fail fast（静默钳 0 会把保护悄悄关掉）。
 	if c.Server.ReadTimeout == "" {
 		c.Server.ReadTimeout = "300s"
@@ -531,7 +531,7 @@ func (c *Config) normalize() error {
 	if c.SoftRateDur, err = time.ParseDuration(c.Cooldown.SoftRate); err != nil {
 		return fmt.Errorf("cooldown.soft_rate: %w", err)
 	}
-	// 空值回落默认 2h（Default() 已置值；此兜底覆盖显式 "" 与 Default() 被绕过的场景）。
+	// 空值回落默认 2h（Default 已置值；此兜底覆盖显式 "" 与 Default 被绕过的场景）。
 	if c.Cooldown.SoftRateMax == "" {
 		c.Cooldown.SoftRateMax = "2h"
 	}
@@ -566,7 +566,7 @@ func (c *Config) normalize() error {
 		c.ExpiringSoonDur = 0
 		c.Pool.ExpiringSoon = "0"
 	}
-	// costTier 探索窗口（issue #136）：空值回落默认 30m（Default 已置；此兜底覆盖
+	// costTier 探索窗口：空值回落默认 30m（Default 已置；此兜底覆盖
 	// 显式 ""）；"0" 是合法值（关停，完全回到现状行为），不回落；负值钳 0 同关停
 	//（"−5m" 无合理语义）。
 	if c.Pool.CostExploreInterval == "" {
@@ -619,7 +619,7 @@ func (c *Config) normalize() error {
 	if !strings.HasPrefix(c.Listen, ":") && !strings.Contains(c.Listen, ":") {
 		c.Listen = ":" + c.Listen
 	}
-	// 空数组与 null 反序列化后覆盖掉 Default() 的排程值（键缺席才保留），在此补齐。
+	// 空数组与 null 反序列化后覆盖掉 Default 的排程值（键缺席才保留），在此补齐。
 	// 空 = 未配置 → 回落默认；「禁用」一律走 *_enabled=false，两者互不混淆。
 	if len(c.Schedule.CheckinHours) == 0 {
 		c.Schedule.CheckinHours = []int{9, 21}

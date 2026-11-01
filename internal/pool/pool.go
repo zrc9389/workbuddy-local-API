@@ -28,7 +28,7 @@ type Pool struct {
 	breakerCooldownMax time.Duration
 	// softRateMax 软冷却指数退避的封顶（SetSoftRateMax 注入；默认 defaultSoftRateMax）。
 	softRateMax time.Duration
-	// costExploreInterval costTier 条件探索窗口（issue #136 方案 a′，SetCostExploreInterval
+	// costExploreInterval costTier 条件探索窗口（方案 a′，SetCostExploreInterval
 	// 注入；默认 defaultCostExploreInterval 30m）。tier 0 垄断 + tier 1 存在且距上次
 	// 探索 ≥ 窗口时，本次 pick 生效层切 tier 1-only（探索=搭车改道，零新增上游请求）。
 	// 0 = 关停（完全回到现状行为）。
@@ -41,7 +41,7 @@ type Pool struct {
 	// costExploreEvents 累计探索事件数（/status 透出；pick 写锁内 ++，无需 atomic）。
 	costExploreEvents int64
 	// degradeThreshold / degradeCooldown / degradeCooldownMax 连败降权参数
-	// （SetDegrade 注入；默认值见 defaultDegrade*，issue #114）。
+	// （SetDegrade 注入；默认值见 defaultDegrade*）。
 	degradeThreshold   int
 	degradeCooldown    time.Duration
 	degradeCooldownMax time.Duration
@@ -90,7 +90,7 @@ type Pool struct {
 // DefaultAccountMaxInFlight 账号级默认硬并发上限（workbuddy2api-hub v1.8.0 公开规范）
 const DefaultAccountMaxInFlight = 3
 
-// AccountHardConcurrencyCap 单账号硬并发封顶阈值（严禁单一账号超过 3 并发打穿上游）
+// AccountHardConcurrencyCap 单账号并发限制阈值（限制单账号最大 3 并发，防止触发上游频控）
 const AccountHardConcurrencyCap = 3
 
 func New(stateFp string) *Pool {
@@ -106,7 +106,7 @@ func New(stateFp string) *Pool {
 		degradeThreshold:   defaultDegradeThreshold,
 		degradeCooldown:    defaultDegradeCooldown,
 		degradeCooldownMax: defaultDegradeCooldownMax,
-		// 探索缺省 30m：tier 0 垄断下的 tier 1 探索窗口（issue #136）。用户经
+		// 探索缺省 30m：tier 0 垄断下的 tier 1 探索窗口。用户经
 		// config 显式 "0" 关停（SetCostExploreInterval(0)）。
 		costExploreInterval: defaultCostExploreInterval,
 		exploreLast:         map[string]time.Time{},
@@ -157,7 +157,7 @@ func (p *Pool) SetSoftRateMax(d time.Duration) {
 }
 
 // SetCostExploreInterval 注入 costTier 条件探索窗口（main 从 config 解析后调用，
-// issue #136）。0 = 关停（完全回到现状行为）；正值覆盖默认 30m。
+// ）。0 = 关停（完全回到现状行为）；正值覆盖默认 30m。
 // 注意：与 SetSoftRateMax「非正值保留默认」不同，0 在这里是**合法值**（关停开关，
 // 与 config 的 "0" 关停语义对齐）——不设 0 语义就无法关停探索。
 func (p *Pool) SetCostExploreInterval(d time.Duration) {
@@ -203,7 +203,7 @@ func (p *Pool) SetPreferExpiring(enabled bool) {
 	p.preferExpiring = enabled
 }
 
-// SetDegrade 注入连败降权参数（main 从 config 解析后调用，issue #114）。
+// SetDegrade 注入连败降权参数（main 从 config 解析后调用）。
 // 非正值保留原值（用默认，见 defaultDegrade*），风格同 SetBreaker/SetSoftRateMax。
 func (p *Pool) SetDegrade(threshold int, cooldown, cooldownMax time.Duration) {
 	p.mu.Lock()

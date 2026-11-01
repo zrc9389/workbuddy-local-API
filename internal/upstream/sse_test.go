@@ -227,7 +227,7 @@ func TestStripToolCallNames(t *testing.T) {
 }
 
 // TestStreamToolCallNameOnce 11 帧 tool_call：首帧 name=Bash，后续 10 帧不得携带
-// name 键，arguments 逐帧原样透传（issue #82：累加型客户端把每个分片 name 拼接成
+// name 键，arguments 逐帧原样透传（累加型客户端把每个分片 name 拼接成
 // Bash×帧数；正确行为是 name 只在首帧出现一次）。
 func TestStreamToolCallNameOnce(t *testing.T) {
 	const nFrames = 11
@@ -518,7 +518,7 @@ func TestStreamNormalizesFrames(t *testing.T) {
 }
 
 // TestStreamFirstIdPassthrough 帧混合（首帧有 id / 中间帧无 id / 空串 id）：输出每帧 id
-// 必须连续一致（取首帧真实值），不再一律 chatcmpl-wb2api（issue #35 后台聚合：透传流里
+// 必须连续一致（取首帧真实值），不再一律 chatcmpl-wb2api（后台聚合：透传流里
 // 每帧同 id 才能按消息归并）。
 func TestStreamFirstIdPassthrough(t *testing.T) {
 	raw := "data: {\"id\":\"chatcmpl-upstream-9\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello\"}}]}\n\n" +
@@ -836,7 +836,7 @@ func TestNormalizeUsageCacheAliasesPreservesZeroResult(t *testing.T) {
 
 // TestStreamHintErrorFrameObserver 上游 error 帧必须旁路通知观察者（账号处置挂载点），
 // 且透传字节不变——error 帧原文（code/msg/requestId）照常到达客户端。
-// 正常数据帧不得触发观察者。移植自 OkRoromori 分支的 WithErrorFrameObserver。
+// 正常数据帧不得触发观察者。移植自 历史验证分支的 WithErrorFrameObserver。
 func TestStreamHintErrorFrameObserver(t *testing.T) {
 	const errPayload = `{"error":{"code":6004,"message":"模型限流，将在 2026-09-27 01:00:00 重置"}}`
 	raw := "data: {\"id\":\"x1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n" +

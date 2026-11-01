@@ -314,7 +314,7 @@ func (a *Auth) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		a.attempts = append(a.attempts, now)
 
-		// 严禁无密码登录：输入空密码直接报错拦截
+		// 参数校验：拒绝空密码并返回 400
 		pwd := input.Password
 		if pwd == "" {
 			deny(w, 400, "password cannot be empty")

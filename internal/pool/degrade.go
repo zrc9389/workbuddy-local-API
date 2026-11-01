@@ -1,11 +1,11 @@
-// 连败降权（issue #114）：NoteFailures 计数 + 达阈临时出池 + NoteSuccess 清零。
+// 连败降权：NoteFailures 计数 + 达阈临时出池 + NoteSuccess 清零。
 // 与冷却/熔断「并存取更长者不叠加」由 entry.healthy 的并列或门天然保证
 // （三个截止是或门，任一未到期即不可选，生效的一定是最远者——见 entry.degradeUntil 注释）。
 package pool
 
 import "time"
 
-// NoteFailures 记录一次「不罚号的失败」（issue #114 连败兜底的喂入口）：
+// NoteFailures 记录一次「不罚号的失败」：
 // consecutiveFails++，达到 degradeThreshold 触发降权（degradeUntil = now +
 // 降权时长，计数清零供下一轮重新累计——同 recordBreakerFailureLocked 哲学）。
 // **已在降权期内**（degradeUntil 未到期）再次达阈：不延长、不翻倍（防用户重试

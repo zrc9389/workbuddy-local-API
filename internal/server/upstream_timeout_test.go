@@ -1,6 +1,6 @@
 // upstream_timeout_test.go 钉住 isUpstreamTimeout 的三态判定口径：超时和
 // "网络抖动"此前共用同一条换号路径——注定超时的请求会轮转 MaxRotate 次，
-// 期间还给一串健康号喂连败计数。移植自 OkRoromori 分支（七例对照）。
+// 期间还给一串健康号喂连败计数。移植自 历史验证分支（七例对照）。
 package server
 
 import (

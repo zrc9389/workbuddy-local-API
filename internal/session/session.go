@@ -40,7 +40,7 @@ type Config struct {
 	// 且未被该模型限流/限额）。nil 时回落 Available（无模型维度，行为与引入前一致）。
 	//
 	// 为什么粘性需要模型维度：绑定只记 uid，而同一个会话可能换模型。账号被 6004
-	// 模型级限额后对**其他模型**仍可用（issue #31 豁免），此时若只按账号级可用性
+	// 模型级限额后对**其他模型**仍可用，此时若只按账号级可用性
 	// 校验，会话会被钉在这个号上反复失败——正是"限额后换不动号"的观感来源。
 	AvailableForModel func(model string) []string
 }
@@ -366,7 +366,7 @@ func hashIndex(key string, n int) int {
 // conversation_id 的优先级。剔除后发 user_id 的客户端回落加权轮换（与无标识
 // 客户端同路径），旧 user_id 绑定靠 TTL 自然过期，键消失不产生脏绑定。
 //
-// issue #35：客户端实际发 camelCase 的 conversationId，此前只识别 snake_case，
+// 客户端实际发 camelCase 的 conversationId，此前只识别 snake_case，
 // 导致粘性路由不命中、同对话轮转不同账号、上游上下文缓存 miss。现两种命名均识别，
 // snake_case 优先级高于 camelCase（同值不同名命中同一对话时返回相同值，天然不混用）。
 //

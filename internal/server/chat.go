@@ -44,7 +44,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer payload.Close() // 请求生命周期结束时（含成功/失败/panic），必定安全删除私有临时文件
 
-	// 小请求复用内存切片；大请求保留在私有临时文件流中，严禁整包读回内存
+	// 小请求复用内存切片；大请求保留在私有临时文件流中，避免无节制整包载入内存
 	var body []byte
 	if !payload.IsSpool {
 		body = payload.Memory
@@ -186,7 +186,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	var modelBlock pool.ModelBlockStatus
 
 	// 会话粘性：从请求体提取会话键并解析绑定号（找不到/无效则 stickyUID 为空，走普通轮换）。
-	// ExtractKey 与粘性开关解耦（issue #35 侧）：关闭粘性时会话头族的聚合主键仍按
+	// ExtractKey 与粘性开关解耦：关闭粘性时会话头族的聚合主键仍按
 	// 会话级（RequestIDForKey(sessKey)），不悄悄退化成轮级——提取本身与粘性无关。
 	sessKey := strings.TrimSpace(r.Header.Get("X-Conversation-ID"))
 	if sessKey == "" {
@@ -326,11 +326,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 系统提示词改写（出站前、轮转前；每个请求一次）。
 	//   - custom：用自有提示词替换客户端 system/developer（从源头消灭 system 指纹误报）。
 	//   - append：开头连续 system/developer 块后插自有提示词，既有消息逐字不动
-	//     （客户端项目规范/工具约定与网关提示词并用，issue #129）。
+	//     （客户端项目规范/工具约定与网关提示词并用）。
 	//   - passthrough + 降级期：换 Degraded 中性提示词直达，不再先撞 400。
 	//   - passthrough / append 非降级期：透传客户端原始 system（append 则再插一条网关 system）。
 	// 降级裁决：append 在降级期退化为 replace（Rewrite(Degraded)）——append 带
-	// 指纹原文重试是确定性再撞墙，replace 是一次性最小抢救（issue #129 设计 §4）。
+	// 指纹原文重试是确定性再撞墙，replace 是一次性最小抢救。
 	degradedApplied := false
 	if !h.cfg.StrictContext && h.cfg.PromptMode == "custom" && h.cfg.PromptText != "" {
 		body = prompt.Rewrite(body, h.cfg.PromptText)
@@ -347,7 +347,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		body = rewriteModel(body, bareModel)
 	}
 
-	// 会话头族（issue #35）：后台按 X-Conversation-Request-ID（对话轮级）聚合请求，
+	// 会话头族：后台按 X-Conversation-Request-ID（对话轮级）聚合请求，
 	// 官方客户端一次 user send 内所有 tool call/重试/换号复用同一个 ID。此处**轮转
 	// 循环外**生成一次，循环内每次出站原样复用 → 换号/重试/降级全部同 ID，后台不再
 	// 碎片化（此前网关一个都不发，上游按 HTTP 请求逐条记账，同一对话几十上百个
@@ -403,7 +403,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			//   (a) 池子真的没有可用号（账号级冷却/在途占满/积分保底）；
 			//   (b) 号都在，但每个号都对这个模型处于模型级冷却（11102/6004）。
 			// 两者此前都报 no_healthy_account，导致「模型不可用」被读成「号全挂了」。
-			// 在这里取一次快照，供下方错误构造区分（issue #102 附带发现 1）。
+			// 在这里取一次快照，供下方错误构造区分。
 			modelBlock = h.cfg.Pool.ModelBlocked(bareModel)
 			break
 		}
@@ -415,7 +415,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 占用在途名额：Pick 已跳过满额账号，此处 CAS 兜底并发抢名额的竞态。
 		if !h.cfg.Pool.Acquire(acct.UID) {
 			// 若被抢的正是粘性号，立即解绑并回落普通轮换，避免下一轮仍撞同一个
-			// 满载粘性号再浪费一次 PickByUID 往返（语义与 fail()/PickByUID-nil 的解绑一致）。
+			// 满载粘性号再浪费一次 PickByUID 往返（语义与 fail/PickByUID-nil 的解绑一致）。
 			if stickyUID != "" && acct.UID == stickyUID {
 				unbindSticky()
 			}
@@ -460,10 +460,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 判定是否为跨账号重试（轮转非首选账号，或绑定账号已偏离）
 		isCrossAccount := (i > 0) || (boundUID != "" && acct.UID != boundUID)
 
-		// 大请求（落盘至私有临时文件）：直接流式读取临时文件发往上游，出站堆内存零驻留，严禁整包读回
+		// 大请求（落盘至私有临时文件）：流式读取临时文件发往上游，控制堆内存驻留；大请求改写需兼顾流式与控制字段规范
 		if payload.IsSpool {
 			// 落盘原文无法在不重建全文的情况下剥离旧账号的 conversation_id。
-			// 首次请求可以按原账号发送；跨账号重试绝不可复用旧 conversation_id，必须停止重放，避免串会话。
+			// 首次请求可以按原账号发送；跨账号重试需清除旧 conversation_id，避免跨账号会话串扰。
 			// 检查客户端是否显式指定了会话标识（Header 显式携带或落盘请求体中显式包含 conversation_id）
 			clientHasConvID := r.Header.Get("X-Conversation-ID") != "" || payload.HasConversationID()
 			if isCrossAccount && clientHasConvID {
@@ -530,7 +530,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 			// 网络层抖动：只换号，不喂熔断计数（传输层错误对连续失败连坐熔断过于严苛）。
-			// 连败兜底（issue #114）：喂连败计数——连不上上游是「不知道原因的失败」，
+			// 连败兜底：喂连败计数——连不上上游是「不知道原因的失败」，
 			// 连败 N 次临时出池，单次/偶发不罚（NoteFailures 内部达阈才动作）。
 			// 上游 client 已打 transport error 日志。
 			recordAttempt(acct.UID, pool.TokenUsageDelta{}, 0, false, attemptStarted, 0)
@@ -919,7 +919,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 //
 // 为什么要减：不减的话，首 token 等待越长、报告速率被压得越低。同一模型换个
 // 上游或网络，TTFB 从 0.3s 涨到 2s，速率能凭空掉一半——读起来像"模型变慢了"，
-// 其实只是排队久了。issue #34 报的正是这个，维护者也确认「速率计算时并没有减去
+// 其实只是排队久了。报的正是这个，维护者也确认「速率计算时并没有减去
 // 首token到达时间」。
 //
 // ttfb<=0 表示没有观测：非流式回复天然没有「首个 data 帧」（日志里那一列记的是
@@ -929,7 +929,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 // 同理，ttfb 不小于总耗时时（时钟粒度、或 TTFB 落在计时终点之后）退回端到端耗时，
 // 避免零/负分母。token 数为负哨兵值（-1 = 观测缺失）时返回 false。
 //
-// 扣除后不足 minGenWindow 也退回端到端（issue #127）：ttfb 量的是「首个 SSE 帧
+// 扣除后不足 minGenWindow 也退回端到端：ttfb 量的是「首个 SSE 帧
 // 到达」，当上游把整个响应攒到最后一次性下发（假流式/中间层攒批刷新——首帧与
 // 末帧几乎同时到）时，total−ttfb 只剩几毫秒，拿它当分母会把几百 token 除成
 // 上万 tok/s 的幻数。这种形态下「生成时长」根本不可测，诚实的分母只有端到端。
@@ -950,7 +950,7 @@ func tokensPerSecond(completionTokens int64, total, ttfb time.Duration) (float64
 }
 
 // minGenWindow 可信生成窗口的下限：扣除 TTFB 后剩余窗口不足该值即视为「生成
-// 时长不可测」，退回端到端耗时（见 tokensPerSecond 注释，issue #127）。
+// 时长不可测」，退回端到端耗时（见 tokensPerSecond 注释）。
 // 真流式下首帧到末帧通常铺满剩余窗口，200ms 远低于正常生成时长，不影响真实
 // 快速输出（如缓存命中后的爆发）被如实报告。
 const minGenWindow = 200 * time.Millisecond

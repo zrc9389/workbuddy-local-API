@@ -44,7 +44,7 @@ func TestReadPayload_SmallRequestInMemory(t *testing.T) {
 	}
 }
 
-// TestReadPayload_LargeRequestSpoolsAndCleansUp 验证大请求（>256KB）溢出落盘到私有临时文件，且在 Close() 后彻底物理销毁
+// TestReadPayload_LargeRequestSpoolsAndCleansUp 验证大请求（>256KB）溢出落盘到私有临时文件，且在 Close 后彻底物理销毁
 func TestReadPayload_LargeRequestSpoolsAndCleansUp(t *testing.T) {
 	// 构造 512KB 大请求
 	bigMessage := strings.Repeat("M", 512*1024)
@@ -93,7 +93,7 @@ func TestReadPayload_LargeRequestSpoolsAndCleansUp(t *testing.T) {
 		t.Fatal("spool file contents corrupted, SHA256 mismatch")
 	}
 
-	// 3. 验证生命周期结束清理：调用 Close() 后临时文件必须被从磁盘彻底移除
+	// 3. 验证生命周期结束清理：调用 Close 后临时文件必须被从磁盘彻底移除
 	if err := payload.Close(); err != nil {
 		t.Fatalf("payload.Close() returned error: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestReadPayload_LargeRequestSpoolsAndCleansUp(t *testing.T) {
 		t.Fatalf("spool file %s was NOT removed after payload.Close()", tmpPath)
 	}
 
-	// 4. 验证 Close() 幂等安全
+	// 4. 验证 Close 幂等安全
 	if err := payload.Close(); err != nil {
 		t.Fatalf("second Close() should be no-op, got: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestRequestPayload_MultipleReadersAndCleanup(t *testing.T) {
 	// 只关闭 r1，故意留下 r2 和 r3 不手动关闭
 	_ = r1.Close()
 
-	// payload.Close() 必须负责关闭剩下的 r2、r3，并在 Windows 平台上成功物理删除临时文件
+	// payload.Close 必须负责关闭剩下的 r2、r3，并在 Windows 平台上成功物理删除临时文件
 	if err := payload.Close(); err != nil {
 		t.Fatalf("payload.Close() failed with remaining active readers: %v", err)
 	}

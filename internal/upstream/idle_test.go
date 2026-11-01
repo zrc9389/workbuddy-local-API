@@ -81,7 +81,7 @@ func TestMonitorBodyCloseStopsGoroutine(t *testing.T) {
 
 // —— helpers ——
 
-// ctxBoundReader 模拟 net/http resp.Body：Read 阻塞在 ctx.Done() 上，ctx cancel 后返回错误。
+// ctxBoundReader 模拟 net/http resp.Body：Read 阻塞在 ctx.Done 上，ctx cancel 后返回错误。
 type ctxBoundReader struct{ ctx context.Context }
 
 func (r *ctxBoundReader) Read([]byte) (int, error) {

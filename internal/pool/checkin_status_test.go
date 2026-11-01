@@ -75,7 +75,7 @@ func TestCheckinDoneExpiredYesterday(t *testing.T) {
 	}
 }
 
-// TestSetNicknamePersists（issue #94）：昵称更新写入 auths 文件并往返无损；
+// TestSetNicknamePersists：昵称更新写入 auths 文件并往返无损；
 // 未变化不写盘；空昵称/未知 uid 拒绝。
 func TestSetNicknamePersists(t *testing.T) {
 	dir := t.TempDir()

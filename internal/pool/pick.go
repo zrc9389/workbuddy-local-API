@@ -26,13 +26,13 @@ func (p *Pool) PickExcluding(tried map[string]bool) *auth.Auth {
 }
 
 // PickExcludingForModel 模型感知选号：等同 PickExcluding，但对「6004 模型级冷却中的
-// 账号」进行模型豁免——请求模型与其 trigger 模型不同时视为可用（issue #31）。
+// 账号」进行模型豁免——请求模型与其 trigger 模型不同时视为可用。
 // reqModel 为空时即普通 PickExcluding（不影响既有调用语义）。
 func (p *Pool) PickExcludingForModel(tried map[string]bool, reqModel string) *auth.Auth {
 	return p.pick(tried, reqModel, "")
 }
 
-// PickExcludingForRealm 模型感知 + 分池选号：候选集先按 Realm()==realm 过滤
+// PickExcludingForRealm 模型感知 + 分池选号：候选集先按 Realm==realm 过滤
 // （realm 空 = 不过滤，退化为 PickExcludingForModel），再按模型健康口径判定。
 // 供 handler 在 global/cn 双域下分流（global 模型请求只路由 global 账号）。
 func (p *Pool) PickExcludingForRealm(tried map[string]bool, reqModel, realm string) *auth.Auth {
@@ -41,7 +41,7 @@ func (p *Pool) PickExcludingForRealm(tried map[string]bool, reqModel, realm stri
 
 // pick 在 healthy 候选集中按权重加权随机选出账号，并记录 lastUsed（防并发撞号）。
 // reqModel 非空时把健康口径换成 healthyForModel（6004 模型豁免生效）。
-// realm 非空时候选过滤叠加 Realm()==realm 谓词（分池选号域）。
+// realm 非空时候选过滤叠加 Realm==realm 谓词（分池选号域）。
 func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -115,7 +115,7 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 			bestTier = ti
 		}
 	}
-	// 条件探索（issue #136 方案 a′）：tier 0 垄断层存在（bestTier==0 且 reqModel
+	// 条件探索：tier 0 垄断层存在（bestTier==0 且 reqModel
 	// 非空）且候选含 tier 1（冻结存在）且距上次探索 ≥ 窗口（零值 timer=从未探索
 	// →首次满足即探）时，本次 pick 生效层切 tier 1-only——探索=搭车改道，把一个
 	// 既有真实用户请求改道给未知号（零新增上游请求；IP 维度零增量，WAF 友好）。
@@ -329,7 +329,7 @@ func (p *Pool) pickEarliestExpiryLocked(tried map[string]bool, now time.Time, re
 	}
 	log.Printf("WARN: [pool] fallback_earliest_expiry acct=%s until=%s kind=%s", logfmt.Label(best.a.UID, best.a.Nickname), best.expiry(now).Format(time.RFC3339), best.fallbackKind(now))
 	best.lastUsed = time.Now()
-	// 兜底同样是「选中」，必须与 pick() 正常路径、粘性命中路径（PickByUIDForModel）
+	// 兜底同样是「选中」，必须与 pick 正常路径、粘性命中路径（PickByUIDForModel）
 	// 一样推进 usedSeq/pickSeq：否则被兜底反复选中的账号 usedSeq 恒为 0，在 pick 的
 	// LRU 兜底（按 usedSeq 取最旧）眼里永远是「最旧」，刚被用过就被立刻再选——
 	// 防集中/防惊群失效（entry.usedSeq 契约：每次被选中时取 p.pickSeq 自增值）。

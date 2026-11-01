@@ -25,7 +25,7 @@ func TestFirstPasswordSetupAndDefaultPasswordBypass(t *testing.T) {
 			return w
 		}
 
-		// 默认密码状态下，严禁空密码登录，空密码必须报错 400
+		// 默认密码状态下，参数校验：拒绝空密码并返回 400
 		w := call(localRequest("POST", "/auth/login", `{"password":""}`))
 		if w.Code != 400 {
 			t.Fatalf("expected 400 for empty password in default mode, got %d: %s", w.Code, w.Body.String())

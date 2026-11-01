@@ -34,7 +34,7 @@ const billingBaseGlobal = "https://www.workbuddy.ai"
 
 // billingBaseFor 按账号 realm 选择计费域。
 //
-// 判定口径与 internal/auth.Realm() 一致：显式 realm=global 或 domain 落在
+// 判定口径与 internal/auth.Realm 一致：显式 realm=global 或 domain 落在
 // workbuddy.ai 家族，都按国际版处理。cmd/credit 早先对所有账号硬编码 CN 域，
 // 导致 global 账号余额查询恒返回 401（面板显示的是池内缓存值，不是实时的）。
 func billingBaseFor(af *authFile) string {

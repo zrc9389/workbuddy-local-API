@@ -20,7 +20,7 @@ func (p *Pool) SetCredits(uid string, credits, total int64) {
 	}
 }
 
-// SetNickname 更新账号昵称并回写 auths 凭证文件（issue #94：上游改名后同步）。
+// SetNickname 更新账号昵称并回写 auths 凭证文件。
 // 昵称未变化时不写盘；uid 不存在 / 昵称为空返回 false。与 token 刷新共用
 // auth 自身的锁与 SaveAtomic 原子写，无半更新窗口。
 func (p *Pool) SetNickname(uid, nickname string) bool {
@@ -136,7 +136,7 @@ func (p *Pool) Cooldown(uid string, kind CoolKind, d time.Duration, reason strin
 	}
 }
 
-// CooldownSoftForModel 429 的**模型级**软冷却入口（issue #31）：把该模型的冷却截止
+// CooldownSoftForModel 429 的**模型级**软冷却入口：把该模型的冷却截止
 // 精确对齐到上游重置墙钟（不做指数堆加、不做 softStreak 计数）。
 //
 //   - resetAt 非零（带解析时间）→ modelCooldowns[model].Until = min(resetAt,
@@ -314,7 +314,7 @@ type ModelBlockStatus struct {
 // 但真实原因常常是「号都在、只是都对这个模型关闭」。两者对调用方的处置完全不同
 // ——前者该等，后者换个模型才有用——此前却无法区分：首次请求还能看到上游原文
 // （lastErr 非空），一旦负缓存写入，后续请求 lastErr 为空，就只剩"池子没号"
-// （issue #102 附带发现 1）。上游原文与解封时间在那里被丢掉。
+// 。上游原文与解封时间在那里被丢掉。
 //
 // 跨 realm 判定：调用方失败前已依次尝试过各域，所以只要有**任意**账号还能服务该
 // 模型，就不能算全池阻塞 —— 此时返回 Blocked=false，让上层继续用原有的

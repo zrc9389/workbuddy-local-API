@@ -51,7 +51,7 @@ func TestLocalPasswordLifecycle(t *testing.T) {
 	if w := call(r); w.Code != 401 {
 		t.Fatal("key granted admin", w.Code)
 	}
-	// 严禁空密码登录：空密码必须报错 400
+	// 参数校验：拒绝空密码并返回 400
 	r = localRequest("POST", "/auth/login", `{"password":""}`)
 	if w := call(r); w.Code != 400 {
 		t.Fatalf("expected 400 for empty password, got %d", w.Code)

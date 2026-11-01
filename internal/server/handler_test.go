@@ -342,7 +342,7 @@ func TestChatRotatesOnHardCredit(t *testing.T) {
 	}
 }
 
-// TestChatSoftCoolsOnRateLimitBody 端到端回归 issue #28：上游用非 429 状态码
+// TestChatSoftCoolsOnRateLimitBody 端到端回归 上游用非 429 状态码
 // （400 + 限流文案）表达模型侧限流时，该账号必须进入 CoolSoft 冷却，而不是只换号。
 // 修复前 Classify 归 ErrClient → applyErrorPolicy 走 default 分支只换号不罚，
 // 账号留在可用池里，下一个请求仍会被选中。
@@ -651,7 +651,7 @@ func TestChat429Code14018UsesHardCreditCooldown(t *testing.T) {
 	}
 }
 
-// TestChat6004ModelResetCoolsToParsedTime 端到端回归 issue #31：上游 429 + code 6004
+// TestChat6004ModelResetCoolsToParsedTime 端到端回归 上游 429 + code 6004
 // +「将在 … 重置」→ 冷却 until 精确等于解析时间（而非 600s 固定基数/指数退避），
 // 且记录触发模型 → 同模型请求仍被冷却、切模型请求按豁免可选。
 func TestChat6004ModelResetCoolsToParsedTime(t *testing.T) {
@@ -1396,9 +1396,9 @@ func TestContentBlockedStickyDegraded(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("first req code=%d", rec.Code)
 	}
-	// 降级粘性：新请求 Active()=true，body 已被 Rewrite(Degraded)，上游首字节即 200。
+	// 降级粘性：新请求 Active=true，body 已被 Rewrite(Degraded)，上游首字节即 200。
 	// 但 fake 上游只对 firstCall 返回 400，之后都 200，无法区分"直达"与"重试"。
-	// 用 degrade.Active() 直接断言粘性生效。
+	// 用 degrade.Active 直接断言粘性生效。
 	if !h.degrade.Active() {
 		t.Fatal("degrade should be active after trigger")
 	}

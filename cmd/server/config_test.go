@@ -255,7 +255,7 @@ func TestNegativeExpiringSoonClampsToDisabled(t *testing.T) {
 }
 
 func TestSoftRateMaxEmptyFallsBackToDefault(t *testing.T) {
-	// 键缺席 → Default() 的 2h 保留（空串无法 ParseDuration）。
+	// 键缺席 → Default 的 2h 保留（空串无法 ParseDuration）。
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "c.json")
 	os.WriteFile(fp, []byte(`{"cooldown":{"soft_rate":"90s"}}`), 0o600)
@@ -417,7 +417,7 @@ func TestScheduleLegacyConfigKeepsRunning(t *testing.T) {
 }
 
 // TestScheduleExplicitDisable 显式 checkin_enabled=false 即可真正关掉签到
-// （issue #27 边界：此前无论怎么配小时都关不掉）。
+// 。
 func TestScheduleExplicitDisable(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "c.json")
@@ -812,7 +812,7 @@ func TestLoadConfigPathIsDirectory(t *testing.T) {
 	}
 }
 
-// TestServerReadTimeout 入站读取上限（issue #100）：空值回落默认 300s；
+// TestServerReadTimeout 入站读取上限：空值回落默认 300s；
 // "0" = 显式不限制（0 是合法值不回落）；负值 fail fast（静默钳 0 会把保护悄悄关掉）。
 func TestServerReadTimeout(t *testing.T) {
 	c := Default()

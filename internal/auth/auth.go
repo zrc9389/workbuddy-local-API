@@ -29,10 +29,10 @@ type Auth struct {
 	ExpiresAt    int64 // Unix 秒
 	Domain       string
 	// realm 账号域（"cn" / "global"），落盘于 auth.realm（嵌套形）或顶层 realm（扁平形）。
-	// 空 = 缺省：Realm() 按 domain 后缀回落，最终恒非空。
+	// 空 = 缺省：Realm 按 domain 后缀回落，最终恒非空。
 	//
 	// 命名注记：Go 不允许字段与方法同名，持久化字段用未导出 realm，计算访问器用
-	// 导出的 Realm()（跨包调用全部走方法）。Parse/SaveAtomic/login 在包内读写字段。
+	// 导出的 Realm（跨包调用全部走方法）。Parse/SaveAtomic/login 在包内读写字段。
 	realm        string
 	UID          string
 	EnterpriseID string
@@ -94,10 +94,10 @@ func (a *Auth) RefreshTokenValue() string {
 }
 
 // globalEnabled 全局开关：global realm 是否路由（D5 双保险）。
-// 默认开启（与 config global.enabled 缺省 true 一致）：Realm() 正常按显式 realm/
+// 默认开启（与 config global.enabled 缺省 true 一致）：Realm 正常按显式 realm/
 // domain 判定 global/cn。显式 SetGlobalEnabled(false)（config "enabled": false）关闭
 // → 逃生门：纯 CN 部署，即便 auth 文件写了 realm=global 或 domain 为 .workbuddy.ai
-// 也恒判 cn——「关了才锁死」的单一闸口集中收敛在 Realm()/IsGlobal() 里。
+// 也恒判 cn——「关了才锁死」的单一闸口集中收敛在 Realm/IsGlobal 里。
 var globalEnabled atomic.Bool
 
 func init() { globalEnabled.Store(true) }
@@ -119,7 +119,7 @@ func (a *Auth) Realm() string {
 }
 
 // realmLocked Realm 的无锁内部实现：仅限**已持 a.mu** 的调用方使用（sync.Mutex 不可重入，
-// 锁内再调 Realm() 会自锁）。realm 由 BackfillRealm 改写、Domain 由 RefreshToken 在锁内
+// 锁内再调 Realm 会自锁）。realm 由 BackfillRealm 改写、Domain 由 RefreshToken 在锁内
 // 改写，故读取必须与写方同锁（理由见 AccessTokenValue 注释）。
 func (a *Auth) realmLocked() string {
 	if !globalEnabled.Load() {
@@ -147,7 +147,7 @@ func ResolveRealm(explicit, domain string) string {
 // BackfillRealm 为缺省 realm 标识的账号持久化补标识：a.realm 为空时按「原始 domain 推断」
 // 写回（cn/global），返回 (是否有变更, 归一化后的 realm)。已有标识不动（幂等）。
 //
-// 注意用 isGlobalDomain(a.Domain) 直接推断，而非 Realm()——Realm() 在逃生门
+// 注意用 isGlobalDomain(a.Domain) 直接推断，而非 Realm——Realm 在逃生门
 // （SetGlobalEnabled(false)）下恒降级 cn，把 global 账号写死成 cn 会永久污染凭证
 // （逃生门是纯 CN 部署的临时锁，不应改写落盘数据）。domain 也为空时写 "cn"（老 CN 凭证）。
 func (a *Auth) BackfillRealm() (bool, string) {
@@ -161,7 +161,7 @@ func (a *Auth) BackfillRealm() (bool, string) {
 	return true, r
 }
 
-// RealmStored 直读持久化的 realm 标识（可能为空 = 未 backfill 的旧文件，Realm() 会 fallback）。
+// RealmStored 直读持久化的 realm 标识（可能为空 = 未 backfill 的旧文件，Realm 会 fallback）。
 func (a *Auth) RealmStored() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -189,7 +189,7 @@ func BackfillRealmFor(a *Auth, realm string) (bool, error) {
 	return true, nil
 }
 
-// IsGlobal 报告账号是否属于 global realm（= Realm() == "global"）。
+// IsGlobal 报告账号是否属于 global realm（= Realm == "global"）。
 func (a *Auth) IsGlobal() bool { return a.Realm() == "global" }
 
 // IsEnterprise 报告账号是否为企业版（auth 文件带非空 enterpriseId）。
@@ -208,7 +208,7 @@ func (a *Auth) IsGlobal() bool { return a.Realm() == "global" }
 // /v2/billing/meter/get-enterprise-user-usage，见 upstream.enterpriseResource）。
 //
 // 直读字段（EnterpriseID 自 Parse 后不再改写，与 upstream 读取方式一致），
-// 无需加锁——Realm() 加锁是因为 realm/Domain 会被 RefreshToken 在锁内改写。
+// 无需加锁——Realm 加锁是因为 realm/Domain 会被 RefreshToken 在锁内改写。
 func (a *Auth) IsEnterprise() bool { return strings.TrimSpace(a.EnterpriseID) != "" }
 
 // isGlobalDomain 判定 domain 是否指向 www.workbuddy.ai 家族。

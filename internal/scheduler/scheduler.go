@@ -301,7 +301,7 @@ func (s *Scheduler) nextWake(now time.Time) (time.Time, []taskKind) {
 }
 
 // wakeupGraceDelay 迟到唤醒补跑的派发前网络宽限：Windows Modern Standby exit 后
-// 网络栈/DNS 1-2s 才恢复（issue #152 实测 dial tcp lookup no such host 与
+// 网络栈/DNS 1-2s 才恢复（实测 dial tcp lookup no such host 与
 // Kernel-Power 507 standby exit ≤1s 重合），宽限 5s 覆盖 90%+ 唤醒场景。
 // 只对迟到补跑生效（准点触发零延迟），零配置。测试可缩短（与
 // travelAccountDelay「测试可置 0」同口径）。
@@ -397,7 +397,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 			// 到点任务在排程时确定（不依赖唤醒时刻的小时数），迟到唤醒也不会漏跑。
 			// 迟到唤醒（睡眠跨过槽位时刻，timer 在唤醒瞬间才到期）先等网络宽限：
 			// 唤醒瞬间 DNS 未就绪，零宽限派发等于把唯一一次补跑机会打在注定失败
-			// 的窗口里（issue #152）；准点触发零延迟不受影响。
+			// 的窗口里；准点触发零延迟不受影响。
 			if !awaitWakeupGrace(ctx, next) {
 				return // ctx 取消：放弃本批，优雅退出
 			}
@@ -472,7 +472,7 @@ func (s *Scheduler) RunCheckinNow() {
 			continue
 		}
 		// D4 门控：realm=global 账号无签到体系，直接跳过（不发起任何上游调用，避免风控）。
-		// 经 auth.Realm() 统一判定：逃生门（global.enabled=false）下 global 账号被降级为 cn、
+		// 经 auth.Realm 统一判定：逃生门（global.enabled=false）下 global 账号被降级为 cn、
 		// 按 CN 处理——这是逃生门的刻意语义（纯 CN 部署锁死一切 global），与引用处一致。
 		if a.IsGlobal() {
 			continue

@@ -61,7 +61,7 @@ func TestBackfillReasoningContentDeepSeek(t *testing.T) {
 				{"role":"user","content":"u2"},
 				{"role":"assistant","content":"a2"}]}`,
 			2, []string{"t1", ""}},
-		// 新契约下（门控 thinkingEnabled||hasTrace，issue #165）：L1 注入 enabled
+		// 新契约下（门控 thinkingEnabled||hasTrace）：L1 注入 enabled
 		// 后零痕迹 assistant 也补空串——期望从 <absent> 改为 ""（存在 string）。
 		{"assistant reasoning 为空串 → 视为零痕迹但 enabled 下补空串",
 			`{"model":"deepseek-v4-flash","messages":[
@@ -100,7 +100,7 @@ func TestBackfillReasoningContentDeepSeek(t *testing.T) {
 // TestBackfillReasoningContentNoTrace 会话无 reasoning 痕迹 + thinking disabled
 // → 零改动：不白白给 assistant 消息加 reasoning_content 字段。
 // 官方 ReasoningContentBackfillRule 门控 = thinkingEnabled || hasTrace；disabled
-// 且无痕迹时两个半边都不亮 → 不补（issue #165 前该用例不分 disabled 与否一律不补，
+// 且无痕迹时两个半边都不亮 → 不补（前该用例不分 disabled 与否一律不补，
 // 现按新契约收紧为 disabled 形态——纯 text + enabled 补空串由
 // TestBackfillZeroTraceThinkingEnabled 覆盖）。
 func TestBackfillReasoningContentNoTrace(t *testing.T) {
@@ -199,7 +199,7 @@ func TestBackfillComposesWithInjectThinking(t *testing.T) {
 	}
 }
 
-// TestBackfillZeroTraceThinkingEnabled issue #165 复现锚（R1）：零痕迹多轮 deepseek，
+// TestBackfillZeroTraceThinkingEnabled 复现锚（R1）：零痕迹多轮 deepseek，
 // 经 L1 injectThinking 注入 enabled 后，thinkingEnabled 半边亮 → 每条 assistant
 // 保证 reasoning_content 是 string（此处无 reasoning 可复制，全补空串）。
 // 官方 ReasoningContentBackfillRule 的门控是 thinkingEnabled || hasTrace，
@@ -227,7 +227,7 @@ func TestBackfillZeroTraceThinkingEnabled(t *testing.T) {
 	}
 }
 
-// TestBackfillNullAndNonStringNormalized issue #165 null/非 string 归一化（R3）：
+// TestBackfillNullAndNonStringNormalized null/非 string 归一化（R3）：
 // 官方跳过条件是 "string"!=typeof reasoning_content 才动手——null/数字会被旧代码
 // 的 if _, ok（键存在即跳过）当「已有」跳过，新契约归一化为 ""。
 // 注意 hasTrace 半边：reasoning_content 键存在本身即痕迹，门控必然亮。

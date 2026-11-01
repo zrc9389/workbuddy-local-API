@@ -153,8 +153,8 @@ func run() error {
 	store := redisstore.New(cfg.Upstash.URL, cfg.Upstash.Token)
 
 	p := pool.New(cfg.StateFile)
-	// 停机序：先 pool.Close()（最后一次 Flush → SaveState 已提交到 store），
-	// 再 store.Close() 排空在途异步写（最后一笔 Redis 镜像必须写完才关连接）。
+	// 停机序：先 pool.Close（最后一次 Flush → SaveState 已提交到 store），
+	// 再 store.Close 排空在途异步写（最后一笔 Redis 镜像必须写完才关连接）。
 	defer func() {
 		p.Close()
 		_ = store.Close()
@@ -231,7 +231,7 @@ func run() error {
 	// 聊天 SSE 流中空闲上限（S3 空闲监控读取）。
 	up.IdleTimeout = time.Duration(cfg.Upstream.IdleTimeoutSeconds) * time.Second
 	up.SanitizeFingerprints.Store(cfg.Features.SanitizeBlacklistFingerprints && !cfg.Features.StrictContext)
-	// 出站 UA 与归属头（issue #42 + 上游同步）：
+	// 出站 UA 与归属头：
 	// UserAgent 非空则完全覆盖；ClientVersion/CliVersion 缺省对齐官方形态；
 	// ClientName 非空时 chat 路径注入 X-IDE-* 四头（用量归因对齐官方桌面端）。
 	up.UserAgent = cfg.Upstream.UserAgent
@@ -679,7 +679,7 @@ func restartRequiredFields(c *Config) []string {
 	out = append(out, "upstream.timeout_seconds", "upstream.header_timeout_seconds", "upstream.idle_timeout_seconds")
 	// upstream.user_agent 在装配期被写进出站 client（main.go 的 up.UserAgent = ...），
 	// 之后不再读取——不在 livecfg 热快照里，也无法热改。此前漏列，导致面板改完
-	// 显示"已保存"却不提示需要重启，用户以为没生效（issue #102 附带发现 2）。
+	// 显示"已保存"却不提示需要重启，用户以为没生效。
 	out = append(out, "upstream.user_agent")
 	if c.Upstash.URL != "" || c.Upstash.Token != "" {
 		out = append(out, "upstash")

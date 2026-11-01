@@ -1,6 +1,6 @@
 // thinking.go DeepSeek 思维链开启：出站请求体注入 thinking:{type:"enabled"} + 默认档位。
 //
-// 根因（issue #43，Hermes 逆向官方客户端 codebuddy.js 已确认）：
+// 根因：
 // 官方客户端对 deepseek 系模型标记 thinkingFormat:"deepseek" + requiresReasoningContentOnAssistantMessages，
 // 发请求时「开思考」必须显式带 thinking:{type:"enabled"}，否则上游默认按不思考应答
 // （思维链不返回）。网关 payload 层此前完全不感知该字段，透传请求没有这个开关
@@ -50,7 +50,7 @@ func isDeepSeekModel(model string) bool {
 
 // backfillReasoningContent DeepSeek 多轮一致性：保证每条 assistant 消息带
 // reasoning_content 字段且值为 string——即 requiresReasoningContentOnAssistantMessages
-// （官方客户端 matches 规则，issue #165 对齐官方 apply 门控）。
+// （官方客户端 matches 规则，对齐官方 apply 门控）。
 //
 // 门控（对齐官方 ReasoningContentBackfillRule：thinkingEnabled || hasTrace），
 // thinkingEnabled 取自注入后请求体的 thinking.type == "enabled"（injectThinking 先行，
@@ -59,7 +59,7 @@ func isDeepSeekModel(model string) bool {
 //   - deepseek + enabled（含 L1 注入后）→ 每条 assistant 保证 reasoning_content 是
 //     string：已有 string 原样保留（不覆盖）；reasoning 是非空 string 且 rc 非 string →
 //     复制 reasoning 值；两者皆无 → 补空串 ""。第三方客户端丢推理回传（零痕迹）形态
-//     下官方本就补，网关此前只移植了 hasTrace 半边（issue #165 修复点）。
+//     下官方本就补，网关此前只移植了 hasTrace 半边。
 //   - deepseek + disabled + 无痕迹 → 零改动（官方 thinkingEnabled=false 且 ec=false → 不补）。
 //   - deepseek + disabled + 有痕迹 → 照补（官方 hasTrace 半边，双方一致）。
 //
@@ -103,7 +103,7 @@ func backfillReasoningContent(obj map[string]any) {
 		return
 	}
 	// 第二遍：所有 assistant 消息补/复制 reasoning_content 字段，并镜像保证
-	// reasoning 字段存在且非空（issue #165 追评——部分账号/租户对 thinking 形态
+	// reasoning 字段存在且非空（追评——部分账号/租户对 thinking 形态
 	// 校验 len(reasoning)>0：缺失/null/空串 400，空白串 200；官方 CLI 本就给
 	// assistant 挂上一轮 reasoning 文本，见 itemsToMessages 的 applyPendingReasoning）。
 	// 跳过条件只认 string（官方 "string"!=typeof 才动手）：null/数字归一化。

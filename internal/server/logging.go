@@ -123,7 +123,7 @@ type chatStatsReader struct {
 	credit     float64
 	errorFrame bool
 	// cacheHit/cacheMiss 上游末帧 usage.prompt_cache_hit_tokens / miss_tokens，
-	// 供用量桶的命中率维度与 reqlog 逐次记录（issue #92）。
+	// 供用量桶的命中率维度与 reqlog 逐次记录。
 	hasCacheHit  bool
 	cacheHit     int
 	cacheMiss    int
@@ -524,7 +524,7 @@ func logChatRowEx(ttfb, total time.Duration, model, mode, uid, nick string, stat
 	if toks >= 0 {
 		tokField = fmt.Sprintf("%d", toks)
 		// 速率与用量账本走同一个函数（扣掉 TTFB）。此前这里自己除 total，漏扣首
-		// token 等待，于是控制台流水行的 tok/s 与面板数字对不上（issue #34）——
+		// token 等待，于是控制台流水行的 tok/s 与面板数字对不上——
 		// 本函数本来就收到了 ttfb，只是没拿它算速率。
 		if tps, ok := tokensPerSecond(int64(toks), total, ttfb); ok {
 			tokpsField = fmt.Sprintf("%.1ftok/s", tps)
@@ -577,7 +577,7 @@ func logChatRowEx(ttfb, total time.Duration, model, mode, uid, nick string, stat
 	)
 }
 
-// cacheMissSignal 低命中率告警信号（issue #92 P1 轻量化）：同一模型此前观测到过
+// cacheMissSignal 低命中率告警信号：同一模型此前观测到过
 // 命中、本次大前缀（≥1000 tok）整段未命中（命中率 <10%）时打一条 WARN，每模型
 // 10 分钟冷却。只报「本可命中却重算」的可行动信号——新模型/新会话的首请求天然
 // 全 miss，不在此列。
