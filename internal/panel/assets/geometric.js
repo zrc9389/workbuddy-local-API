@@ -6100,7 +6100,7 @@ export function expiryTone(days) {
                                     <div class="text-[12.5px] font-mono text-white/90 border-b border-white/15 pb-1 max-w-xl fade-truncate selectable-text">${escapeDisplayText(WBState.loginAuthUrl || '请点击下方按钮获取授权链接')}</div>
                                 </div>
                                 <div class="flex items-center space-x-3 py-0.5 max-w-xl whitespace-nowrap">
-                                    <button class="editorial-text-btn shrink-0 ${WBState.oauthWaiting ? 'tone-guard font-medium animate-pulse' : 'text-white'} text-[11.5px] px-0.5" data-action="open-oauth">${WBState.oauthWaiting ? '[ 授权等待中 (慢闪)... ]' : '[ 跳转浏览器授权 &rarr; ]'}</button>
+                                    <button id="btn-oauth-action" class="editorial-text-btn shrink-0 ${WBState.oauthWaiting ? 'oauth-polling-pulse animate-pulse text-yellow-400 font-medium' : 'text-white'} text-[11.5px] px-0.5" data-action="open-oauth">${WBState.oauthWaiting ? '[ 授权等待中... ]' : '[ 跳转浏览器授权 &rarr; ]'}</button>
                                     <button class="editorial-text-btn shrink-0 text-[11.5px] px-0.5 text-white/70 hover:text-white" data-action="reset-oauth">[ 重置 ]</button>
                                     <button id="btn-oauth-status" class="editorial-text-btn shrink-0 text-[11.5px] px-0.5" data-action="copy-oauth">[ 复制授权链接 ]</button>
                                     <span class="text-white/20 shrink-0">|</span>
@@ -7232,36 +7232,6 @@ export function expiryTone(days) {
                 } catch (_) {} finally { pollInFlight = false; }
             }, 2000);
         }
-
-        window.openOAuthLoginLink = () => {
-            if (!WBState.systemDefaultNode) {
-                notifyEditorialStatus('AUTH // 严禁直连：请先在上方指定【默认出口】节点后再发起授权');
-                if (typeof soundscape !== 'undefined' && soundscape && typeof soundscape.triggerErrorSound === 'function') {
-                    soundscape.triggerErrorSound();
-                }
-                if (typeof setPreviewFrameState === 'function') setPreviewFrameState('error', 800);
-                return;
-            }
-            if (!WBState.loginState) {
-                WBState.loginState = 'WB-STATE-' + Math.random().toString(36).slice(2, 8).toUpperCase();
-            }
-            try {
-                window.open(WBState.loginAuthUrl, '_blank', 'noopener,noreferrer');
-            } catch(e) {}
-            notifyEditorialStatus('OPENED BROWSER FOR OAUTH // WAITING FOR AUTHORIZATION...');
-
-            WBState.oauthPollStatus = 'WAITING';
-            const btn = document.getElementById('btn-oauth-status');
-            if (btn) {
-                btn.textContent = '[ 等待授权中... ... ]';
-                btn.className = 'editorial-text-btn text-yellow-400 oauth-polling-pulse';
-                btn.style.color = '#facc15';
-                btn.style.borderColor = 'rgba(250, 204, 21, 0.4)';
-                btn.style.textShadow = '0 0 8px rgba(250, 204, 21, 0.5)';
-            }
-
-            startOAuthPolling();
-        };
 
         window.copyOAuthLoginLink = async () => {
             if (!WBState.loginAuthUrl) { notifyEditorialStatus('请先获取授权链接'); return; }
@@ -8609,7 +8579,7 @@ export function expiryTone(days) {
                 // 1. 外层双同心圆标尺与动态扫描光弧 (R=118)
                 pCtx.setLineDash([]);
                 pCtx.lineWidth = 1;
-                const ringState = WBState.ringState || (WBState.inTaskFaultFlash ? "error" : "idle");
+                const ringState = (WBState.oauthWaiting ? "busy" : (WBState.ringState || (WBState.inTaskFaultFlash ? "error" : "idle")));
 
                 // 基础轨道圆恒定保持深暗色
                 pCtx.strokeStyle = "rgba(255, 255, 255, 0.12)";
@@ -9335,6 +9305,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             window.compressAudioTo320kMp3 = compressAudioTo320kMp3;
             window.saveCustomMusic = saveCustomMusic;
             window.applyCurrentMottoToHome = applyCurrentMottoToHome;
+            window.pageTransition = pageTransition;
         }
         function saveCustomMusic() {
             const name = document.getElementById('custom-music-name-input')?.value.trim();
@@ -10941,14 +10912,61 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                 renderEditorialStage(false);
             };
             window.openOAuthLoginLink = async () => {
+                if (!WBState.systemDefaultNode) {
+                    notifyEditorialStatus('AUTH // 严禁直连：请先在上方指定【默认出口】节点后再发起授权');
+                    if (typeof soundscape !== 'undefined' && soundscape && typeof soundscape.triggerErrorSound === 'function') {
+                        soundscape.triggerErrorSound();
+                    }
+                    if (typeof setPreviewFrameState === 'function') setPreviewFrameState('error', 800);
+                    return;
+                }
+
+                // 立即触发黄色慢闪动效与等待文本（周期 1.8s）
+                WBState.oauthWaiting = true;
+                WBState.oauthPollStatus = 'WAITING';
+                if (typeof setPreviewFrameState === 'function') {
+                    setPreviewFrameState('busy', 0);
+                }
+                renderEditorialStage(false);
+
                 const finishFeedback = beginActionFeedback();
                 const authWindow = window.open('about:blank', '_blank');
                 if (authWindow) authWindow.opener = null;
+
                 const result = await safeApiFetch('/panel/api/login/start', {method: 'POST', body: JSON.stringify({realm: WBState.loginRealm.toLowerCase()})}, 35000);
-                if (!result?.state || !result?.url) { finishFeedback('error'); if (authWindow) authWindow.close(); notifyEditorialStatus('获取授权链接失败'); return; }
+                if (!result?.state || !result?.url) {
+                    WBState.oauthWaiting = false;
+                    if (typeof setPreviewFrameState === 'function') setPreviewFrameState('error', 800);
+                    finishFeedback('error');
+                    if (authWindow) authWindow.close();
+                    notifyEditorialStatus(result?.error || '获取授权链接失败');
+                    renderEditorialStage(false);
+                    return;
+                }
+
                 let authURL;
-                try { authURL = new URL(result.url); } catch (_) { finishFeedback('error'); if (authWindow) authWindow.close(); notifyEditorialStatus('授权链接无效'); return; }
-                if (authURL.protocol !== 'https:' || authURL.username || authURL.password) { finishFeedback('error'); if (authWindow) authWindow.close(); notifyEditorialStatus('授权链接无效'); return; }
+                try {
+                    authURL = new URL(result.url);
+                } catch (_) {
+                    WBState.oauthWaiting = false;
+                    if (typeof setPreviewFrameState === 'function') setPreviewFrameState('error', 800);
+                    finishFeedback('error');
+                    if (authWindow) authWindow.close();
+                    notifyEditorialStatus('授权链接无效');
+                    renderEditorialStage(false);
+                    return;
+                }
+
+                if (authURL.protocol !== 'https:' || authURL.username || authURL.password) {
+                    WBState.oauthWaiting = false;
+                    if (typeof setPreviewFrameState === 'function') setPreviewFrameState('error', 800);
+                    finishFeedback('error');
+                    if (authWindow) authWindow.close();
+                    notifyEditorialStatus('授权链接无效');
+                    renderEditorialStage(false);
+                    return;
+                }
+
                 WBState.loginState = result.state;
                 WBState.loginAuthUrl = authURL.href;
                 if (!WBState.loginAuthUrls) WBState.loginAuthUrls = { CN: '', GLOBAL: '' };
@@ -10957,7 +10975,8 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                 WBState.loginStates[WBState.loginRealm] = result.state;
                 if (authWindow) authWindow.location.href = authURL.href;
                 else notifyEditorialStatus('浏览器阻止了新窗口，请复制授权链接');
-                WBState.oauthWaiting = true; if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0); // Link obtained; authorization completion is reported separately.
+
+                notifyEditorialStatus('OPENED BROWSER FOR OAUTH // WAITING FOR AUTHORIZATION...');
                 startOAuthPolling();
                 renderEditorialStage(false);
             };
