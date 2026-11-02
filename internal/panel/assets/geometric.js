@@ -6736,7 +6736,21 @@ export function expiryTone(days) {
                             return { acc, x, y, bal, quota, ratio };
                         });
 
-                        const curvePts = `0,50 ${points.map(p => `${p.x},${p.y}`).join(' ')} 520,50`;
+                        const baselineY = 62;
+                        let curvePts = `0,${baselineY} 520,${baselineY}`;
+                        if (points.length > 0) {
+                            const firstP = points[0];
+                            const lastP = points[points.length - 1];
+                            const dyStart = baselineY - firstP.y;
+                            const startRiseX = Math.max(0, firstP.x - dyStart);
+                            const startSeg = startRiseX > 0 ? `0,${baselineY} ${startRiseX},${baselineY}` : `0,${Math.min(baselineY, firstP.y + firstP.x)}`;
+
+                            const dyEnd = baselineY - lastP.y;
+                            const dropX = lastP.x + dyEnd;
+                            const endSeg = dropX < 520 ? `${dropX},${baselineY} 520,${baselineY}` : `520,${lastP.y + (520 - lastP.x)}`;
+
+                            curvePts = `${startSeg} ${points.map(p => `${p.x},${p.y}`).join(' ')} ${endSeg}`;
+                        }
                         const clipId = 'acc-clip-' + (++WBState.chartClipSeq);
                         const clipDef = animate ? `<defs><clipPath id="${clipId}"><rect x="0" y="-6" width="540" height="84" class="svg-clip-spread-rect" /></clipPath></defs>` : '';
                         const clipAttr = animate ? `clip-path="url(#${clipId})"` : '';
