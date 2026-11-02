@@ -5207,12 +5207,12 @@ export function expiryTone(days) {
             const redPct = (failed > 0 && prog > okTargetPct) ? Math.min(100 - okTargetPct, prog - okTargetPct) : 0;
             const popCls = redPct > 0 ? "task-fault-pop" : "";
 
-            return `<span class="task-line-shell ${animateBars ? 'task-line-enter' : ''} inline-block relative bg-white/12 align-middle shrink-0 overflow-hidden" style="width:${widthPx}px;height:1.8px;">
-                <span class="task-active-track absolute left-0 top-0 bottom-0 overflow-hidden" style="width:${isPaused ? '0%' : '100%'};transition:width 0.45s cubic-bezier(0, 0, 0.2, 1);">
+            return `<span class="task-line-shell inline-block relative bg-white/12 align-middle shrink-0 overflow-hidden" style="width:${widthPx}px;height:1.8px;">
+                <span class="task-active-track absolute left-0 top-0 bottom-0 overflow-hidden" style="width:${isPaused ? '0%' : '100%'};">
                     <span class="absolute left-0 top-0 bottom-0 bg-white/90" style="width:${currentWhitePct}%;"></span>
                     ${redPct > 0 ? `<span class="absolute top-0 bottom-0 bg-[#ff5c74] ${popCls}" style="left:${okTargetPct}%;width:${redPct}%;box-shadow:0 0 6px rgba(255,92,116,0.65);"></span>` : ""}
                 </span>
-                <span class="task-gray-track absolute top-0 bottom-0 " style="background-color:#9ca3af;right:0;width:${isPaused ? '100%' : '0%'};box-shadow:${isPaused ? '-2.5px 0 0 0 #050605' : 'none'};transition:width 0.45s cubic-bezier(0, 0, 0.2, 1), box-shadow 0.2s ease;"></span>
+                <span class="task-gray-track absolute top-0 bottom-0 " style="background-color:#9ca3af;right:0;width:${isPaused ? '100%' : '0%'};box-shadow:${isPaused ? '-2.5px 0 0 0 #050605' : 'none'};"></span>
             </span>`;
         }
 
@@ -6334,7 +6334,7 @@ export function expiryTone(days) {
                         const boundAccounts = WBState.accounts.filter(a => IS_PROD_ENV ? a.egressNodeId === n.id : a.egress === n.name);
                         const boundCount = IS_PROD_ENV ? (n.bindingCount ?? boundAccounts.length) : boundAccounts.length;
                         const accLabel = boundCount > 1 ? `${boundCount} 个账号` : (boundAccounts[0]?.name || (boundCount ? '1 个账号' : '未绑定'));
-                        const accCls = n.timeout || n.status === 'error' ? 'tone-fault' : boundCount > 1 ? 'tone-guard' : boundCount === 1 ? 'tone-forced' : 'text-white/30';
+                        const accCls = boundCount === 0 ? 'text-white/30' : (n.timeout || n.status === 'error' ? 'tone-fault' : boundCount > 1 ? 'tone-guard' : 'tone-forced');
                         const pingTxt = n.status === 'testing' ? '测速中' : n.timeout ? '超时' : n.status === 'error' ? '失败' : IS_PROD_ENV && n.status === 'untested' ? '未测速' : `${n.ping} ms`;
                         const pingCls = n.timeout || n.status === 'error' ? 'tone-fault' : n.status === 'testing' || n.status === 'untested' ? 'tone-guard' : (n.ping < 800 ? 'tone-forced' : 'tone-guard');
 
