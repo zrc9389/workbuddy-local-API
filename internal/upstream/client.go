@@ -667,6 +667,9 @@ type apiEnvelope struct {
 
 // Client 上游 HTTP 客户端。Base 字段可覆盖便于测试。
 type Client struct {
+	defaultProxyMu sync.RWMutex
+	defaultProxy   string
+
 	AccountLease func(context.Context, *auth.Auth) (func(), error)
 	HTTP         *http.Client
 
@@ -2291,4 +2294,25 @@ func IsAlreadyCheckin(err error) bool {
 
 func truncate(s string, n int) string {
 	return logfmt.Truncate(s, n)
+}
+
+
+// SetDefaultProxy 动态更新未指定节点账号的全局兜底代理通道（并发安全）
+func (c *Client) SetDefaultProxy(raw string) {
+	if c == nil {
+		return
+	}
+	c.defaultProxyMu.Lock()
+	defer c.defaultProxyMu.Unlock()
+	c.defaultProxy = strings.TrimSpace(raw)
+}
+
+// DefaultProxy 读取当前全局兜底代理地址
+func (c *Client) DefaultProxy() string {
+	if c == nil {
+		return ""
+	}
+	c.defaultProxyMu.RLock()
+	defer c.defaultProxyMu.RUnlock()
+	return c.defaultProxy
 }

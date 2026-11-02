@@ -101,6 +101,8 @@ func (p *Panel) musicGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s)
 }
 func (p *Panel) musicUpload(w http.ResponseWriter, r *http.Request) {
+	// 物理级体积门禁：限制单请求体最大 55MB，杜绝 1GB 母带爆破 VPS 带宽与磁盘
+	r.Body = http.MaxBytesReader(w, r.Body, 150<<20)
 	name, decodeErr := url.QueryUnescape(r.Header.Get("X-Audio-Name"))
 	name = strings.TrimSpace(name)
 	mime := r.Header.Get("Content-Type")

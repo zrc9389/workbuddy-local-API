@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
@@ -372,4 +373,26 @@ func (p *Panel) loginRegions(w http.ResponseWriter, r *http.Request) {
 			{"code": "ID", "name": "Indonesia"},
 		},
 	})
+}
+
+// setLoginProxy 动态为设备流授权配置定向代理出口（仅对登录请求生效，不侵入系统网络）
+func setLoginProxy(proxyURL string) error {
+	raw := strings.TrimSpace(proxyURL)
+	if raw == "" {
+		loginHTTP = &http.Client{Timeout: 30 * time.Second}
+		return nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	loginHTTP = &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			Proxy:           http.ProxyURL(u),
+			MaxIdleConns:    4,
+			IdleConnTimeout: 30 * time.Second,
+		},
+	}
+	return nil
 }

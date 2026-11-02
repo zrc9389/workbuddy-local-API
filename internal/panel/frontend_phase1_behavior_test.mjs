@@ -56,7 +56,7 @@ test("BUG-FE-09: credential JSON import indicator position adjusted", () => {
 });
 
 test("BUG-FE-10: package table columns fixed width and aligned", () => {
-    assert.match(js, /grid-template-columns:\s*140px\s+60px\s+84px\s+48px\s+100px\s+50px/);
+    assert.match(js, /grid-template-columns:\s*140px\s+68px\s+96px\s+110px\s+50px/);
 });
 
 test("BUG-FE-11: usage chart uses Beijing time and shows interval accumulated totals", () => {

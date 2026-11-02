@@ -106,3 +106,17 @@ func TestMusicFileCorrectsMislabeledMP4(t *testing.T) {
 		t.Fatalf("incorrect file response: %d %s", w.Code, w.Header().Get("Content-Type"))
 	}
 }
+
+func TestMusicUploadLargePayloadUnder150MB(t *testing.T) {
+	p := New(Config{ConfigPath: filepath.Join(t.TempDir(), "config.json")})
+	// 90MB payload
+	data := bytes.Repeat([]byte{1}, 90<<20)
+	upload := httptest.NewRequest("POST", "/panel/api/music/upload", bytes.NewReader(data))
+	upload.Header.Set("Content-Type", "audio/mpeg")
+	upload.Header.Set("X-Audio-Name", "large-90mb-track")
+	w := httptest.NewRecorder()
+	p.ServeHTTP(w, upload)
+	if w.Code != 200 {
+		t.Fatalf("expected 200 for 90MB upload, got %d %s", w.Code, w.Body.String())
+	}
+}

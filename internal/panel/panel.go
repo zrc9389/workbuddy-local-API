@@ -314,6 +314,7 @@ func New(cfg Config) *Panel {
 	}
 	p.quarantineWake = make(chan struct{}, 1)
 	p.routes()
+	p.RestoreDefaultEgress(context.Background())
 	return p
 }
 
@@ -494,6 +495,8 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/meta/subscriptions", p.MetaSubscriptions)
 	p.mux.HandleFunc("POST /panel/api/meta/subscriptions", p.MetaSubscriptions)
 	p.mux.HandleFunc("POST /panel/api/meta/accounts/{uid}/bind", p.MetaBind)
+	p.mux.HandleFunc("GET /panel/api/egress/default", p.GetDefaultEgress)
+	p.mux.HandleFunc("POST /panel/api/egress/default", p.SetDefaultEgress)
 	p.mux.HandleFunc("GET /panel/vendor/latency-trend.js", p.MetaAsset)
 
 	p.mux.HandleFunc("GET /panel/api/maintenance/status", p.maintenanceStatus)

@@ -41,6 +41,21 @@ export function handleDataAction(el, ev) {
         case 'copy-oauth':
             if (typeof globalObj.copyOAuthLoginLink === 'function') globalObj.copyOAuthLoginLink();
             return true;
+        case 'open-default-egress-stage':
+            if (wb) {
+                wb.selectingSystemDefault = true;
+                wb.accountNodePage = 0;
+                wb.frozenAccountNodeIds = null;
+            }
+            if (typeof globalObj.renderEditorialStage === 'function') globalObj.renderEditorialStage(true);
+            return true;
+        case 'toggle-default-egress-picker':
+            if (wb) wb.pickingDefaultEgress = !wb.pickingDefaultEgress;
+            if (typeof globalObj.renderEditorialStage === 'function') globalObj.renderEditorialStage(false);
+            return true;
+        case 'select-default-egress':
+            if (typeof globalObj.selectSystemDefaultEgress === 'function') globalObj.selectSystemDefaultEgress(el.dataset.node);
+            return true;
         case 'bind-egress':
             if (typeof globalObj.bindAccountEgress === 'function') globalObj.bindAccountEgress(el.dataset.uid, el.dataset.node);
             return true;
@@ -51,7 +66,7 @@ export function handleDataAction(el, ev) {
             if (typeof globalObj.deleteAccountItem === 'function') globalObj.deleteAccountItem(el.dataset.uid);
             return true;
         case 'clear-selected-account':
-            if (wb) wb.selectedAccountUid = null;
+            if (wb) { wb.selectedAccountUid = null; wb.frozenAccountNodeIds = null; wb.frozenAccountNodesUid = null; }
             if (typeof globalObj.renderEditorialStage === 'function') globalObj.renderEditorialStage(true);
             return true;
         case 'select-account-egress':

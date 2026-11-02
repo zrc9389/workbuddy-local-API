@@ -162,7 +162,24 @@ func (p *Panel) customizationSet(w http.ResponseWriter, r *http.Request) {
 	for k, v := range patch {
 		p.customData[k] = v
 	}
-	encoded, marshalErr := json.Marshal(map[string]any{"panel": patch})
+
+	// 确保在 customization 子节点中也同步该属性（如 is_muted），并构造标准 panel.customization 层级持久化
+	custObj, _ := p.customData["customization"].(map[string]any)
+	if custObj == nil {
+		custObj = make(map[string]any)
+		p.customData["customization"] = custObj
+	}
+	for k, v := range patch {
+		if k != "customization" {
+			custObj[k] = v
+		}
+	}
+
+	encoded, marshalErr := json.Marshal(map[string]any{
+		"panel": map[string]any{
+			"customization": custObj,
+		},
+	})
 	if marshalErr == nil && p.cfg.SaveConfig != nil {
 		if _, saveErr := p.cfg.SaveConfig(encoded); saveErr != nil {
 			p.customData = previous

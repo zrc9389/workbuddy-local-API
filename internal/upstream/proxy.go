@@ -98,14 +98,16 @@ func (c *Client) accountTransport(base *http.Client, a *auth.Auth) http.RoundTri
 		uid = a.UID
 	}
 	if raw == "" {
-		// 账号未绑定出口时：执行默认直连通道 (Default Direct Transport)。
-		// 保留 net/http 对 nil Transport 的默认语义，避免启用租约后
-		// 因重新选择 transport 而把未绑定账号误判为未初始化。
-		c.ForgetTransport(uid)
-		if base.Transport != nil {
-			return base.Transport
+		def := c.DefaultProxy()
+		if def != "" {
+			raw = def
+		} else {
+			c.ForgetTransport(uid)
+			if base.Transport != nil {
+				return base.Transport
+			}
+			return http.DefaultTransport
 		}
-		return http.DefaultTransport
 	}
 	if auth.ValidateProxyURL(raw) != nil {
 		// 显式配置了出口但格式非法时：拒绝静默直连外泄，严格保持 Fail-Closed
