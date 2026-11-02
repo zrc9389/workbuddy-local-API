@@ -1761,7 +1761,15 @@ export function expiryTone(days) {
                             url: item.url_preview || '', ageHours: Number.isFinite(refreshed) && refreshed > 0 ? Math.max(0, (Date.now() - refreshed) / 3600000) : null
                         };
                     });
-                    if (!WBState.subscriptions.some(item => item.id === WBState.activeSubId)) WBState.activeSubId = WBState.subscriptions[0]?.id || '';
+                    const savedActiveSub = (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_sub_id')) || '';
+                    if (savedActiveSub && WBState.subscriptions.some(item => item.id === savedActiveSub)) {
+                        WBState.activeSubId = savedActiveSub;
+                    } else if (!WBState.subscriptions.some(item => item.id === WBState.activeSubId)) {
+                        WBState.activeSubId = WBState.subscriptions[0]?.id || '';
+                        if (WBState.activeSubId && typeof localStorage !== 'undefined') {
+                            try { localStorage.setItem('wb_active_sub_id', WBState.activeSubId); } catch (_) {}
+                        }
+                    }
                 }
                 syncModelsData(modelsRes);
                 if (customRes && typeof customRes === 'object') {
@@ -4713,7 +4721,7 @@ export function expiryTone(days) {
             lastChartRevealAt: 0,
             chartClipSeq: 0,
 
-            overviewMode: 'TRAFFIC', // 'TRAFFIC' | 'RESOURCE'
+            overviewMode: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_overview_mode')) || 'TRAFFIC', // 'TRAFFIC' | 'RESOURCE'
             uptimeSec: 412929,
             goroutines: 34,
             memMb: 48.2,
@@ -4721,7 +4729,7 @@ export function expiryTone(days) {
             cpuHistory: [12.4, 15.1, 13.8, 18.2, 16.5, 14.0, 13.2, 19.4, 17.1, 15.0, 16.8, 14.2, 15.9, 14.6],
             memHistory: [46.0, 46.4, 46.8, 47.5, 48.1, 47.9, 47.6, 48.8, 48.5, 48.0, 48.4, 48.1, 48.3, 48.2],
 
-            accountFilter: 'ALL',
+            accountFilter: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_account_filter')) || 'ALL',
             accountPage: 0,
             selectedAccountUid: null,
             accountNodePage: 0,
@@ -4735,12 +4743,12 @@ export function expiryTone(days) {
             systemDefaultNodeName: '',
             pickingDefaultEgress: false,
             selectingSystemDefault: false,
-            accountNodeSortMode: 'LATENCY',
+            accountNodeSortMode: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_account_node_sort_mode')) || 'LATENCY',
 
-            egressTab: 'NODES',
+            egressTab: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_egress_tab')) || 'NODES',
             egressPage: 0,
-            egressSubPage: 0,
-            activeSubId: 'SUB-01', // Comment 5: 当前启用展示节点的订阅源
+            egressSubPage: (typeof localStorage !== 'undefined' && parseInt(localStorage.getItem('wb_egress_sub_page') || '0', 10)) || 0,
+            activeSubId: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_sub_id')) || 'SUB-01', // Comment 5: 当前启用展示节点的订阅源
             importingSub: false,
             downMbps: 26.4,
             upMbps: 1.48,
@@ -5275,7 +5283,7 @@ export function expiryTone(days) {
         window.changeAccountPage       = (p) => { WBState.accountPage = p;        renderEditorialStage(true); soundscape.triggerTileNote(4); };
         window.changeAccountNodePage   = (p) => { WBState.accountNodePage = p;    renderEditorialStage(true); soundscape.triggerTileNote(5); };
         window.changeEgressPage        = (p) => { WBState.egressPage = p;         renderEditorialStage(true); soundscape.triggerTileNote(5); };
-        window.changeEgressSubPage     = (p) => { WBState.egressSubPage = p;      renderEditorialStage(true); soundscape.triggerTileNote(5); };
+        window.changeEgressSubPage     = (p) => { WBState.egressSubPage = p; try { if (typeof localStorage !== 'undefined') localStorage.setItem('wb_egress_sub_page', String(p)); } catch (_) {} renderEditorialStage(true); soundscape.triggerTileNote(5); };
         window.changeModelPage         = (p) => { WBState.modelPage = p;          renderEditorialStage(true); soundscape.triggerTileNote(6); };
         window.changePackageAccPage    = (p) => { WBState.packageAccountPage = p; renderEditorialStage(true); soundscape.triggerTileNote(6); };
         window.changePackageDetailPage = (p) => { WBState.packageDetailPage = p;  renderEditorialStage(true); soundscape.triggerTileNote(7); };
@@ -7476,6 +7484,9 @@ export function expiryTone(days) {
         // Comment 5: 切换启用订阅源（选中项变橙色“启用”，其他变回“选择”，节点列表联动隔离）
         window.selectActiveSub = (subId) => {
             WBState.activeSubId = subId;
+            if (typeof localStorage !== 'undefined') {
+                try { localStorage.setItem('wb_active_sub_id', subId); } catch (_) {}
+            }
             WBState.egressPage = 0; // 重置节点列表至第1页以便查看新节点
             // 严格保留 WBState.egressSubPage，点击查看后还在当前订阅页面 (Comment 2)
             const sub = WBState.subscriptions.find(s => s.id === subId);
@@ -7498,6 +7509,9 @@ export function expiryTone(days) {
             WBState.subscriptions = WBState.subscriptions.filter(s => s.id !== subId);
             if (WBState.activeSubId === subId && WBState.subscriptions.length > 0) {
                 WBState.activeSubId = WBState.subscriptions[0].id;
+                if (typeof localStorage !== 'undefined') {
+                    try { localStorage.setItem('wb_active_sub_id', WBState.activeSubId); } catch (_) {}
+                }
             }
             soundscape.triggerTileNote(2);
             notifyEditorialStatus('SUBSCRIPTION DELETED');
@@ -10132,6 +10146,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             soundscape.triggerTileNote(8);
             if (ch === 'overview' || ch === 'gateway') {
                 WBState.overviewMode = WBState.overviewMode === 'TRAFFIC' ? 'RESOURCE' : 'TRAFFIC';
+                try { if (typeof localStorage !== 'undefined') localStorage.setItem('wb_overview_mode', WBState.overviewMode); } catch (_) {}
                 notifyEditorialStatus(WBState.overviewMode === 'RESOURCE' ? 'VIEW -> CPU & MEMORY CURVE' : 'VIEW -> NETWORK THROUGHPUT CURVE');
                 renderEditorialStage(true);
             } else if (ch === 'accounts') {

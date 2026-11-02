@@ -81,6 +81,7 @@ export function handleDataAction(el, ev) {
             if (wb) {
                 wb.accountFilter = el.dataset.filter;
                 wb.accountPage = 0;
+                try { if (typeof localStorage !== 'undefined') localStorage.setItem('wb_account_filter', el.dataset.filter); } catch (_) {}
             }
             if (typeof globalObj.notifyEditorialStatus === 'function') globalObj.notifyEditorialStatus('ACCOUNT FILTER -> ' + el.dataset.filter);
             if (typeof globalObj.renderEditorialStage === 'function') globalObj.renderEditorialStage(true);
@@ -89,6 +90,7 @@ export function handleDataAction(el, ev) {
             if (wb) {
                 wb.egressTab = el.dataset.tab;
                 wb.egressPage = 0;
+                try { if (typeof localStorage !== 'undefined') localStorage.setItem('wb_egress_tab', el.dataset.tab); } catch (_) {}
             }
             if (typeof globalObj.renderEditorialStage === 'function') globalObj.renderEditorialStage(true);
             return true;
