@@ -5876,10 +5876,15 @@ export function expiryTone(days) {
                 const secondaryArr = isRes ? WBState.memHistory : WBState.upHistory;
                 const [pPts, sPts] = overviewChartPoints(primaryArr, secondaryArr);
 
-                const headerLeft = isRes ? '系统资源变动曲线（实线服务 CPU / 虚线服务内存）' : '吞吐呼吸曲线（实线下行速率 / 虚线上行速率）';
+                const headerLeft = isRes ? '系统资源变动曲线（实线服务 CPU / 虚线服务总内存）' : '吞吐呼吸曲线（实线下行速率 / 虚线上行速率）';
                 const headerRight = isRes
-                    ? ('CPU ' + (WBState.cpuAvailable ? WBState.cpuPct.toFixed(1) + '%' : '—') + ' / 服务内存 ' + (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'))
+                    ? ('CPU ' + (WBState.cpuAvailable ? WBState.cpuPct.toFixed(1) + '%' : '—') + ' / 服务总内存 ' + (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'))
                     : (WBState.trafficAvailable ? 'UP ' + WBState.upMbps.toFixed(2) + ' MB/s' : 'UP —');
+                const metric1Label = isRes ? '服务总内存' : '实时上行';
+                const metric1Val = isRes
+                    ? (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—')
+                    : (WBState.trafficAvailable ? WBState.upMbps.toFixed(2) + ' MB/s' : '—');
+                const metric1Hover = isRes ? `MEM // ${WBState.memMb.toFixed(1)}MB` : `UP // ${WBState.upMbps.toFixed(2)}MB/s`;
 
                 const clipId = 'ov-clip-' + (++WBState.chartClipSeq);
                 const clipDef = animate ? ('<defs><clipPath id="' + clipId + '"><rect x="0" y="-6" width="540" height="84" class="svg-clip-spread-rect" /></clipPath></defs>') : '';
@@ -5902,9 +5907,9 @@ export function expiryTone(days) {
                             </svg>
                         </div>
                         <div class="grid grid-cols-4 gap-6 pt-1 text-[11px] text-left h-[44px] shrink-0">
-                            <div data-hover-vertex="0" data-hover-label="MEM // ${WBState.memMb.toFixed(1)}MB">
-                                <div class="text-[9.5px] tracking-[0.14em] text-white/36 mb-1 whitespace-nowrap">服务总内存</div>
-                                <div id="ov-val-mem" class="text-white/88 tabular-nums-left whitespace-nowrap">${WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'}</div>
+                            <div id="ov-cell-metric1" data-hover-vertex="0" data-hover-label="${metric1Hover}">
+                                <div id="ov-lbl-metric1" class="text-[9.5px] tracking-[0.14em] text-white/36 mb-1 whitespace-nowrap">${metric1Label}</div>
+                                <div id="ov-val-mem" class="text-white/88 tabular-nums-left whitespace-nowrap">${metric1Val}</div>
                             </div>
                             <div data-hover-vertex="4" data-hover-label="UPTIME // ${formatUptime(WBState.uptimeSec)}">
                                 <div class="text-[9.5px] tracking-[0.14em] text-white/36 mb-1 whitespace-nowrap">启动时间</div>
@@ -9730,7 +9735,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             const rightHeaderEl = document.getElementById('ov-header-right');
             if (rightHeaderEl) {
                 rightHeaderEl.textContent = isRes
-                    ? ('CPU ' + (WBState.cpuAvailable ? WBState.cpuPct.toFixed(1) + '%' : '—') + ' / 服务内存 ' + (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'))
+                    ? ('CPU ' + (WBState.cpuAvailable ? WBState.cpuPct.toFixed(1) + '%' : '—') + ' / 服务总内存 ' + (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'))
                     : (WBState.trafficAvailable ? 'UP ' + WBState.upMbps.toFixed(2) + ' MB/s' : 'UP —');
             }
             const pPoly = document.getElementById('ov-poly-primary');
@@ -9742,9 +9747,22 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                 pPoly.setAttribute('points', pPts);
                 sPoly.setAttribute('points', sPts);
             }
+            const metric1LblEl = document.getElementById('ov-lbl-metric1');
+            const metric1CellEl = document.getElementById('ov-cell-metric1');
             const memValEl = document.getElementById('ov-val-mem');
             const uptimeValEl = document.getElementById('ov-val-uptime');
-            if (memValEl) memValEl.textContent = WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—';
+
+            if (metric1LblEl) {
+                metric1LblEl.textContent = isRes ? '服务总内存' : '实时上行';
+            }
+            if (metric1CellEl) {
+                metric1CellEl.setAttribute('data-hover-label', isRes ? `MEM // ${WBState.memMb.toFixed(1)}MB` : `UP // ${WBState.upMbps.toFixed(2)}MB/s`);
+            }
+            if (memValEl) {
+                memValEl.textContent = isRes
+                    ? (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—')
+                    : (WBState.trafficAvailable ? WBState.upMbps.toFixed(2) + ' MB/s' : '—');
+            }
             if (uptimeValEl) uptimeValEl.textContent = formatUptime(WBState.uptimeSec);
         }
 
