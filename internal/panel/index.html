@@ -30,6 +30,15 @@
             color: var(--text-main);
             font-family: 'JetBrains Mono', monospace;
             overflow: hidden;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
+        }
+
+        /* 全局彻底消除 Windows/Chromium 默认亮白粗滚动条 */
+        ::-webkit-scrollbar {
+            display: none !important;
+            width: 0 !important;
+            height: 0 !important;
         }
 
         /* 自适应缩放容器工具 */
@@ -418,8 +427,18 @@
             resize: none;
             white-space: pre;
             overflow-x: auto;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
             -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
             mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+        }
+        .credential-paste::-webkit-scrollbar,
+        input::-webkit-scrollbar,
+        textarea::-webkit-scrollbar,
+        .editorial-input::-webkit-scrollbar {
+            display: none !important;
+            width: 0 !important;
+            height: 0 !important;
         }
 
         .editorial-text-btn {

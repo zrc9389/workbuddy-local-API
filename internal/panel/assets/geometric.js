@@ -6167,7 +6167,7 @@ export function expiryTone(days) {
                                 <div class="mt-2 pt-1 border-t border-white/10">
                                     <div class="text-[11.5px] tracking-[0.12em] text-white/45 mb-1 flex items-center"><span class="inline-block w-1.5 h-1.5 rounded-full bg-white/40 mr-1.5"></span><span>导入账号凭据 JSON（单个对象或数组）</span></div>
                                     <div class="max-w-xl">
-                                        <textarea id="inp-account-credentials" class="editorial-input credential-paste w-full font-mono text-[12.5px] text-white/90 border-b border-white/15 pb-1" rows="1" style="height:26px; min-height:26px; resize:none; padding-top:2px; padding-bottom:2px;" wrap="off" autocomplete="off" placeholder="粘贴凭据 JSON"></textarea>
+                                        <textarea id="inp-account-credentials" class="editorial-input credential-paste w-full font-mono text-[12.5px] text-white/90 border-b border-white/15 pb-1" rows="1" style="height:26px; min-height:26px; resize:none; padding-top:2px; padding-bottom:2px; scrollbar-width:none; -ms-overflow-style:none;" wrap="off" autocomplete="off" placeholder="粘贴凭据 JSON"></textarea>
                                     </div>
                                 </div>
                             </div>
