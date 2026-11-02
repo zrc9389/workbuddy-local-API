@@ -5881,7 +5881,7 @@ export function expiryTone(days) {
                 const secondaryArr = isRes ? WBState.memHistory : WBState.downHistory;
                 const [pPts, sPts] = overviewChartPoints(primaryArr, secondaryArr);
 
-                const headerLeft = isRes ? '系统资源变动曲线（实线 CPU负载 / 虚线服务总内存）' : '吞吐呼吸曲线（实线上行速率 / 虚线下行速率）';
+                const headerLeft = isRes ? '系统资源变动曲线（CPU负载 / 服务总内存）' : '吞吐呼吸曲线（上行速率 / 下行速率）';
                 const headerRight = isRes
                     ? ('CPU负载 ' + (WBState.cpuAvailable ? WBState.cpuPct.toFixed(1) + '%' : '—') + ' / 服务总内存 ' + (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'))
                     : (WBState.trafficAvailable
@@ -9756,8 +9756,8 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             const leftHeaderEl = document.getElementById('ov-header-left');
             if (leftHeaderEl) {
                 leftHeaderEl.textContent = isRes
-                    ? '系统资源变动曲线（实线 CPU负载 / 虚线服务总内存）'
-                    : '吞吐呼吸曲线（实线上行速率 / 虚线下行速率）';
+                    ? '系统资源变动曲线（CPU负载 / 服务总内存）'
+                    : '吞吐呼吸曲线（上行速率 / 下行速率）';
             }
             const rightHeaderEl = document.getElementById('ov-header-right');
             if (rightHeaderEl) {
