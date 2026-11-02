@@ -21,6 +21,65 @@ import (
 // 客户端已走，日志口径不同。Aggregate 与 StreamHint 共用同一哨兵（errors.Is 判定）。
 var errEmptyStream = errors.New("upstream stream contained no valid data events")
 
+// maxSSELineBytes 单帧 SSE 行的最大读取上限（4 MiB）：
+// 足够容纳超大工具调用与长文本 JSON，同时杜绝无换行的畸形流导致无界内存分配 (OOM)。
+const maxSSELineBytes = 4 * 1024 * 1024
+
+var errLineTooLong = errors.New("sse line exceeds maximum allowed size (4MiB)")
+
+// readBoundedLine 从 bufio.Reader 中读取一行，硬上限为 maxLineBytes。
+// 仅在单行超出初始缓冲时分配扩展切片，规避无界堆内存暴涨。
+func readBoundedLine(br *bufio.Reader, maxLineBytes int) (string, error) {
+	chunk, isPrefix, err := br.ReadLine()
+	if err != nil {
+		if len(chunk) > 0 {
+			if len(chunk) > maxLineBytes {
+				return "", errLineTooLong
+			}
+			return string(chunk), err
+		}
+		return "", err
+	}
+	if len(chunk) > maxLineBytes {
+		return "", errLineTooLong
+	}
+	if !isPrefix {
+		return string(chunk), nil
+	}
+	buf := make([]byte, len(chunk), len(chunk)+4096)
+	copy(buf, chunk)
+	for isPrefix {
+		chunk, isPrefix, err = br.ReadLine()
+		if len(chunk) > 0 {
+			if len(buf)+len(chunk) > maxLineBytes {
+				return "", errLineTooLong
+			}
+			buf = append(buf, chunk...)
+		}
+		if err != nil {
+			return string(buf), err
+		}
+	}
+	return string(buf), nil
+}
+
+// parseSSELine 解析单行并符合 W3C SSE 标准：
+// 严格兼容 "data: {...}"（带空格）与 "data:{...}"（无空格）两种标准形态。
+func parseSSELine(line string) (isData bool, isDone bool, payload string) {
+	if !strings.HasPrefix(line, "data:") {
+		return false, false, ""
+	}
+	p := line[5:]
+	if len(p) > 0 && p[0] == ' ' {
+		p = p[1:]
+	}
+	if p == "[DONE]" || strings.HasPrefix(p, "[DONE]") {
+		return true, true, p
+	}
+	return true, false, p
+}
+
+
 // IsEmptyStreamError 报告错误是否为「上游空流」（无有效 SSE 帧）——供 handler
 // 在流式路径把空流记为失败观测（HTTP 头已发出只能 200，但日志/状态应收敛到
 // upstream_parse 同语义），与客户端断连类错误区分。
@@ -252,14 +311,13 @@ func aggregate(r io.Reader, store *ResponseSpool, obs StreamObserver) (map[strin
 		}
 	}
 	for {
-		line, err := br.ReadString('\n')
+		line, err := readBoundedLine(br, maxSSELineBytes)
 		if err != nil && err != io.EOF {
 			return nil, err
 		}
-		line = strings.TrimRight(line, "\r\n")
-		if strings.HasPrefix(line, "data: ") {
-			payload := strings.TrimPrefix(line, "data: ")
-			if payload == "[DONE]" {
+		isData, isDone, payload := parseSSELine(line)
+		if isData {
+			if isDone {
 				// 上游显式结束：停止读取，DONE 之后的任何数据一律忽略。
 				sawDone = true
 				break
@@ -770,22 +828,22 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string, 
 	validFrames := 0
 readLoop:
 	for {
-		line, err := br.ReadString('\n')
-		trimmed := strings.TrimRight(line, "\r\n")
+		line, err := readBoundedLine(br, maxSSELineBytes)
+		isData, isDone, payload := parseSSELine(line)
 		switch {
-		case strings.HasPrefix(trimmed, "data: [DONE]"):
+		case isData && isDone:
 			// 上游显式结束：停止读取，DONE 之后的任何数据（含垃圾帧）一律不再透传。
 			// [DONE] 统一在循环结束后写出，保证恰好一个。
 			break readLoop
-		case strings.HasPrefix(trimmed, "data: "):
-			n, werr := writeFrame(strings.TrimPrefix(trimmed, "data: "))
+		case isData:
+			n, werr := writeFrame(payload)
 			validFrames += n
 			if werr != nil {
 				return werr
 			}
-		case trimmed != "":
+		case line != "":
 			// 注释/其他行：原样透传
-			if werr := refreshAndWrite([]byte(line)); werr != nil {
+			if werr := refreshAndWrite([]byte(line + "\n")); werr != nil {
 				return werr
 			}
 		}
@@ -865,13 +923,12 @@ func PureStream(w http.ResponseWriter, r io.Reader, opts ...StreamOption) error 
 	validFrames := 0
 readLoop:
 	for {
-		line, err := br.ReadString('\n')
-		trimmed := strings.TrimRight(line, "\r\n")
+		line, err := readBoundedLine(br, maxSSELineBytes)
+		isData, isDone, payload := parseSSELine(line)
 		switch {
-		case strings.HasPrefix(trimmed, "data: [DONE]"):
+		case isData && isDone:
 			break readLoop
-		case strings.HasPrefix(trimmed, "data: "):
-			payload := strings.TrimPrefix(trimmed, "data: ")
+		case isData:
 			// 仅当单帧包含 "usage" 关键字时才对该末帧进行 Token 提取回调
 			if strings.Contains(payload, `"usage"`) {
 				var uObj map[string]any
@@ -897,7 +954,7 @@ readLoop:
 				fl.Flush()
 			}
 			validFrames++
-		case trimmed != "":
+		case line != "":
 			if _, werr := io.WriteString(w, line); werr != nil {
 				return werr
 			}
@@ -946,15 +1003,15 @@ func PrecheckStream(rc io.ReadCloser) (io.ReadCloser, error) {
 	validFound := false
 
 	for {
-		line, err := br.ReadString('\n')
+		line, err := readBoundedLine(br, maxSSELineBytes)
 		if len(line) > 0 {
-			peeked = append(peeked, line...)
+			peeked = append(peeked, []byte(line + "\n")...)
 		}
-		trimmed := strings.TrimRight(line, "\r\n")
-		if strings.HasPrefix(trimmed, "data: [DONE]") {
+		isData, isDone, _ := parseSSELine(line)
+		if isData && isDone {
 			break
 		}
-		if strings.HasPrefix(trimmed, "data: ") {
+		if isData {
 			validFound = true
 			break
 		}

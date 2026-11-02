@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"io"
@@ -980,4 +981,54 @@ func TestPrecheckStream_PassesDataEvents(t *testing.T) {
 		t.Fatalf("expected data frame to pass precheck, got: %v", err)
 	}
 	defer checked.Close()
+}
+
+func TestParseSSELine_W3CCompliance(t *testing.T) {
+	// Standard with space
+	isData, isDone, payload := parseSSELine("data: {\"hello\":\"world\"}")
+	if !isData || isDone || payload != "{\"hello\":\"world\"}" {
+		t.Fatalf("unexpected parse result for standard line: %v, %v, %s", isData, isDone, payload)
+	}
+
+	// Compact without space
+	isData, isDone, payload = parseSSELine("data:{\"hello\":\"world\"}")
+	if !isData || isDone || payload != "{\"hello\":\"world\"}" {
+		t.Fatalf("unexpected parse result for compact line: %v, %v, %s", isData, isDone, payload)
+	}
+
+	// Standard [DONE] with space
+	isData, isDone, _ = parseSSELine("data: [DONE]")
+	if !isData || !isDone {
+		t.Fatalf("unexpected parse result for standard DONE: %v, %v", isData, isDone)
+	}
+
+	// Compact [DONE] without space
+	isData, isDone, _ = parseSSELine("data:[DONE]")
+	if !isData || !isDone {
+		t.Fatalf("unexpected parse result for compact DONE: %v, %v", isData, isDone)
+	}
+
+	// Non-data line
+	isData, _, _ = parseSSELine(": keepalive")
+	if isData {
+		t.Fatal("comment line marked as data")
+	}
+}
+
+func TestReadBoundedLine_ExceedsLimit(t *testing.T) {
+	hugeLine := strings.Repeat("A", 100) + "\n"
+	br := bufio.NewReader(strings.NewReader(hugeLine))
+	// Test limit 50 bytes
+	_, err := readBoundedLine(br, 50)
+	if !errors.Is(err, errLineTooLong) {
+		t.Fatalf("expected errLineTooLong, got %v", err)
+	}
+
+	// Test normal line under limit
+	normalLine := "hello world\n"
+	br2 := bufio.NewReader(strings.NewReader(normalLine))
+	line, err := readBoundedLine(br2, 50)
+	if err != nil || line != "hello world" {
+		t.Fatalf("expected 'hello world', got line=%s, err=%v", line, err)
+	}
 }

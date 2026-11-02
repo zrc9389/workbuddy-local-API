@@ -84,6 +84,7 @@ func newTransport() *http.Transport {
 		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
 		IdleConnTimeout:       idleConnTimeout,
 		ResponseHeaderTimeout: responseHeaderTimeout,
+		DisableCompression:    true, // 工业级低延迟：禁用透明传输压缩，消除 gzip 块积压引发的流式抖动与出字延迟
 	}
 }
 

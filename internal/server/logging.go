@@ -163,10 +163,13 @@ func (s *chatStatsReader) Usage() pool.TokenUsageDelta {
 // parseSSELine 解析一行 "data: {...}"：首帧记 TTFB，含 usage 时采信精确 completion_tokens。
 func (s *chatStatsReader) parseSSELine(line string) {
 	line = strings.TrimRight(line, "\r\n")
-	if !strings.HasPrefix(line, "data: ") {
+	if !strings.HasPrefix(line, "data:") {
 		return
 	}
-	payload := strings.TrimPrefix(line, "data: ")
+	payload := line[5:]
+	if len(payload) > 0 && payload[0] == ' ' {
+		payload = payload[1:]
+	}
 	if payload == "[DONE]" {
 		return
 	}
