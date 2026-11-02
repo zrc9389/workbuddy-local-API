@@ -852,3 +852,104 @@ func (w *notifyingWriter) Write(p []byte) (int, error) {
 func (w *notifyingWriter) Flush() {}
 
 func (errorReader) Read([]byte) (int, error) { return 0, errors.New("upstream read error") }
+
+func TestLiveResponsesIncrementalStreamingState(t *testing.T) {
+	rec := httptest.NewRecorder()
+	l := newLiveResponsesWriter(rec, "deepseek-v4.1-flash")
+
+	// 1. Initial start
+	if err := l.OnResponseStart("resp_123", "deepseek-v4.1-flash"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Incremental reasoning
+	if err := l.OnReasoningDelta("thinking step 1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.OnReasoningDelta(" and step 2"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Incremental content
+	if err := l.OnContentDelta("Hello "); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.OnContentDelta("world!"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 4. Incremental tool call
+	if err := l.OnToolCallDelta(0, "call_weather_1", "get_weather", "{\"city\":"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.OnToolCallDelta(0, "call_weather_1", "get_weather", " \"Beijing\"}"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 5. Complete
+	response := map[string]any{
+		"id":          l.id,
+		"object":      "response",
+		"status":      "completed",
+		"output_text": "Hello world!",
+		"output": []any{
+			map[string]any{
+				"type": "reasoning",
+				"id":   "rs_" + l.id,
+				"summary": []any{
+					map[string]any{
+						"type": "summary_text",
+						"text": "thinking step 1 and step 2",
+					},
+				},
+			},
+			map[string]any{
+				"type": "message",
+				"id":   "msg_" + l.id,
+				"role": "assistant",
+				"content": []any{
+					map[string]any{
+						"type": "output_text",
+						"text": "Hello world!",
+					},
+				},
+			},
+			map[string]any{
+				"type":      "function_call",
+				"id":        "call_weather_1",
+				"name":      "get_weather",
+				"arguments": "{\"city\": \"Beijing\"}",
+			},
+		},
+	}
+	if err := l.complete(response); err != nil {
+		t.Fatal(err)
+	}
+
+	body := rec.Body.String()
+
+	// Verify all events exist and in expected sequence
+	events := []string{
+		"event: response.created",
+		"event: response.output_item.added",
+		"event: response.reasoning_summary_text.delta",
+		"event: response.content_part.added",
+		"event: response.output_text.delta",
+		"event: response.function_call_arguments.delta",
+		"event: response.reasoning_summary_text.done",
+		"event: response.output_text.done",
+		"event: response.function_call_arguments.done",
+		"event: response.completed",
+	}
+
+	for _, ev := range events {
+		if !strings.Contains(body, ev) {
+			t.Fatalf("missing expected event: %s in response stream:\n%s", ev, body)
+		}
+	}
+
+	// Verify header contains X-Accel-Buffering: no
+	if rec.Header().Get("X-Accel-Buffering") != "no" {
+		t.Fatalf("expected X-Accel-Buffering: no, got: %s", rec.Header().Get("X-Accel-Buffering"))
+	}
+}

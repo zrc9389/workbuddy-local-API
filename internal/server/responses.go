@@ -931,6 +931,12 @@ func (c *chatCapture) Header() http.Header                     { return c.header
 func (c *chatCapture) WriteHeader(code int)                    { c.Code = code }
 func (c *chatCapture) Write(p []byte) (int, error)             { return c.Body.Write(p) }
 func (c *chatCapture) acceptChatResponse(value map[string]any) { c.response = value }
+func (c *chatCapture) streamObserver() upstream.StreamObserver {
+	if c.live == nil {
+		return nil
+	}
+	return c.live
+}
 func (c *chatCapture) observeResponseText(text string) error {
 	if c.live == nil {
 		return nil
@@ -1293,81 +1299,415 @@ type responseEventWriter struct {
 	err error
 }
 
-// liveResponsesWriter emits text while the upstream is still producing it.
-// Tool calls remain buffered until truncation checks and history commit succeed.
+func (w *responseEventWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+type liveToolCallState struct {
+	id        string
+	name      string
+	itemIndex int
+	added     bool
+}
+
+// liveResponsesWriter 实现 /v1/responses 协议的实时单趟增量流式状态机。
+// 收到上游首帧时立即下发 HTTP 200 与 response.created；
+// 深度思考增量（reasoning_summary_text.delta）、正文增量（output_text.delta）与
+// 工具调用参数增量（function_call_arguments.delta）即收即推并实时 Flush()；
+// 彻底废除整包聚合落盘后再按 16KB 切片伪造打字机的机制。
 type liveResponsesWriter struct {
 	w         *responseEventWriter
 	id, model string
 	sequence  int
 	started   bool
+
+	hasReasoning bool
+	reasoningIdx int
+
+	hasMessage   bool
+	messageIdx   int
+
+	toolCalls       map[int]*liveToolCallState
+	nextOutputIndex int
+
+	mu sync.Mutex
 }
 
 func newLiveResponsesWriter(w http.ResponseWriter, model string) *liveResponsesWriter {
-	return &liveResponsesWriter{w: &responseEventWriter{ResponseWriter: w}, id: "resp_" + session.NewMessageID(), model: model}
+	return &liveResponsesWriter{
+		w:         &responseEventWriter{ResponseWriter: w},
+		id:        "resp_" + session.NewMessageID(),
+		model:     model,
+		toolCalls: make(map[int]*liveToolCallState),
+	}
 }
-func (l *liveResponsesWriter) start() {
+
+func (l *liveResponsesWriter) start(id, model string) {
 	if l.started {
 		return
 	}
 	l.started = true
+	if model != "" {
+		l.model = model
+	}
 	l.w.Header().Set("Content-Type", "text/event-stream")
 	l.w.Header().Set("Cache-Control", "no-cache")
+	l.w.Header().Set("Connection", "keep-alive")
 	l.w.Header().Set("X-Accel-Buffering", "no")
 	l.w.WriteHeader(http.StatusOK)
-	writeResponsesEvent(l.w, "response.created", map[string]any{"type": "response.created", "sequence_number": l.sequence, "response": map[string]any{"id": l.id, "object": "response", "created_at": time.Now().Unix(), "status": "in_progress", "model": l.model, "output": []any{}, "output_text": ""}})
+	writeResponsesEvent(l.w, "response.created", map[string]any{
+		"type":            "response.created",
+		"sequence_number": l.sequence,
+		"response": map[string]any{
+			"id":          l.id,
+			"object":      "response",
+			"created_at":  time.Now().Unix(),
+			"status":      "in_progress",
+			"model":       l.model,
+			"output":      []any{},
+			"output_text": "",
+		},
+	})
 	l.sequence++
+	l.w.Flush()
 }
-func (l *liveResponsesWriter) text(text string) error {
-	l.start()
-	if l.sequence == 1 {
-		writeResponsesEvent(l.w, "response.output_item.added", map[string]any{"type": "response.output_item.added", "sequence_number": l.sequence, "output_index": 0, "item": map[string]any{"id": "msg_" + l.id, "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}}})
-		l.sequence++
-		writeResponsesEvent(l.w, "response.content_part.added", map[string]any{"type": "response.content_part.added", "sequence_number": l.sequence, "item_id": "msg_" + l.id, "output_index": 0, "content_index": 0, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}}})
-		l.sequence++
-	}
-	writeResponsesEvent(l.w, "response.output_text.delta", map[string]any{"type": "response.output_text.delta", "sequence_number": l.sequence, "item_id": "msg_" + l.id, "output_index": 0, "content_index": 0, "delta": text, "logprobs": []any{}})
-	l.sequence++
+
+func (l *liveResponsesWriter) OnResponseStart(id, model string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.start(id, model)
 	return l.w.err
 }
+
+func (l *liveResponsesWriter) OnReasoningDelta(text string) error {
+	if text == "" {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.start("", "")
+	if !l.hasReasoning {
+		l.hasReasoning = true
+		l.reasoningIdx = l.nextOutputIndex
+		l.nextOutputIndex++
+		writeResponsesEvent(l.w, "response.output_item.added", map[string]any{
+			"type":            "response.output_item.added",
+			"sequence_number": l.sequence,
+			"output_index":    l.reasoningIdx,
+			"item": map[string]any{
+				"id":      "rs_" + l.id,
+				"type":    "reasoning",
+				"status":  "in_progress",
+				"summary": []any{},
+			},
+		})
+	l.sequence++
+	}
+	writeResponsesEvent(l.w, "response.reasoning_summary_text.delta", map[string]any{
+		"type":            "response.reasoning_summary_text.delta",
+		"sequence_number": l.sequence,
+		"item_id":         "rs_" + l.id,
+		"output_index":    l.reasoningIdx,
+		"summary_index":   0,
+		"delta":           text,
+	})
+	l.sequence++
+	l.w.Flush()
+	return l.w.err
+}
+
+func (l *liveResponsesWriter) OnContentDelta(text string) error {
+	if text == "" {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.start("", "")
+	if !l.hasMessage {
+		l.hasMessage = true
+		l.messageIdx = l.nextOutputIndex
+		l.nextOutputIndex++
+		writeResponsesEvent(l.w, "response.output_item.added", map[string]any{
+			"type":            "response.output_item.added",
+			"sequence_number": l.sequence,
+			"output_index":    l.messageIdx,
+			"item": map[string]any{
+				"id":      "msg_" + l.id,
+				"type":    "message",
+				"status":  "in_progress",
+				"role":    "assistant",
+				"content": []any{},
+			},
+		})
+	l.sequence++
+		writeResponsesEvent(l.w, "response.content_part.added", map[string]any{
+			"type":            "response.content_part.added",
+			"sequence_number": l.sequence,
+			"item_id":         "msg_" + l.id,
+			"output_index":    l.messageIdx,
+			"content_index":   0,
+			"part": map[string]any{
+				"type":        "output_text",
+				"text":        "",
+				"annotations": []any{},
+			},
+		})
+	l.sequence++
+	}
+	writeResponsesEvent(l.w, "response.output_text.delta", map[string]any{
+		"type":            "response.output_text.delta",
+		"sequence_number": l.sequence,
+		"item_id":         "msg_" + l.id,
+		"output_index":    l.messageIdx,
+		"content_index":   0,
+		"delta":           text,
+		"logprobs":        []any{},
+	})
+	l.sequence++
+	l.w.Flush()
+	return l.w.err
+}
+
+func (l *liveResponsesWriter) text(text string) error {
+	return l.OnContentDelta(text)
+}
+
+func (l *liveResponsesWriter) OnToolCallDelta(index int, id, name, argsFragment string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.start("", "")
+	tc, seen := l.toolCalls[index]
+	if !seen {
+		callID := id
+		if callID == "" {
+			callID = fmt.Sprintf("call_%s_%d", l.id, index)
+		}
+		tc = &liveToolCallState{
+			id:        callID,
+			name:      name,
+			itemIndex: l.nextOutputIndex,
+			added:     true,
+		}
+		l.nextOutputIndex++
+		l.toolCalls[index] = tc
+		writeResponsesEvent(l.w, "response.output_item.added", map[string]any{
+			"type":            "response.output_item.added",
+			"sequence_number": l.sequence,
+			"output_index":    tc.itemIndex,
+			"item": map[string]any{
+				"id":        tc.id,
+				"call_id":   tc.id,
+				"type":      "function_call",
+				"status":    "in_progress",
+				"name":      tc.name,
+				"arguments": "",
+			},
+		})
+	l.sequence++
+	} else {
+		if id != "" && tc.id == "" {
+			tc.id = id
+		}
+		if name != "" && tc.name == "" {
+			tc.name = name
+		}
+	}
+	if argsFragment != "" {
+		writeResponsesEvent(l.w, "response.function_call_arguments.delta", map[string]any{
+			"type":            "response.function_call_arguments.delta",
+			"sequence_number": l.sequence,
+			"item_id":         tc.id,
+			"output_index":    tc.itemIndex,
+			"delta":           argsFragment,
+		})
+	l.sequence++
+	}
+	l.w.Flush()
+	return l.w.err
+}
+
 func (l *liveResponsesWriter) fail(code string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.w.err != nil {
 		return
 	}
-	writeResponsesEvent(l.w, "response.failed", map[string]any{"type": "response.failed", "sequence_number": l.sequence, "response": map[string]any{"id": l.id, "object": "response", "status": "failed", "error": map[string]any{"code": code, "message": "Response could not be completed"}}})
+	writeResponsesEvent(l.w, "response.failed", map[string]any{
+		"type":            "response.failed",
+		"sequence_number": l.sequence,
+		"response": map[string]any{
+			"id":     l.id,
+			"object": "response",
+			"status": "failed",
+			"error": map[string]any{
+				"code":    code,
+				"message": "Response could not be completed",
+			},
+		},
+	})
+	l.w.Flush()
 }
+
 func (l *liveResponsesWriter) complete(response map[string]any) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if !l.started {
 		return writeResponsesStream(l.w, response)
 	}
-	// Live text uses index zero. Keep the completed response and later tool
-	// events consistent even when reasoning was produced before the text.
-	if output, ok := response["output"].([]any); ok {
-		for i, v := range output {
-			if item, ok := v.(map[string]any); ok && item["type"] == "message" && i > 0 {
-				copy(output[1:i+1], output[:i])
-				output[0] = v
-				break
+
+	// 1. 若曾输出过深度思考，结束 reasoning 节点
+	if l.hasReasoning {
+		var reasoningText any = ""
+		if outputs, ok := response["output"].([]any); ok {
+			for _, rawItem := range outputs {
+				if item, ok := rawItem.(map[string]any); ok && item["type"] == "reasoning" {
+					if summaries, ok := item["summary"].([]any); ok && len(summaries) > 0 {
+						if s0, ok := summaries[0].(map[string]any); ok {
+							reasoningText = s0["text"]
+						}
+					}
+					break
+				}
 			}
 		}
+		writeResponsesEvent(l.w, "response.reasoning_summary_text.done", map[string]any{
+			"type":            "response.reasoning_summary_text.done",
+			"sequence_number": l.sequence,
+			"item_id":         "rs_" + l.id,
+			"output_index":    l.reasoningIdx,
+			"summary_index":   0,
+			"text":            reasoningText,
+		})
+		l.sequence++
+		writeResponsesEvent(l.w, "response.output_item.done", map[string]any{
+			"type":            "response.output_item.done",
+			"sequence_number": l.sequence,
+			"output_index":    l.reasoningIdx,
+			"item": map[string]any{
+				"id":      "rs_" + l.id,
+				"type":    "reasoning",
+				"status":  "completed",
+				"summary": []any{map[string]any{"type": "summary_text", "text": reasoningText}},
+			},
+		})
+		l.sequence++
 	}
-	writeResponsesEvent(l.w, "response.output_text.done", map[string]any{"type": "response.output_text.done", "sequence_number": l.sequence, "item_id": "msg_" + l.id, "output_index": 0, "content_index": 0, "text": response["output_text"], "logprobs": []any{}})
+
+	// 2. 若曾输出过正文消息，结束 message 节点
+	if l.hasMessage {
+		outputText := response["output_text"]
+		writeResponsesEvent(l.w, "response.output_text.done", map[string]any{
+			"type":            "response.output_text.done",
+			"sequence_number": l.sequence,
+			"item_id":         "msg_" + l.id,
+			"output_index":    l.messageIdx,
+			"content_index":   0,
+			"text":            outputText,
+			"logprobs":        []any{},
+		})
+		l.sequence++
+		writeResponsesEvent(l.w, "response.content_part.done", map[string]any{
+			"type":            "response.content_part.done",
+			"sequence_number": l.sequence,
+			"item_id":         "msg_" + l.id,
+			"output_index":    l.messageIdx,
+			"content_index":   0,
+			"part": map[string]any{
+				"type": "output_text",
+				"text": outputText,
+			},
+		})
+		l.sequence++
+		writeResponsesEvent(l.w, "response.output_item.done", map[string]any{
+			"type":            "response.output_item.done",
+			"sequence_number": l.sequence,
+			"output_index":    l.messageIdx,
+			"item": map[string]any{
+				"id":      "msg_" + l.id,
+				"type":    "message",
+				"status":  "completed",
+				"role":    "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": outputText}},
+			},
+		})
+		l.sequence++
+	}
+
+	// 3. 结束所有实时流式下发过的工具调用
+	if len(l.toolCalls) > 0 {
+		var outputs []any
+		if rawOutputs, ok := response["output"].([]any); ok {
+			outputs = rawOutputs
+		}
+		toolOutputMap := make(map[string]map[string]any)
+		for _, rawItem := range outputs {
+			if item, ok := rawItem.(map[string]any); ok && (item["type"] == "function_call" || item["type"] == "custom_tool_call") {
+				if id, ok := item["id"].(string); ok && id != "" {
+					toolOutputMap[id] = item
+				}
+				if cid, ok := item["call_id"].(string); ok && cid != "" {
+					toolOutputMap[cid] = item
+				}
+			}
+		}
+		toolIndices := make([]int, 0, len(l.toolCalls))
+		for idx := range l.toolCalls {
+			toolIndices = append(toolIndices, idx)
+		}
+		sort.Ints(toolIndices)
+		for _, idx := range toolIndices {
+			tc := l.toolCalls[idx]
+			item := toolOutputMap[tc.id]
+			var args any = ""
+			name := tc.name
+			if item != nil {
+				if v, exists := item["arguments"]; exists {
+					args = v
+				} else if v, exists := item["input"]; exists {
+					args = v
+				}
+				if n, ok := item["name"].(string); ok && n != "" {
+					name = n
+				}
+			}
+			writeResponsesEvent(l.w, "response.function_call_arguments.done", map[string]any{
+				"type":            "response.function_call_arguments.done",
+				"sequence_number": l.sequence,
+				"item_id":         tc.id,
+				"output_index":    tc.itemIndex,
+				"name":            name,
+				"arguments":       args,
+			})
+		l.sequence++
+		doneItem := item
+		if doneItem == nil {
+			doneItem = map[string]any{
+				"id":        tc.id,
+				"type":      "function_call",
+				"status":    "completed",
+				"name":      name,
+				"arguments": args,
+			}
+		}
+		writeResponsesEvent(l.w, "response.output_item.done", map[string]any{
+			"type":            "response.output_item.done",
+			"sequence_number": l.sequence,
+			"output_index":    tc.itemIndex,
+			"item":            doneItem,
+		})
+		l.sequence++
+	}
+	}
+
+	// 4. 下发最终的 response.completed
+	writeResponsesEvent(l.w, "response.completed", map[string]any{
+		"type":            "response.completed",
+		"sequence_number": l.sequence,
+		"response":        response,
+	})
 	l.sequence++
-	if output, ok := response["output"].([]any); ok && len(output) > 0 {
-		item, _ := output[0].(map[string]any)
-		if item != nil && item["type"] == "message" {
-			parts, _ := item["content"].([]any)
-			if len(parts) > 0 {
-				writeResponsesEvent(l.w, "response.content_part.done", map[string]any{"type": "response.content_part.done", "sequence_number": l.sequence, "item_id": "msg_" + l.id, "output_index": 0, "content_index": 0, "part": parts[0]})
-				l.sequence++
-			}
-			writeResponsesEvent(l.w, "response.output_item.done", map[string]any{"type": "response.output_item.done", "sequence_number": l.sequence, "output_index": 0, "item": item})
-			l.sequence++
-		}
-	}
-	if l.w.err != nil {
-		return l.w.err
-	}
-	return writeResponsesStreamTail(l.w, response, l.sequence, true)
+	l.w.Flush()
+	return l.w.err
 }
 
 func (w *responseEventWriter) Write(p []byte) (int, error) {
@@ -1397,11 +1737,12 @@ func writeResponsesStream(w http.ResponseWriter, response map[string]any) error 
 func writeResponsesStreamTail(w http.ResponseWriter, response map[string]any, sequence int, live bool) error {
 	ew := &responseEventWriter{ResponseWriter: w}
 	w = ew
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
 	if !live {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.WriteHeader(http.StatusOK)
 		// The created event replaces output entirely; copying its nested tree wastes
 		// memory proportional to the completed response before discarding it.
 		created := make(map[string]any, len(response))

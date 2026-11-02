@@ -36,9 +36,40 @@ func AggregateSpool(r io.Reader) (map[string]any, *ResponseSpool, error) {
 	return AggregateSpoolObserved(r, nil)
 }
 
-// AggregateSpoolObserved invokes onText as content arrives, while retaining
-// the same aggregation and tool-call validation as the non-streaming path.
+// StreamObserver 定义上游 SSE 增量流式观察者接口：
+// 在从上游接收到流式帧时立即原地触发回调，实现真正的单趟事件分发，
+// 实时推送正文增量（content）、深度思考（reasoning）与工具调用参数增量（tool_calls），
+// 彻底废除整包聚合落盘后再按 16KB 切片伪造打字机的机制。
+type StreamObserver interface {
+	OnResponseStart(id, model string) error
+	OnContentDelta(text string) error
+	OnReasoningDelta(text string) error
+	OnToolCallDelta(index int, id, name, argsFragment string) error
+}
+
+type textStreamObserver func(string) error
+
+func (f textStreamObserver) OnResponseStart(id, model string) error                   { return nil }
+func (f textStreamObserver) OnContentDelta(text string) error                        { return f(text) }
+func (f textStreamObserver) OnReasoningDelta(text string) error                      { return nil }
+func (f textStreamObserver) OnToolCallDelta(index int, id, name, args string) error { return nil }
+
+// TextStreamObserver 将传统的单个文本回调封装为 StreamObserver 接口。
+func TextStreamObserver(fn func(string) error) StreamObserver {
+	if fn == nil {
+		return nil
+	}
+	return textStreamObserver(fn)
+}
+
+// AggregateSpoolObserved 保持向后兼容，将文本观察者转接至 AggregateSpoolWithObserver。
 func AggregateSpoolObserved(r io.Reader, onText func(string) error) (map[string]any, *ResponseSpool, error) {
+	return AggregateSpoolWithObserver(r, TextStreamObserver(onText))
+}
+
+// AggregateSpoolWithObserver 在保留完整响应聚合与工具调用校验的同时，
+// 将到达的增量事件（正文、思考链、工具调用）实时分发给 StreamObserver。
+func AggregateSpoolWithObserver(r io.Reader, obs StreamObserver) (map[string]any, *ResponseSpool, error) {
 	store := &ResponseSpool{}
 	committed := false
 	defer func() {
@@ -46,7 +77,7 @@ func AggregateSpoolObserved(r io.Reader, onText func(string) error) (map[string]
 			_ = store.Close()
 		}
 	}()
-	result, err := aggregate(r, store, onText)
+	result, err := aggregate(r, store, obs)
 	if err != nil {
 		store.Close()
 		return nil, nil, err
@@ -55,7 +86,7 @@ func AggregateSpoolObserved(r io.Reader, onText func(string) error) (map[string]
 	return result, store, nil
 }
 
-func aggregate(r io.Reader, store *ResponseSpool, onText func(string) error) (map[string]any, error) {
+func aggregate(r io.Reader, store *ResponseSpool, obs StreamObserver) (map[string]any, error) {
 	br := bufio.NewReaderSize(r, 16*1024)
 	var (
 		id, model     string
@@ -78,6 +109,7 @@ func aggregate(r io.Reader, store *ResponseSpool, onText func(string) error) (ma
 		// 供缺 index 时按 id 归位既有调用（见 mergeToolCallsChunk 注释）。
 		idIndex     = map[string]int{}
 		observerErr error
+		startedObs  bool
 	)
 	// appendContent 是「已取到正文」（gotAnyContent latch）的唯一写入点：delta 与
 	// message 两路 content 都必须经此并入，规约只有一份——
@@ -91,8 +123,17 @@ func aggregate(r io.Reader, store *ResponseSpool, onText func(string) error) (ma
 		}
 		content.WriteString(txt)
 		gotAnyContent = true
-		if onText != nil && observerErr == nil {
-			observerErr = onText(txt)
+		if obs != nil && observerErr == nil {
+			observerErr = obs.OnContentDelta(txt)
+		}
+	}
+	appendReasoning := func(rc string) {
+		if rc == "" {
+			return
+		}
+		reasoning.WriteString(rc)
+		if obs != nil && observerErr == nil {
+			observerErr = obs.OnReasoningDelta(rc)
 		}
 	}
 	// mergeToolCallsChunk 把一段 tool_calls 数组按 index 合并进累计表。
@@ -175,6 +216,20 @@ func aggregate(r io.Reader, store *ResponseSpool, onText func(string) error) (ma
 				}
 			}
 			mergeToolCallDelta(merged, call)
+			if obs != nil && observerErr == nil {
+				callID, _ := merged["id"].(string)
+				var fnName string
+				if fn, ok := merged["function"].(map[string]any); ok {
+					fnName, _ = fn["name"].(string)
+				}
+				var fragment string
+				if fn, ok := call["function"].(map[string]any); ok {
+					fragment, _ = fn["arguments"].(string)
+				}
+				if !seen || fragment != "" || fnName != "" {
+					observerErr = obs.OnToolCallDelta(idx, callID, fnName, fragment)
+				}
+			}
 		}
 	}
 	// mergeMessageFields 把非 delta 的完整 message 内容并入聚合（message 是整条下发，
@@ -189,7 +244,7 @@ func aggregate(r io.Reader, store *ResponseSpool, onText func(string) error) (ma
 			appendContent(txt)
 		}
 		if rc, ok := msg["reasoning_content"].(string); ok {
-			reasoning.WriteString(rc)
+			appendReasoning(rc)
 		}
 		if tcs, ok := msg["tool_calls"].([]any); ok {
 			mergeToolCallsChunk(tcs)
@@ -230,6 +285,12 @@ func aggregate(r io.Reader, store *ResponseSpool, onText func(string) error) (ma
 					if u, ok := chunk["usage"].(map[string]any); ok {
 						usage = u
 					}
+					if !startedObs && obs != nil {
+						startedObs = true
+						if err := obs.OnResponseStart(id, model); err != nil && observerErr == nil {
+							observerErr = err
+						}
+					}
 					if ch, ok := chunk["choices"].([]any); ok {
 						for _, ci := range ch {
 							c, _ := ci.(map[string]any)
@@ -247,7 +308,7 @@ func aggregate(r io.Reader, store *ResponseSpool, onText func(string) error) (ma
 									appendContent(txt)
 								}
 								if rc, ok := delta["reasoning_content"].(string); ok {
-									reasoning.WriteString(rc)
+									appendReasoning(rc)
 								}
 								if tcs, ok := delta["tool_calls"].([]any); ok {
 									mergeToolCallsChunk(tcs)

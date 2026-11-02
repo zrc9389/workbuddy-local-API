@@ -771,11 +771,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			rc.Close()
 			return
 		}
-		var observer func(string) error
-		if sink, ok := w.(interface{ observeResponseText(string) error }); ok {
-			observer = sink.observeResponseText
+		var observer upstream.StreamObserver
+		if sink, ok := w.(interface{ streamObserver() upstream.StreamObserver }); ok && sink != nil {
+			observer = sink.streamObserver()
+		} else if sink, ok := w.(interface{ observeResponseText(string) error }); ok && sink != nil {
+			observer = upstream.TextStreamObserver(sink.observeResponseText)
 		}
-		resp, responseSpool, err := upstream.AggregateSpoolObserved(rc, observer)
+		resp, responseSpool, err := upstream.AggregateSpoolWithObserver(rc, observer)
 		if sink, ok := w.(interface{ acceptResponseSpool(*upstream.ResponseSpool) }); ok && responseSpool != nil {
 			sink.acceptResponseSpool(responseSpool)
 			responseSpool = nil
