@@ -575,3 +575,5 @@
     max-height: 40px !important;
     box-sizing: border-box !important;
 }
+
+.whitespace-pre-line{white-space:pre-line}

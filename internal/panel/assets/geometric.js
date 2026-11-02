@@ -2247,6 +2247,7 @@ export function expiryTone(days) {
         async function submitPasswordAndEnter(withSound = true) {
             if (logoutResetTimer) return;
             if (isAuthenticating) return;
+            clearTimeout(passwordResetTimer);
             isAuthenticating = true;
             // 在真实点击或回车的同步调用栈中解锁音频上下文；不能等网络
             // 登录返回后再 resume，否则浏览器可能把它当成无手势自动播放。
@@ -2359,8 +2360,9 @@ export function expiryTone(days) {
                 }
                 triggerAccessDeniedAnimation(failureMessage, false);
                 const inpKey = document.getElementById('input-access-key');
+                clearTimeout(passwordResetTimer);
                 // 输错后保留 1.2 秒供用户辨识错误，随后清空输入并平滑恢复初始状态
-                setTimeout(() => {
+                passwordResetTimer = setTimeout(() => {
                     if (inpKey) inpKey.value = '';
                     if (passwordUiMode === 'DENIED' || passwordUiMode === 'EMPTY_DENIED') {
                         updatePasswordUiState(defaultPasswordSetup ? 'INIT' : 'AUTH');
@@ -2382,6 +2384,7 @@ export function expiryTone(days) {
             });
             accessKeyInput.addEventListener('input', () => {
                 isAuthenticating = false;
+                clearTimeout(passwordResetTimer);
                 if (passwordUiMode === 'DENIED' || passwordUiMode === 'EMPTY_DENIED') {
                     accessKeyInput.classList.remove('access-denied-border');
                     updatePasswordUiState(defaultPasswordSetup ? 'INIT' : 'AUTH');
@@ -5796,7 +5799,7 @@ export function expiryTone(days) {
                             const delBtn = (s.id !== 's-1')
                                 ? `<button data-action="delete-custom-slogan" data-slogan-id="${escapeDisplayText(s.id)}" class="editorial-text-btn w-[32px] text-left shrink-0 ml-2.5 text-white/35 hover:text-red-400 transition-colors" title="删除该文案">删除</button>`
                                 : `<span class="w-[32px] shrink-0 ml-2.5 inline-block"></span>`;
-                            const previewText = `${s.name} // ${s.text.replace(/\n/g, ' ')}`;
+                            const previewText = `${s.name} // ${s.text.replace(/\n+/g, ' // ')}`;
                             const isBuiltin = (s.id === 's-1' || s.id === 's-2' || s.id === 's-3');
                             const tag = isBuiltin
                                 ? `<span class="text-white/40 text-[10.5px] font-['Space_Grotesk'] tracking-wider text-left">经典</span>`
@@ -9322,6 +9325,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
         if (typeof window !== 'undefined') {
             window.compressAudioTo320kMp3 = compressAudioTo320kMp3;
             window.saveCustomMusic = saveCustomMusic;
+            window.applyCurrentMottoToHome = applyCurrentMottoToHome;
         }
         function saveCustomMusic() {
             const name = document.getElementById('custom-music-name-input')?.value.trim();
@@ -9583,6 +9587,8 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             const cur = cust.sloganList.find(s => s.id === cust.activeSloganId) || cust.sloganList[0];
             const subtitleEl = document.getElementById('prompt-subtitle');
             if (subtitleEl && cur) {
+                subtitleEl.style.whiteSpace = 'pre-line';
+                subtitleEl.classList.add('whitespace-pre-line', 'leading-relaxed');
                 subtitleEl.textContent = cur.text;
             }
         }
