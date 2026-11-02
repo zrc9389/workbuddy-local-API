@@ -4674,8 +4674,8 @@ export function expiryTone(days) {
 
         const CHAPTER_META = {
             overview:   { num: '01', navKey: 'overview',   geoId: 'overview',   geoLabel: 'OBELISK',        title: 'SYSTEM OVERVIEW',    cn: '系统概览', role: 'CORE ENGINE // HEALTH & TOPOLOGY',    desc: '汇总本地网关运行健康度、凭据池可用率与实时资源吞吐状态。', btn1: '[ RESOURCE CURVE ]', btn2: '[ COPY ENDPOINT ]' },
-            accounts:   { num: '02', navKey: 'accounts',   geoId: 'accounts',   geoLabel: 'VAULT CUBE',     title: 'IDENTITY VAULT',     cn: '账号池',   role: 'MULTI-ACCOUNT POOL & SAFEGUARDS',     desc: '整号余额低于阈值自动退池保护，支持单号独占绑定独立出口节点。', btn1: '[ INGEST TOKEN ]',   btn2: '[ REFRESH POOL ]' },
-            egress:     { num: '03', navKey: 'egress',     geoId: 'egress',     geoLabel: 'DIAMOND',        title: 'NETWORK EGRESS',     cn: '账号出口', role: 'MIHOMO KERNEL // BANDWIDTH & NODES',  desc: '按启用订阅隔离展示出口节点、绑定账号归属与实时测速状态。', btn1: '[ REFRESH ALL ]',   btn2: '[ + IMPORT SUB ]' },
+            accounts:   { num: '02', navKey: 'accounts',   geoId: 'accounts',   geoLabel: 'VAULT CUBE',     title: 'IDENTITY VAULT',     cn: '账号池',   role: 'MULTI-ACCOUNT POOL & SAFEGUARDS',     desc: '整号余额低于阈值自动退池保护，支持单号独占绑定独立出口节点。', btn1: '[ ADD ACCOUNT ]',   btn2: '[ REFRESH POOL ]' },
+            egress:     { num: '03', navKey: 'egress',     geoId: 'egress',     geoLabel: 'DIAMOND',        title: 'NETWORK EGRESS',     cn: '账号出口', role: 'MIHOMO KERNEL // BANDWIDTH & NODES',  desc: '按启用订阅隔离展示出口节点、绑定账号归属与实时测速状态。', btn1: '[ REFRESH ALL ]',   btn2: '[ + IMPORT SUBSCRIPTION ]' },
             models:     { num: '04', navKey: 'models',     geoId: 'models',     geoLabel: 'CROSS PRISMS',   title: 'MODEL REGISTRY',     cn: '模型查看', role: 'UPSTREAM DIRECTORY & CONTEXT SPEC',   desc: '清爽呈现可用大模型名称、上下文容量、输出上限与实时首字响应延迟。', btn1: '[ FETCH MODELS ]',   btn2: '[ FILTER REALM ]' },
             tasks:      { num: '05', navKey: 'tasks',      geoId: 'tasks',      geoLabel: 'CROSS FRAME',    title: 'AUTOMATION RUNS',    cn: '账号任务', role: 'SCHEDULED PIPELINE & MUTEX GUARD',    desc: '按序执行每日活跃上报、访问令牌续期、猫猫旅行状态与每日定时签到四道工序。', btn1: '[ RUN PIPELINE ]',   btn2: '[ PAUSE TASKS ]' },
             usage:      { num: '06', navKey: 'usage',      geoId: 'usage',      geoLabel: 'ZIGGURAT',       title: 'TELEMETRY USAGE',    cn: '积分用量', role: 'DUAL-TRACK TOKEN TIMESERIES',         desc: '追踪 24H 周期内分时段 Token 吞吐趋势，支持 6H/24H 时序跨度与按模型排行视图。', btn1: '[ MODEL RANK ]',     btn2: '[ TIME: 6H ]' },
@@ -4696,6 +4696,11 @@ export function expiryTone(days) {
             if (Number.isFinite(h)) return h;
         } catch (_) {}
         return (new Date().getUTCHours() + 8) % 24;
+    }
+
+    // 积分用量时间轴截止位：按照用户明确规范，严格锚定真实北京时间“后一位”（当前小时 + 1）作为时段结算截止点
+    function getBeijingUsageTargetHour() {
+        return (getBeijingCurrentHour() + 1) % 24;
     }
 
         const WBState = {
@@ -5417,7 +5422,7 @@ export function expiryTone(days) {
                     t1 = '[ + IMPORT MUSIC ]';
                     t2 = '[ RANDOM ASSIGN ]';
                 } else if (cust.currentTab === 'slogan') {
-                    t1 = '[ + NEW MOTTO ]';
+                    t1 = '[ + NEW SLOGAN ]';
                     t2 = '[ RANDOM ASSIGN ]';
                 } else if (cust.currentTab === 'theme') {
                     t1 = '[ RANDOM THEME ]';
@@ -5447,7 +5452,7 @@ export function expiryTone(days) {
                     t1 = '[ <- POOL ]';
                     t2 = '[ √ CONFIRM ]';
                 } else {
-                    t1 = '[ INGEST TOKEN ]';
+                    t1 = '[ ADD ACCOUNT ]';
                     t2 = '[ REFRESH POOL ]';
                 }
             } else if (ch === 'egress') {
@@ -5456,21 +5461,21 @@ export function expiryTone(days) {
                     t2 = '[ √ CONFIRM ]';
                 } else {
                     t1 = '[ REFRESH ALL ]';
-                    t2 = '[ + IMPORT SUB ]';
+                    t2 = '[ + IMPORT SUBSCRIPTION ]';
                 }
             } else if (ch === 'tasks' || ch === 'scheduler') {
                 t1 = '[ START ALL TASKS ]';
                 t2 = WBState.tasks.scheduleEnabled === false ? '[ ENABLE ALL TASKS ]' : '[ DISABLE ALL TASKS ]';
             } else if (ch === 'usage') {
-                const curBjH = getBeijingCurrentHour();
+                const targetH = getBeijingUsageTargetHour();
                 WBState.usage24h.labels = [];
                 for (let s = 6; s >= 0; s--) {
-                    const h = (curBjH - s * 4 + 48) % 24;
+                    const h = (targetH - s * 4 + 48) % 24;
                     WBState.usage24h.labels.push(String(h).padStart(2, '0') + ':00');
                 }
                 WBState.usage6h.labels = [];
                 for (let s = 5; s >= 0; s--) {
-                    const h = (curBjH - s + 48) % 24;
+                    const h = (targetH - s + 48) % 24;
                     WBState.usage6h.labels.push(String(h).padStart(2, '0') + ':00');
                 }
                 WBState.usageRange = '24H';
@@ -5482,7 +5487,7 @@ export function expiryTone(days) {
                     t2 = "[ <- ACCOUNTS ]";
                 } else if (WBState.packageView === "MODEL") {
                     t1 = "[ <- PACKAGES ]";
-                    t2 = WBState.packageModelMode === "ACCOUNT" ? "[ MODEL: EXPIRY ]" : "[ MODEL: ACCOUNT ]";
+                    t2 = WBState.packageModelMode === "ACCOUNT" ? "[ SWITCH: EXPIRY ]" : "[ SWITCH: ACCOUNT ]";
                 } else {
                     t1 = "[ EXPIRY MODEL ]";
                     t2 = WBState.packageListSort === "USAGE" ? "[ SORT: NAME ]" : "[ SORT: USAGE ]";
@@ -6762,7 +6767,7 @@ export function expiryTone(days) {
                                 <div>
                                     <div class="flex justify-between items-center text-[10px] tracking-[0.15em] text-white/42 mb-3">
                                         <span id="pkg-model-readout">账号 ${initP.acc.name} — 积分 ${initP.bal.toLocaleString()} / 额度 ${initP.quota.toLocaleString()} / 独立包 ${initPacks.length}</span>
-                                        <span class="text-white/60 font-mono">B(i)/Q(i) // 账号额度统计</span>
+                                        <span class="text-white/60 font-mono">BALANCE / QUOTA // 账号额度统计</span>
                                     </div>
                                     <svg viewBox="0 0 520 70" class="w-full h-[70px] overflow-visible">
                                         ${clipDef}
