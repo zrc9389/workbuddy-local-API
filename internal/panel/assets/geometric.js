@@ -5207,12 +5207,15 @@ export function expiryTone(days) {
             const redPct = (failed > 0 && prog > okTargetPct) ? Math.min(100 - okTargetPct, prog - okTargetPct) : 0;
             const popCls = redPct > 0 ? "task-fault-pop" : "";
 
+            const initActiveWidth = animateBars ? '0%' : (isPaused ? '0%' : '100%');
+            const initGrayWidth   = animateBars ? '100%' : (isPaused ? '100%' : '0%');
+
             return `<span class="task-line-shell inline-block relative bg-white/12 align-middle shrink-0 overflow-hidden" style="width:${widthPx}px;height:1.8px;">
-                <span class="task-active-track absolute left-0 top-0 bottom-0 overflow-hidden" style="width:${isPaused ? '0%' : '100%'};">
+                <span class="task-active-track absolute left-0 top-0 bottom-0 overflow-hidden" style="width:${initActiveWidth};">
                     <span class="absolute left-0 top-0 bottom-0 bg-white/90" style="width:${currentWhitePct}%;"></span>
                     ${redPct > 0 ? `<span class="absolute top-0 bottom-0 bg-[#ff5c74] ${popCls}" style="left:${okTargetPct}%;width:${redPct}%;box-shadow:0 0 6px rgba(255,92,116,0.65);"></span>` : ""}
                 </span>
-                <span class="task-gray-track absolute top-0 bottom-0 " style="background-color:#9ca3af;right:0;width:${isPaused ? '100%' : '0%'};box-shadow:${isPaused ? '-2.5px 0 0 0 #050605' : 'none'};"></span>
+                <span class="task-gray-track absolute top-0 bottom-0 " style="background-color:#9ca3af;right:0;width:${initGrayWidth};box-shadow:${isPaused ? '-2.5px 0 0 0 #050605' : 'none'};"></span>
             </span>`;
         }
 
@@ -6515,6 +6518,27 @@ export function expiryTone(days) {
                 }).join('');
 
                 commitStageMarkup(container, `<div>${rowsHtml}</div>`, animate);
+                if (animate) {
+                    requestAnimationFrame(() => {
+                        const rows = container.querySelectorAll('.editorial-row');
+                        rows.forEach((rowEl) => {
+                            const shell = rowEl.querySelector('.task-line-shell');
+                            if (!shell) return;
+                            const activeTrack = shell.querySelector('.task-active-track');
+                            const grayTrack = shell.querySelector('.task-gray-track');
+                            const isP = !!WBState.tasks?.pausedAll || WBState.tasks?.scheduleEnabled === false;
+                            if (activeTrack) {
+                                activeTrack.style.transition = 'width 0.55s cubic-bezier(0, 0, 0.2, 1)';
+                                activeTrack.style.width = isP ? '0%' : '100%';
+                            }
+                            if (grayTrack) {
+                                grayTrack.style.transition = 'width 0.55s cubic-bezier(0, 0, 0.2, 1), box-shadow 0.2s ease';
+                                grayTrack.style.width = isP ? '100%' : '0%';
+                                grayTrack.style.boxShadow = isP ? '-2.5px 0 0 0 #050605' : 'none';
+                            }
+                        });
+                    });
+                }
                 renderPagerControls(0, 1, '');
                 return;
             }
