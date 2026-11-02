@@ -5876,10 +5876,12 @@ export function expiryTone(days) {
                 const secondaryArr = isRes ? WBState.memHistory : WBState.upHistory;
                 const [pPts, sPts] = overviewChartPoints(primaryArr, secondaryArr);
 
-                const headerLeft = isRes ? '系统资源变动曲线（实线服务 CPU / 虚线服务总内存）' : '吞吐呼吸曲线（实线下行速率 / 虚线上行速率）';
+                const headerLeft = isRes ? '系统资源变动曲线（实线服务 CPU负载 / 虚线服务总内存）' : '吞吐呼吸曲线（实线下行速率 / 虚线上行速率）';
                 const headerRight = isRes
-                    ? ('CPU ' + (WBState.cpuAvailable ? WBState.cpuPct.toFixed(1) + '%' : '—') + ' / 服务总内存 ' + (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'))
-                    : (WBState.trafficAvailable ? 'UP ' + WBState.upMbps.toFixed(2) + ' MB/s' : 'UP —');
+                    ? ('CPU负载 ' + (WBState.cpuAvailable ? WBState.cpuPct.toFixed(1) + '%' : '—') + ' / 服务总内存 ' + (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'))
+                    : (WBState.trafficAvailable
+                        ? '下行速率 ' + WBState.downMbps.toFixed(2) + ' MB/s / 上行速率 ' + WBState.upMbps.toFixed(2) + ' MB/s'
+                        : '下行速率 — / 上行速率 —');
                 const metric1Label = isRes ? '服务总内存' : '实时上行';
                 const metric1Val = isRes
                     ? (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—')
@@ -5894,7 +5896,7 @@ export function expiryTone(days) {
                     <div class="flex flex-col justify-start space-y-4 pt-1">
                         <div>
                             <div class="flex justify-between items-center text-[10px] tracking-[0.15em] text-white/42 mb-2 h-[16px] shrink-0">
-                                <span class="overflow-hidden whitespace-nowrap">${headerLeft}</span>
+                                <span id="ov-header-left" class="overflow-hidden whitespace-nowrap">${headerLeft}</span>
                                 <span id="ov-header-right" class="text-white/70 tabular-nums-left overflow-hidden whitespace-nowrap">${headerRight}</span>
                             </div>
                             <svg viewBox="0 0 520 70" class="w-full h-[70px] overflow-visible">
@@ -9732,11 +9734,19 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
         // 概览页秒级静默原地更新（In-Place DOM Mutation）：仅更新文本和曲线折点，绝不清空重建 DOM，彻底根除字体跳动
         function updateOverviewStageInPlace() {
             const isRes = WBState.overviewMode === 'RESOURCE';
+            const leftHeaderEl = document.getElementById('ov-header-left');
+            if (leftHeaderEl) {
+                leftHeaderEl.textContent = isRes
+                    ? '系统资源变动曲线（实线服务 CPU负载 / 虚线服务总内存）'
+                    : '吞吐呼吸曲线（实线下行速率 / 虚线上行速率）';
+            }
             const rightHeaderEl = document.getElementById('ov-header-right');
             if (rightHeaderEl) {
                 rightHeaderEl.textContent = isRes
-                    ? ('CPU ' + (WBState.cpuAvailable ? WBState.cpuPct.toFixed(1) + '%' : '—') + ' / 服务总内存 ' + (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'))
-                    : (WBState.trafficAvailable ? 'UP ' + WBState.upMbps.toFixed(2) + ' MB/s' : 'UP —');
+                    ? ('CPU负载 ' + (WBState.cpuAvailable ? WBState.cpuPct.toFixed(1) + '%' : '—') + ' / 服务总内存 ' + (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'))
+                    : (WBState.trafficAvailable
+                        ? '下行速率 ' + WBState.downMbps.toFixed(2) + ' MB/s / 上行速率 ' + WBState.upMbps.toFixed(2) + ' MB/s'
+                        : '下行速率 — / 上行速率 —');
             }
             const pPoly = document.getElementById('ov-poly-primary');
             const sPoly = document.getElementById('ov-poly-secondary');
