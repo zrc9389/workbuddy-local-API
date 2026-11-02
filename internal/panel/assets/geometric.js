@@ -6108,8 +6108,9 @@ export function expiryTone(days) {
                                         const n = WBState.nodes.find(item => item.id === WBState.systemDefaultNode);
                                         const btnCls = n ? (n.ping < 800 ? 'tone-forced font-medium' : 'tone-guard font-medium') : 'text-white/60 hover:text-white';
                                         if (!n) {
-                                            const label = WBState.systemDefaultNodeName || (WBState.systemDefaultNode ? '已配置出口' : '未指定');
-                                            return `<button class="editorial-text-btn shrink-0 text-[11.5px] px-0.5 ${btnCls}" data-action="open-default-egress-stage" title="选择默认出网节点">[ 默认出口: ${escapeDisplayText(label)} ▾ ]</button>`;
+                                            const label = WBState.systemDefaultNodeName || (WBState.systemDefaultNode ? '已配置出口' : '未指定 (严禁直连)');
+                                            const defaultBtnCls = n ? (n.ping < 800 ? 'tone-forced font-medium' : 'tone-guard font-medium') : 'text-amber-400/80 font-medium';
+                                            return `<button class="editorial-text-btn shrink-0 text-[11.5px] px-0.5 ${defaultBtnCls}" data-action="open-default-egress-stage" title="选择默认出网节点">[ 默认出口: ${escapeDisplayText(label)} ▾ ]</button>`;
                                         }
                                         const rawName = String(n.name || '').trim();
                                         // 纯文本截断：超过 9 个字符以三个点省略号截断，去除延迟，括号与箭头绝对完整闭合
@@ -7233,6 +7234,14 @@ export function expiryTone(days) {
         }
 
         window.openOAuthLoginLink = () => {
+            if (!WBState.systemDefaultNode) {
+                notifyEditorialStatus('AUTH // 严禁直连：请先在上方指定【默认出口】节点后再发起授权');
+                if (typeof soundscape !== 'undefined' && soundscape && typeof soundscape.triggerErrorSound === 'function') {
+                    soundscape.triggerErrorSound();
+                }
+                if (typeof setPreviewFrameState === 'function') setPreviewFrameState('error', 800);
+                return;
+            }
             if (!WBState.loginState) {
                 WBState.loginState = 'WB-STATE-' + Math.random().toString(36).slice(2, 8).toUpperCase();
             }

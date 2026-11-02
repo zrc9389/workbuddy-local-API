@@ -11,6 +11,7 @@ package panel
 
 import (
 	"bytes"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -50,8 +51,17 @@ func loginEndpoints(realm string) (state, token, account, origin string) {
 		originRefererCN
 }
 
-// loginHTTP 设备授权专用 client：短超时、无 cookie（每请求携带 state，无会话态）。
-var loginHTTP = &http.Client{Timeout: 30 * time.Second}
+type loginProxyFailure struct{}
+
+func (loginProxyFailure) RoundTrip(r *http.Request) (*http.Response, error) {
+	if err := r.Context().Err(); err != nil {
+		return nil, err
+	}
+	return nil, errors.New("login proxy not configured: direct VPS connection to upstream is strictly prohibited")
+}
+
+// loginHTTP 设备授权专用 client：严禁无代理保底直连，默认挂载 loginProxyFailure 熔断
+var loginHTTP = &http.Client{Timeout: 30 * time.Second, Transport: loginProxyFailure{}}
 
 func commonHeaders(req *http.Request, origin string) {
 	req.Header.Set("Content-Type", "application/json")
@@ -118,6 +128,15 @@ func doJSON(method, fullURL, bearer string, body io.Reader, origin string) (json
 // loginStart 发起设备授权：POST auth/state 拿授权 URL。
 // body 可带 {"realm":"global"}（缺省 cn）；state 会话记 realm，poll 同 realm 落盘。
 func (p *Panel) loginStart(w http.ResponseWriter, r *http.Request) {
+	defaultEgressMu.RLock()
+	defProxy := currentDefaultProxyURL
+	defaultEgressMu.RUnlock()
+	if defProxy == "" {
+		if _, ok := loginHTTP.Transport.(loginProxyFailure); ok || loginHTTP.Transport == nil {
+			writeErr(w, http.StatusBadRequest, "未配置默认代理出口，严禁直连上游发起登录。请先在授权栏指定默认出口节点")
+			return
+		}
+	}
 	realm := "cn"
 	if r.Body != nil {
 		var reqBody struct {
@@ -158,6 +177,15 @@ func (p *Panel) loginStart(w http.ResponseWriter, r *http.Request) {
 
 // loginPoll 轮询登录态。未完成 → {done:false}；完成 → 建凭证、落盘、热加载、签到。
 func (p *Panel) loginPoll(w http.ResponseWriter, r *http.Request) {
+	defaultEgressMu.RLock()
+	defProxy := currentDefaultProxyURL
+	defaultEgressMu.RUnlock()
+	if defProxy == "" {
+		if _, ok := loginHTTP.Transport.(loginProxyFailure); ok || loginHTTP.Transport == nil {
+			writeErr(w, http.StatusBadRequest, "未配置默认代理出口，严禁直连上游轮询")
+			return
+		}
+	}
 	state := r.URL.Query().Get("state")
 	if state == "" {
 		writeErr(w, http.StatusBadRequest, "missing state")
@@ -375,15 +403,16 @@ func (p *Panel) loginRegions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// setLoginProxy 动态为设备流授权配置定向代理出口（仅对登录请求生效，不侵入系统网络）
+// setLoginProxy 动态为设备流授权配置定向代理出口（严禁回退直连）
 func setLoginProxy(proxyURL string) error {
 	raw := strings.TrimSpace(proxyURL)
 	if raw == "" {
-		loginHTTP = &http.Client{Timeout: 30 * time.Second}
+		loginHTTP = &http.Client{Timeout: 30 * time.Second, Transport: loginProxyFailure{}}
 		return nil
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
+		loginHTTP = &http.Client{Timeout: 30 * time.Second, Transport: loginProxyFailure{}}
 		return err
 	}
 	loginHTTP = &http.Client{

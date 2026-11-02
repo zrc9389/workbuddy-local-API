@@ -95,3 +95,30 @@ func TestAccountLeaseRechecksProxyAfterAdmission(t *testing.T) {
 		t.Fatalf("lease-time proxy not honored: body=%q proxied=%d direct=%d", body, proxied.Load(), direct.Load())
 	}
 }
+
+
+func TestFailClosedDirectConnectionToExternalProhibited(t *testing.T) {
+	c := New() // base c with no default proxy
+	a := &auth.Auth{UID: "unproxied-user", ProxyURL: ""}
+	
+	targets := []string{
+		"https://copilot.tencent.com/v2/chat/completions",
+		"https://www.workbuddy.ai/v2/chat/completions",
+		"https://api.tencent.com/v1/test",
+		"http://1.1.1.1/test",
+	}
+	
+	for _, target := range targets {
+		req, err := http.NewRequest("POST", target, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = c.DoAccount(req, a)
+		if err == nil {
+			t.Fatalf("target %s should have been strictly blocked from direct VPS connection, but succeeded", target)
+		}
+		if !strings.Contains(err.Error(), "strictly prohibited") {
+			t.Fatalf("unexpected error message for target %s: %v", target, err)
+		}
+	}
+}

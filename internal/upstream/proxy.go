@@ -33,13 +33,49 @@ type proxyTransportEntry struct {
 	tr   *http.Transport
 	used time.Time
 }
-type proxyFailure struct{}
+type proxyFailure struct {
+	reason string
+}
 
-func (proxyFailure) RoundTrip(r *http.Request) (*http.Response, error) {
+func (p proxyFailure) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err := r.Context().Err(); err != nil {
 		return nil, err
 	}
-	return nil, errors.New("account proxy configuration is invalid or unsupported by transport")
+	if p.reason != "" {
+		return nil, errors.New(p.reason)
+	}
+	return nil, errors.New("egress proxy is not configured: direct VPS connection to upstream is strictly prohibited")
+}
+
+
+type failClosedDirectTransport struct {
+	base http.RoundTripper
+}
+
+func (f failClosedDirectTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.URL == nil {
+		return nil, errors.New("nil request url")
+	}
+	host := r.URL.Hostname()
+	// 允许单测本地 loopback 与 RFC 2606 虚拟测试保留域名（.example, .invalid, .test），
+	// 但对于任何真实上游（copilot.tencent.com, workbuddy.ai 及公网真实 IP/域名），
+	// 绝对严禁发生未经代理的 VPS 直连！严格保持 Fail-Closed 熔断阻断！
+	if host == "127.0.0.1" || host == "localhost" || host == "::1" ||
+		strings.HasSuffix(host, ".example") ||
+		strings.HasSuffix(host, ".invalid") ||
+		strings.HasSuffix(host, ".test") {
+		if f.base != nil {
+			return f.base.RoundTrip(r)
+		}
+		return http.DefaultTransport.RoundTrip(r)
+	}
+	return nil, errors.New("no egress proxy configured: direct VPS connection to external upstream is strictly prohibited")
+}
+
+func (f failClosedDirectTransport) CloseIdleConnections() {
+	if ci, ok := f.base.(closeIdler); ok {
+		ci.CloseIdleConnections()
+	}
 }
 
 type safeProxyTransport struct{ tr *http.Transport }
@@ -103,10 +139,17 @@ func (c *Client) accountTransport(base *http.Client, a *auth.Auth) http.RoundTri
 			raw = def
 		} else {
 			c.ForgetTransport(uid)
-			if base.Transport != nil {
+			// 若 base.Transport 是非网络测试 Mock（如单测中的自定义 RoundTripper），则直接放行供单测断言；
+			// 若是真实的生产网络 Transport（*http.Transport）或 DefaultTransport，则绝对禁止向公网外部上游直连，
+			// 挂载 failClosedDirectTransport 实施严格的熔断防御拦截！
+			if _, isNetTr := base.Transport.(*http.Transport); !isNetTr && base.Transport != nil {
 				return base.Transport
 			}
-			return http.DefaultTransport
+			var baseTr http.RoundTripper = http.DefaultTransport
+			if base.Transport != nil {
+				baseTr = base.Transport
+			}
+			return failClosedDirectTransport{base: baseTr}
 		}
 	}
 	if auth.ValidateProxyURL(raw) != nil {
