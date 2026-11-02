@@ -1330,15 +1330,28 @@ type liveResponsesWriter struct {
 	toolCalls       map[int]*liveToolCallState
 	nextOutputIndex int
 
+	stopKeepalive   chan struct{}
+	closed          bool
+
 	mu sync.Mutex
 }
 
 func newLiveResponsesWriter(w http.ResponseWriter, model string) *liveResponsesWriter {
 	return &liveResponsesWriter{
-		w:         &responseEventWriter{ResponseWriter: w},
-		id:        "resp_" + session.NewMessageID(),
-		model:     model,
-		toolCalls: make(map[int]*liveToolCallState),
+		w:             &responseEventWriter{ResponseWriter: w},
+		id:            "resp_" + session.NewMessageID(),
+		model:         model,
+		toolCalls:     make(map[int]*liveToolCallState),
+		stopKeepalive: make(chan struct{}),
+	}
+}
+
+func (l *liveResponsesWriter) closeHelper() {
+	if !l.closed {
+		l.closed = true
+		close(l.stopKeepalive)
+		rc := http.NewResponseController(l.w)
+		_ = rc.SetWriteDeadline(time.Time{})
 	}
 }
 
@@ -1355,6 +1368,28 @@ func (l *liveResponsesWriter) start(id, model string) {
 	l.w.Header().Set("Connection", "keep-alive")
 	l.w.Header().Set("X-Accel-Buffering", "no")
 	l.w.WriteHeader(http.StatusOK)
+
+	// 启动 15 秒心跳保活看门狗：防止静默期间断流并探活死连接
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-l.stopKeepalive:
+				return
+			case <-ticker.C:
+				l.mu.Lock()
+				if l.started && !l.closed {
+					rc := http.NewResponseController(l.w)
+					_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
+					_, _ = io.WriteString(l.w, ": keepalive\n\n")
+					l.w.Flush()
+				}
+				l.mu.Unlock()
+			}
+		}
+	}()
+
 	writeResponsesEvent(l.w, "response.created", map[string]any{
 		"type":            "response.created",
 		"sequence_number": l.sequence,
@@ -1529,6 +1564,7 @@ func (l *liveResponsesWriter) OnToolCallDelta(index int, id, name, argsFragment 
 func (l *liveResponsesWriter) fail(code string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.closeHelper()
 	if l.w.err != nil {
 		return
 	}
@@ -1551,6 +1587,7 @@ func (l *liveResponsesWriter) fail(code string) {
 func (l *liveResponsesWriter) complete(response map[string]any) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	defer l.closeHelper()
 	if !l.started {
 		return writeResponsesStream(l.w, response)
 	}
@@ -1927,6 +1964,8 @@ func writeResponseDeltaChunks(value any, emit func(any) error) error {
 }
 
 func writeResponsesEvent(w http.ResponseWriter, event string, value any) {
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
 	_, _ = fmt.Fprintf(w, "event: %s\ndata: ", event)
 	_ = writeStreamingJSON(w, value)
 	_, _ = io.WriteString(w, "\n\n")

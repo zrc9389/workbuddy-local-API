@@ -427,9 +427,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		heldUID = acct.UID
 
-		// token 临近过期 → 先 refresh（失败冷却换号）
+		// token 临近过期 → 先 refresh（失败冷却换号），传入 r.Context() 联动客户端取消
 		if acct.NeedsRefresh(h.cfg.RefreshSkew) {
-			if err := h.cfg.Upstream.RefreshToken(acct); err != nil {
+			if err := h.cfg.Upstream.RefreshTokenContext(r.Context(), acct); err != nil {
 				lastErr = err
 				var ue *upstream.Error
 				if errors.As(err, &ue) && ue.Kind == upstream.ErrSessionDead {

@@ -688,3 +688,17 @@ func TestErrorClassificationMetricsObservability(t *testing.T) {
 		t.Errorf("expected last kind 'server', got %s", m.LastKind)
 	}
 }
+
+func TestRefreshTokenContextCancellation(t *testing.T) {
+	c := testClient(func(r *http.Request) (*http.Response, error) {
+		<-r.Context().Done()
+		return nil, r.Context().Err()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+	a := &auth.Auth{AccessToken: "at", RefreshToken: "rt", ExpiresAt: 1}
+	err := c.RefreshTokenContext(ctx, a)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}

@@ -973,7 +973,18 @@ const refreshTokenExpiresInMax = 10 * 365 * 24 * time.Hour
 //     独占 a.mu，阻塞同账号的 SaveAtomic / 其他刷新（issue:持锁 120s I/O）。
 //   - 写回前重新校验快照一致性：若锁外期间另一 goroutine 已完成刷新（refreshToken
 //     已变），本次结果直接采用（新 token 已生效），不再重复写回。
+// RefreshToken 刷新 access token；成功时更新 a 的字段（缺省值保留旧值），
+// 调用方负责 SaveAtomic。
 func (c *Client) RefreshToken(a *auth.Auth) error {
+	return c.RefreshTokenContext(context.Background(), a)
+}
+
+// RefreshTokenContext 支持外部 Context（如客户端 HTTP 请求上下文）级联取消，
+// 避免客户端已断连退出时后端仍脱缰发起无意义的上游刷新。
+func (c *Client) RefreshTokenContext(parentCtx context.Context, a *auth.Auth) error {
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
 	// 第 1 段（锁内）：读快照。
 	a.Lock()
 	rtSnapshot := a.RefreshToken
@@ -984,7 +995,7 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 	}
 
 	endpoint := c.chatBase(a) + "/v2/plugin/auth/token/refresh"
-	ctx, cancel := context.WithTimeout(context.Background(), refreshIOTimeout)
+	ctx, cancel := context.WithTimeout(parentCtx, refreshIOTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 	if err != nil {

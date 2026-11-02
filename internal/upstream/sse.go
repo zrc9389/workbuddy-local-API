@@ -3,6 +3,7 @@ package upstream
 
 import (
 	"bufio"
+	"sync"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -666,25 +667,20 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string, 
 	h.Set("X-Accel-Buffering", "no")
 	fl, _ := w.(http.Flusher)
 
-	// toolCallSeen 跨帧记录 delta.tool_calls 里已发过首片的 index，
-	// 供逐 chunk 透传时收敛 name 为「每 index 一次」（对齐 OpenAI 官方流）。
-	toolCallSeen := map[int]bool{}
+	// 工业级背压治理：使用 http.ResponseController 为下游写出施加每帧 30 秒滑动超时，
+	// 严禁慢速消费者（Slowloris）或死连接无限期占用底层 TCP 缓冲与网关并发槽。
+	// 函数退出时显式重置写截止时间（time.Time{}），避免污染长连接复用池。
+	rc := http.NewResponseController(w)
+	defer func() {
+		_ = rc.SetWriteDeadline(time.Time{})
+	}()
 
-	// firstID 透传流的消息级 id 基准：缓存首个非空上游 id，后续帧缺失/空串时复用
-	// （同一条 SSE 消息所有帧共用一个真实 id，后台按 id 归并；此前中间帧
-	// 一律补 chatcmpl-wb2api 哨兵，造成同流 id 分裂）。全流无真实 id → 才出现哨兵。
-	firstID := ""
-
-	// writeRaw 原样写出一帧（绕过 normalizeFrame）并 flush。上游 error 帧（error-passthrough）
-	// 与空流错误帧需保留 error 字段，不能被白名单剥掉，故经此写出。
-	// gateway_hint：上游 error 帧透出前按 hintFn 附加 error.gateway_hint 字段
-	// （error 对象上加一个键，message/code/requestId 等原文不动；hintFn 为
-	// nil / 空串 / 非 JSON 帧 → 原样写出，零改写）。
-	writeRaw := func(payload string) error {
-		if hint := frameGatewayHint(hintFn, payload); hint != "" {
-			payload = attachHintToErrorFrame(payload, hint)
-		}
-		if _, werr := io.WriteString(w, "data: "+payload+"\n\n"); werr != nil {
+	var writeMu sync.Mutex
+	refreshAndWrite := func(data []byte) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		if _, werr := w.Write(data); werr != nil {
 			return werr
 		}
 		if fl != nil {
@@ -693,16 +689,45 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string, 
 		return nil
 	}
 
-	// writeFrame 把 payload 按规范白名单重建后以 data: 帧写出并 flush。
-	// 仅 JSON 解析成功时计数记为一次有效转发（JSON 解析失败照常降级原样写出，但不计数）。
+	// 15 秒心跳保活看门狗：在大模型深度推理（reasoning）等上游静默无字节下发阶段，
+	// 定时向下游写入标准 SSE 注释心跳（: keepalive\n\n）并刷新 30 秒写截止时间，
+	// 既能穿透中间反代与 NAT 超时截断，又能在客户端断网/半开死连接时主动探测并掐断上游。
+	stopKeepalive := make(chan struct{})
+	defer close(stopKeepalive)
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopKeepalive:
+				return
+			case <-ticker.C:
+				if err := refreshAndWrite([]byte(": keepalive\n\n")); err != nil {
+					if c, ok := r.(io.Closer); ok {
+						_ = c.Close()
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	toolCallSeen := map[int]bool{}
+	firstID := ""
+
+	writeRaw := func(payload string) error {
+		if hint := frameGatewayHint(hintFn, payload); hint != "" {
+			payload = attachHintToErrorFrame(payload, hint)
+		}
+		return refreshAndWrite([]byte("data: " + payload + "\n\n"))
+	}
+
 	writeFrame := func(payload string) (int, error) {
 		var obj map[string]any
 		valid := 0
 		if json.Unmarshal([]byte(payload), &obj) == nil {
-			// 上游错误帧透传（error-passthrough）：带 error 键的帧**原样写出**，不走
-			// normalizeFrame 白名单——白名单会剥掉 error 字段，客户端就看不到上游
-			// code/msg/requestId。error.message 即上游原文（如 6004 限流、审核拦截），
-			// 计入有效帧（避免误判空流补写 "empty upstream stream"）。
+			// 上游错误帧透传（error-passthrough）：带 error 键的帧原样写出，不走 normalizeFrame 白名单
+			// 白名单会剥掉 error 字段，客户端就看不到上游 code/msg/requestId。
 			if _, hasErr := obj["error"]; hasErr {
 				// 旁路通知（账号处置用）：原始 payload 交给观察者，透传字节不变。
 				if o.onErrorFrame != nil {
@@ -735,11 +760,8 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string, 
 			}
 			valid = 1
 		}
-		if _, werr := io.WriteString(w, "data: "+payload+"\n\n"); werr != nil {
+		if werr := refreshAndWrite([]byte("data: " + payload + "\n\n")); werr != nil {
 			return 0, werr
-		}
-		if fl != nil {
-			fl.Flush()
 		}
 		return valid, nil
 	}
@@ -763,11 +785,8 @@ readLoop:
 			}
 		case trimmed != "":
 			// 注释/其他行：原样透传
-			if _, werr := io.WriteString(w, line); werr != nil {
+			if werr := refreshAndWrite([]byte(line)); werr != nil {
 				return werr
-			}
-			if fl != nil {
-				fl.Flush()
 			}
 		}
 		// 空行（帧分隔）吞掉：本函数自产 "\n\n"
@@ -780,17 +799,12 @@ readLoop:
 	}
 	// 空流（0 有效帧）：先写一帧 error（绕过 normalizeFrame 原样保留 error 字段），
 	// 再补 [DONE] 保证客户端能正常收尾，并返回非 nil error 供调用方记录。
-	// 网关本地空流兜底帧走 hintFn=nil 的直写路径：该形态未覆盖（不编造 hint），
-	// 且 writeRaw 的 hintFn 闭包在空流路径下可能携带上一帧的上下文造成误配。
 	if validFrames == 0 {
 		_ = writeRaw(`{"error":{"message":"empty upstream stream","type":"upstream_error","code":"upstream_parse"}}`)
 	}
 	// 保证恰好写一个 [DONE]（上游漏发时兜底补上）。
-	if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
+	if err := refreshAndWrite([]byte("data: [DONE]\n\n")); err != nil {
 		return err
-	}
-	if fl != nil {
-		fl.Flush()
 	}
 	if validFrames == 0 {
 		return errEmptyStream
