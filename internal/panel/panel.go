@@ -123,9 +123,18 @@ type Panel struct {
 	deletions      *deletionCoordinator
 	customMu       sync.RWMutex
 	customData     map[string]any
-	updateMu       sync.Mutex
-	updateArtifact *UpdateArtifact
-	quarantineWake chan struct{}
+	updateMu          sync.Mutex
+	updateArtifact    *UpdateArtifact
+	quarantineWake    chan struct{}
+	balanceInFlightMu sync.Mutex
+	balanceInFlight   map[string]*inFlightBalanceCall
+}
+
+type inFlightBalanceCall struct {
+	wg      sync.WaitGroup
+	credits int64
+	total   int64
+	err     error
 }
 
 // loginTTL 授权 URL 的最长有效期：超时的 state 直接回收，
@@ -275,9 +284,10 @@ func New(cfg Config) *Panel {
 		mux:         http.NewServeMux(),
 		started:     time.Now(),
 		logs:        NewRing(500),
-		modelsCache: map[string]*panelModelsSnapshot{},
-		logins:      map[string]loginSession{},
-		bootstraps:  map[string]bootstrapSession{},
+		modelsCache:     map[string]*panelModelsSnapshot{},
+		logins:          map[string]loginSession{},
+		bootstraps:      map[string]bootstrapSession{},
+		balanceInFlight: map[string]*inFlightBalanceCall{},
 		modelPolicy: cfg.ModelPolicy,
 		customData: map[string]any{
 			"theme":      "dark",
@@ -1267,7 +1277,35 @@ func (p *Panel) accountBalance(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "account not found")
 		return
 	}
+
+	p.balanceInFlightMu.Lock()
+	if c, ok := p.balanceInFlight[uid]; ok {
+		p.balanceInFlightMu.Unlock()
+		c.wg.Wait()
+		if c.err != nil {
+			writeErr(w, http.StatusBadGateway, "user resource: "+c.err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "credits": c.credits, "credits_total": c.total})
+		return
+	}
+	c := &inFlightBalanceCall{}
+	c.wg.Add(1)
+	p.balanceInFlight[uid] = c
+	p.balanceInFlightMu.Unlock()
+
+	defer func() {
+		p.balanceInFlightMu.Lock()
+		delete(p.balanceInFlight, uid)
+		p.balanceInFlightMu.Unlock()
+	}()
+
 	remain, total, expiring, earliestAt, earliestRemaining, err := p.cfg.Upstream.UserResourceDetailedWithExpiry(a, p.expiringSoonWindow())
+	c.credits = remain
+	c.total = total
+	c.err = err
+	c.wg.Done()
+
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "user resource: "+err.Error())
 		return

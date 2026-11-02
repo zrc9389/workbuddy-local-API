@@ -186,7 +186,7 @@ func (p *Panel) MetaSubscriptions(w http.ResponseWriter, r *http.Request) {
 		select {
 		case accountMutationSlots <- struct{}{}:
 			defer func() { <-accountMutationSlots }()
-		default:
+		case <-time.After(3 * time.Second):
 			metaError(w, metacore.ErrBusy)
 			return
 		}
@@ -228,6 +228,11 @@ func (p *Panel) MetaSubscriptions(w http.ResponseWriter, r *http.Request) {
 				return nil
 			}, nil
 		}); err != nil {
+			if errors.Is(err, metacore.ErrSubscriptionNotFound) {
+				// 幂等静默设计：若订阅已被删除，直接返回成功达成终态吸收
+				writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": v.ID, "already_removed": true})
+				return
+			}
 			metaError(w, err)
 			return
 		}
