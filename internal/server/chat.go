@@ -88,23 +88,24 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-		}
-		ra, closer, rerr := payload.OpenReaderAt()
-		if rerr != nil {
-			writeOpenAIError(w, 500, "spool_error", rerr.Error())
-			return
-		}
-		spans, scanErr := jsonscan.Object(io.NewSectionReader(ra, 0, payload.Size))
-		if scanErr == nil {
-			for _, span := range spans {
-				if span.Key != "model" && span.Key != "stream" {
-					continue
-				}
-				if span.End-span.Start > 65536 {
-					scanErr = errors.New("control field too large")
-					break
-				}
-				value := make([]byte, span.End-span.Start)
+		} else {
+			// 落盘大请求（> 256KiB）：通过 jsonscan 扫描文件流提取 model 与 stream，避免全量反序列化
+			ra, closer, rerr := payload.OpenReaderAt()
+			if rerr != nil {
+				writeOpenAIError(w, 500, "spool_error", rerr.Error())
+				return
+			}
+			spans, scanErr := jsonscan.Object(io.NewSectionReader(ra, 0, payload.Size))
+			if scanErr == nil {
+				for _, span := range spans {
+					if span.Key != "model" && span.Key != "stream" {
+						continue
+					}
+					if span.End-span.Start > 65536 {
+						scanErr = errors.New("control field too large")
+						break
+					}
+					value := make([]byte, span.End-span.Start)
 				if _, e := ra.ReadAt(value, span.Start); e != nil && e != io.EOF {
 					scanErr = e
 					break
@@ -120,6 +121,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if scanErr != nil || peek.Model == "" {
 			writeOpenAIError(w, 400, "invalid_request", "invalid JSON")
 			return
+		}
 		}
 	}
 

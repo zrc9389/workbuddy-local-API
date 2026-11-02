@@ -56,3 +56,43 @@ func TestRecoveryNeverAutoDispatches(t *testing.T) {
 		t.Fatal(s2.Stats())
 	}
 }
+
+func TestSpoolCompleteUnknownReclaimsQuota(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spool_reclaim")
+	s, err := Open(Options{Dir: dir, MaxBytes: 1024, MaxJobs: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Stage a job
+	j, err := s.Stage(context.Background(), strings.NewReader("sample request payload"), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Open and verify
+	r, err := j.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+
+	// Open a second time to exercise verified flag
+	r2, err := j.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.Close()
+
+	// 3. Complete with "unknown" (simulating cleanup on failure)
+	if err := j.Complete("unknown"); err != nil {
+		t.Fatalf("Complete(unknown): %v", err)
+	}
+
+	// 4. Verify quota has been returned: staging another job with MaxJobs=1 must succeed
+	j2, err := s.Stage(context.Background(), strings.NewReader("second request payload"), 50)
+	if err != nil {
+		t.Fatalf("failed to stage second job after unknown completion: %v", err)
+	}
+	_ = j2.Complete("cancelled")
+}

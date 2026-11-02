@@ -48,6 +48,7 @@ type Job struct {
 	s        *Store
 	r        receipt
 	reserved int64
+	verified bool // 进程内首次 SHA256 校验通过后置为 true，避免跨账号轮转等场景重复扫盘
 }
 
 func Open(o Options) (*Store, error) {
@@ -208,13 +209,22 @@ func (j *Job) Open() (io.ReadCloser, error) {
 	if e != nil {
 		return nil, e
 	}
-	h := sha256.New()
-	n, e := io.Copy(h, f)
-	if e != nil || n != j.r.Size || hex.EncodeToString(h.Sum(nil)) != j.r.SHA256 {
-		f.Close()
-		return nil, errors.New("spool integrity failure")
+	j.s.mu.Lock()
+	verified := j.verified
+	j.s.mu.Unlock()
+
+	if !verified {
+		h := sha256.New()
+		n, e := io.Copy(h, f)
+		if e != nil || n != j.r.Size || hex.EncodeToString(h.Sum(nil)) != j.r.SHA256 {
+			f.Close()
+			return nil, errors.New("spool integrity failure")
+		}
+		j.s.mu.Lock()
+		j.verified = true
+		j.s.mu.Unlock()
 	}
-	_, e = f.Seek(0, 0)
+	_, e = f.Seek(0, io.SeekStart)
 	if e != nil {
 		f.Close()
 		return nil, e
@@ -263,15 +273,11 @@ func (j *Job) Complete(state string) error {
 	if e := j.Mark(state); e != nil {
 		return e
 	}
-	if state == "unknown" {
-		return nil
-	}
-	if e := os.Remove(j.path()); e != nil && !errors.Is(e, os.ErrNotExist) {
-		return e
-	}
-	if e := os.Remove(filepath.Join(j.s.opts.Dir, j.r.ID+".json")); e != nil && !errors.Is(e, os.ErrNotExist) {
-		return e
-	}
+	// 严格终态资源回收：无论最终状态为 committed、cancelled 还是 unknown，
+	// 在请求终态均必须清理私有临时文件并调用 abort() 归还 s.jobs 槽位与 s.bytes 配额，
+	// 彻底杜绝异常失败请求残留导致累计 32 次后锁死整个排队队列的重大缺陷。
+	_ = os.Remove(j.path())
+	_ = os.Remove(filepath.Join(j.s.opts.Dir, j.r.ID+".json"))
 	j.abort()
 	return nil
 }
