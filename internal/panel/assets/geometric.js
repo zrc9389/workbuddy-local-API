@@ -5877,16 +5877,16 @@ export function expiryTone(days) {
                 return;
             } else if (ch === 'overview' || ch === 'gateway' || ch === 'sphere') {
                 const isRes = WBState.overviewMode === 'RESOURCE';
-                const primaryArr = isRes ? WBState.cpuHistory : WBState.downHistory;
-                const secondaryArr = isRes ? WBState.memHistory : WBState.upHistory;
+                const primaryArr = isRes ? WBState.cpuHistory : WBState.upHistory;
+                const secondaryArr = isRes ? WBState.memHistory : WBState.downHistory;
                 const [pPts, sPts] = overviewChartPoints(primaryArr, secondaryArr);
 
-                const headerLeft = isRes ? '系统资源变动曲线（实线服务 CPU负载 / 虚线服务总内存）' : '吞吐呼吸曲线（实线下行速率 / 虚线上行速率）';
+                const headerLeft = isRes ? '系统资源变动曲线（实线 CPU负载 / 虚线服务总内存）' : '吞吐呼吸曲线（实线上行速率 / 虚线下行速率）';
                 const headerRight = isRes
                     ? ('CPU负载 ' + (WBState.cpuAvailable ? WBState.cpuPct.toFixed(1) + '%' : '—') + ' / 服务总内存 ' + (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'))
                     : (WBState.trafficAvailable
-                        ? '下行速率 ' + WBState.downMbps.toFixed(2) + ' MB/s / 上行速率 ' + WBState.upMbps.toFixed(2) + ' MB/s'
-                        : '下行速率 — / 上行速率 —');
+                        ? '上行速率 ' + WBState.upMbps.toFixed(2) + ' MB/s / 下行速率 ' + WBState.downMbps.toFixed(2) + ' MB/s'
+                        : '上行速率 — / 下行速率 —');
                 const metric1Label = isRes ? '服务总内存' : '实时上行';
                 const metric1Val = isRes
                     ? (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—')
@@ -9756,22 +9756,22 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             const leftHeaderEl = document.getElementById('ov-header-left');
             if (leftHeaderEl) {
                 leftHeaderEl.textContent = isRes
-                    ? '系统资源变动曲线（实线服务 CPU负载 / 虚线服务总内存）'
-                    : '吞吐呼吸曲线（实线下行速率 / 虚线上行速率）';
+                    ? '系统资源变动曲线（实线 CPU负载 / 虚线服务总内存）'
+                    : '吞吐呼吸曲线（实线上行速率 / 虚线下行速率）';
             }
             const rightHeaderEl = document.getElementById('ov-header-right');
             if (rightHeaderEl) {
                 rightHeaderEl.textContent = isRes
                     ? ('CPU负载 ' + (WBState.cpuAvailable ? WBState.cpuPct.toFixed(1) + '%' : '—') + ' / 服务总内存 ' + (WBState.serviceMemoryAvailable ? WBState.memMb.toFixed(1) + ' MB' : '—'))
                     : (WBState.trafficAvailable
-                        ? '下行速率 ' + WBState.downMbps.toFixed(2) + ' MB/s / 上行速率 ' + WBState.upMbps.toFixed(2) + ' MB/s'
-                        : '下行速率 — / 上行速率 —');
+                        ? '上行速率 ' + WBState.upMbps.toFixed(2) + ' MB/s / 下行速率 ' + WBState.downMbps.toFixed(2) + ' MB/s'
+                        : '上行速率 — / 下行速率 —');
             }
             const pPoly = document.getElementById('ov-poly-primary');
             const sPoly = document.getElementById('ov-poly-secondary');
             if (pPoly && sPoly) {
-                const primaryArr = isRes ? WBState.cpuHistory : WBState.downHistory;
-                const secondaryArr = isRes ? WBState.memHistory : WBState.upHistory;
+                const primaryArr = isRes ? WBState.cpuHistory : WBState.upHistory;
+                const secondaryArr = isRes ? WBState.memHistory : WBState.downHistory;
                 const [pPts, sPts] = overviewChartPoints(primaryArr, secondaryArr);
                 pPoly.setAttribute('points', pPts);
                 sPoly.setAttribute('points', sPts);
