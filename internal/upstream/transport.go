@@ -48,10 +48,11 @@ const (
 	responseHeaderTimeout = 60 * time.Second
 )
 
-// maxIdleConns / maxIdleConnsPerHost 连接池容量（既有值，一并集中定义）。
+// maxIdleConns / maxIdleConnsPerHost 连接池容量：
+// 针对本地私有网关场景进行收拢优化（最大 16，单 Host 2 条空闲连接），避免闲置时霸占系统缓冲区。
 const (
-	maxIdleConns        = 100
-	maxIdleConnsPerHost = 20
+	maxIdleConns        = 16
+	maxIdleConnsPerHost = 2
 )
 
 // newDialer 构造出站拨号器（DialContext 的 Timeout/KeepAlive 参数集中于此，

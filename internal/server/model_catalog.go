@@ -20,10 +20,8 @@ var dynamicModelsCache struct {
 }
 
 const (
-	// dynamicModelsTTL 模型目录缓存时长。曾是 1h；缩到 10min 对齐「面板实时、
-	// API 缓存」的漂移痛点（PR #38 报告）：目录新增模型时面板立即可见，公开
-	// /v1/models 最多滞后一个 TTL。再短就不值得——每次失效都是 2 次上游探测。
-	dynamicModelsTTL        = 10 * time.Minute
+	// dynamicModelsTTL 模型目录按需缓存时长（3 分钟）：闲置后及时释放全量 ModelInfo 对象树。
+	dynamicModelsTTL        = 3 * time.Minute
 	modelsFetchFailCooldown = 5 * time.Minute
 )
 
@@ -266,9 +264,13 @@ func (h *Handler) fetchDynamicModels() []upstream.ModelInfo {
 // 不发起任何上游调用（hint 判定用：错误路径加一次 FetchModels 网络调用既拖慢
 // 错误响应、又污染上游调用语义）。
 func cachedModelsSnapshot() []upstream.ModelInfo {
-	dynamicModelsCache.RLock()
-	defer dynamicModelsCache.RUnlock()
-	if len(dynamicModelsCache.ids) == 0 || time.Since(dynamicModelsCache.fetched) >= dynamicModelsTTL {
+	dynamicModelsCache.Lock()
+	defer dynamicModelsCache.Unlock()
+	if len(dynamicModelsCache.ids) == 0 {
+		return nil
+	}
+	if time.Since(dynamicModelsCache.fetched) >= dynamicModelsTTL {
+		dynamicModelsCache.ids = nil // 闲置超时后显式置空大对象切片引用，供 GC 及时回收
 		return nil
 	}
 	return dynamicModelsCache.ids

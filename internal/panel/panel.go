@@ -132,12 +132,12 @@ type Panel struct {
 // 防止"开了添加账号弹窗就走开"的会话永久滞留。
 const loginTTL = 15 * time.Minute
 
-// 面板模型目录缓存：成功 10 分钟；上游失败负缓存 60 秒（期间不再打上游）。
-// 手动刷新冷却 5 分钟，避免面板连点放大上游请求。
+// 面板模型目录缓存：优化为按需缓存 3 分钟；上游失败负缓存 60 秒。
+// 手动刷新冷却 2 分钟，避免面板连点放大上游请求。闲置时避免大对象树长期霸占内存。
 const (
-	panelModelsTTL          = 10 * time.Minute
+	panelModelsTTL          = 3 * time.Minute
 	panelModelsFailCooldown = 60 * time.Second
-	panelModelsRefreshCool  = 5 * time.Minute
+	panelModelsRefreshCool  = 2 * time.Minute
 )
 
 // panelModelsSnapshot 单域（cn/global）模型目录快照。失败时保留旧 infos，

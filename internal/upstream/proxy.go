@@ -13,8 +13,10 @@ import (
 	"time"
 )
 
-const proxyCacheLimit = 128
-const proxyCacheTTL = 10 * time.Minute
+const proxyCacheLimit = 32
+// proxyCacheTTL 账号代理传输层空闲保活时长（2 分钟）：
+// 闲置 2 分钟后自动执行 CloseIdleConnections 并剔除，主动释放操作系统 socket 与网络缓冲区物理内存。
+const proxyCacheTTL = 2 * time.Minute
 
 // One process-wide bounded cache avoids requiring changes to Client's public shape.
 // Keys isolate clients, account UIDs and distinct JSON/SSE base transports.
@@ -199,9 +201,11 @@ func (c *Client) accountTransport(base *http.Client, a *auth.Auth) http.RoundTri
 	u, _ := url.Parse(raw)
 	clone := tr.Clone()
 	clone.Proxy = http.ProxyURL(u)
-	clone.MaxIdleConns = 8
-	clone.MaxIdleConnsPerHost = 4
-	clone.MaxConnsPerHost = 8
+	// 温和收拢空闲连接池：避免单机私有部署闲置时持有过多死连接与缓冲
+	clone.MaxIdleConns = 4
+	clone.MaxIdleConnsPerHost = 2
+	clone.MaxConnsPerHost = 4
+	clone.IdleConnTimeout = 30 * time.Second
 	// Custom TLS dial hooks can bypass net/http's proxy machinery. Reject rather than leak direct.
 	if clone.DialTLS != nil || clone.DialTLSContext != nil {
 		return proxyFailure{}
