@@ -52,7 +52,7 @@ test('runtime inline page uses the documented API paths and methods', () => {
     .filter(([, , path]) => path.startsWith('/'))
     .map(([, , path, options = '']) => [path.replace(/\$\{[^}]+\}/g, '{state}'), /method\s*:\s*['"]POST['"]/i.test(options) ? 'POST' : 'GET']);
   const expected = [
-    ['GET','/api/preload-bundle'], ['GET','/auth/session'], ['POST','/auth/login'],
+    ['GET','/api/preload-bundle'], ['GET','/api/telemetry'], ['GET','/auth/session'], ['POST','/auth/login'],
     ['POST','/auth/logout'], ['POST','/auth/password'], ['GET','/panel/api/overview'],
     ['GET','/panel/api/meta/nodes'], ['GET','/panel/api/meta/stats'], ['GET','/panel/api/preferences'], ['GET','/panel/api/packages'], ['GET','/panel/api/request_logs?summary=1&limit=50'], ['GET','/panel/api/customization'],
     ['GET','/panel/api/login/poll?state={state}'], ['POST','/panel/api/meta/subscriptions'],
