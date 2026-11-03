@@ -1683,6 +1683,21 @@ export function expiryTone(days) {
                 memoryEncryptedBundle = bundle;
                 backendPreloadFinished = true;
                 backendPreloadSuccess = true;
+
+                // 若当前浏览器已具备有效登录态（例如刷新页面），开屏期并行预热拉取错误日志与用量
+                safeApiFetch('/auth/session', {}, 1500).then(sess => {
+                    if (sess && sess.authenticated) {
+                        csrfToken = sess.csrf_token || csrfToken;
+                        serverSession = sess;
+                        Promise.all([
+                            safeApiFetch('/panel/api/request_logs?summary=1&limit=50', {}, 2500),
+                            safeApiFetch('/panel/api/usage?hours=24', {}, 2500)
+                        ]).then(([logs, usage]) => {
+                            if (logs) syncLogsData(logs);
+                            if (usage) syncUsageData(usage);
+                        }).catch(() => {});
+                    }
+                }).catch(() => {});
             } catch (e) {
                 backendPreloadFinished = true;
                 backendPreloadSuccess = false;
@@ -1723,11 +1738,12 @@ export function expiryTone(days) {
                     csrfToken = sessionRes.csrf_token;
                     serverSession = sessionRes;
                 }
-                const [ovRes, egressRes, pkgRes, logsRes, customRes, modelsRes, defEgressRes] = await Promise.all([
+                const [ovRes, egressRes, pkgRes, logsRes, usageRes, customRes, modelsRes, defEgressRes] = await Promise.all([
                     safeApiFetch('/panel/api/overview', {}, 3500),
                     safeApiFetch('/panel/api/meta/nodes', {}, 3500),
                     safeApiFetch('/panel/api/packages', {}, 3500),
                     safeApiFetch('/panel/api/request_logs?summary=1&limit=50', {}, 3500),
+                    safeApiFetch('/panel/api/usage?hours=24', {}, 3500),
                     safeApiFetch('/panel/api/customization', {}, 3500),
                     safeApiFetch('/panel/api/models', {}, 10000),
                     safeApiFetch('/panel/api/egress/default', {}, 3500)
@@ -1742,9 +1758,7 @@ export function expiryTone(days) {
                 if (pkgRes) syncPackagesData(pkgRes);
                 if (defEgressRes?.ok && typeof defEgressRes.node_id === 'string') { WBState.systemDefaultNode = defEgressRes.node_id; WBState.systemDefaultNodeName = defEgressRes.node_name || ''; }
                 if (logsRes) syncLogsData(logsRes);
-                const usage = await safeApiFetch('/panel/api/usage?hours=24', {}, 10000);
-                if (epoch !== authTransitionEpoch) return;
-                syncUsageData(usage);
+                if (usageRes) syncUsageData(usageRes);
                 const maintenance = await safeApiFetch('/panel/api/maintenance/status', {}, 10000);
                 if (epoch !== authTransitionEpoch) return;
                 syncMaintenanceData(maintenance);
@@ -9874,15 +9888,56 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             if (el) el.textContent = `[ UPTIME // ${formatUptime(WBState.uptimeSec)} ]`;
         }
 
+        let telemetryPollRunning = false;
+        async function sampleTelemetryNow() {
+            if (!IS_PROD_ENV || telemetryPollRunning) return;
+            telemetryPollRunning = true;
+            try {
+                const data = await safeApiFetch('/api/telemetry', {}, 1500);
+                if (data) {
+                    WBState.cpuAvailable = data.service_cpu_available === true;
+                    if (WBState.cpuAvailable && typeof data.service_cpu_percent === 'number') {
+                        WBState.cpuPct = data.service_cpu_percent;
+                    }
+                    WBState.serviceMemoryAvailable = data.service_memory_available === true;
+                    if (WBState.serviceMemoryAvailable && typeof data.service_memory_bytes === 'number') {
+                        WBState.memMb = data.service_memory_bytes / 1048576;
+                    }
+                    WBState.trafficAvailable = data.traffic_available === true;
+                    if (WBState.trafficAvailable) {
+                        WBState.upMbps = (Number(data.upload_speed) || 0) / 1048576;
+                        WBState.downMbps = (Number(data.download_speed) || 0) / 1048576;
+                    }
+                    if (typeof data.uptime_sec === 'number') {
+                        WBState.uptimeSec = data.uptime_sec;
+                    }
+                }
+            } catch (e) {
+                // Ignore transient telemetry error
+            } finally {
+                telemetryPollRunning = false;
+            }
+            WBState.cpuHistory.shift();  WBState.cpuHistory.push(WBState.cpuPct);
+            WBState.memHistory.shift();  WBState.memHistory.push(WBState.memMb);
+            WBState.upHistory.shift();   WBState.upHistory.push(WBState.upMbps);
+            WBState.downHistory.shift(); WBState.downHistory.push(WBState.downMbps);
+
+            if (pageTransition.state === 'IN_PAGE') {
+                updateEditorialKeyFigures(false);
+                if (['overview', 'gateway', 'sphere'].includes(WBState.currentChapter)) {
+                    updateOverviewStageInPlace();
+                }
+            }
+        }
+        // 开屏立即进行首拍采样，无需等待1秒
+        sampleTelemetryNow();
+
         // 秒级实时心跳：静默更新数值（animate=false，绝不重播入场动画或产生抖动）
         setInterval(() => {
             WBState.uptimeSec++;
             updateBottomRightUptime();
             if (IS_PROD_ENV) {
-                if (pageTransition.state === 'IN_PAGE') {
-                    updateEditorialKeyFigures(false);
-                    if (['overview', 'gateway', 'sphere'].includes(WBState.currentChapter)) updateOverviewStageInPlace();
-                }
+                sampleTelemetryNow();
                 return;
             }
             let coolingChanged = false;

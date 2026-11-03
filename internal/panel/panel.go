@@ -525,6 +525,8 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/api/accounts/export", p.AccountsExport)
 	p.mux.HandleFunc("POST /panel/api/accounts/import", p.AccountsImport)
 	p.mux.HandleFunc("GET /panel/api/overview", p.overview)
+	p.mux.HandleFunc("GET /panel/api/telemetry", p.telemetryHandler)
+	p.mux.HandleFunc("GET /api/telemetry", p.telemetryHandler)
 	p.mux.HandleFunc("GET /panel/api/session/bootstrap/status", p.bootstrapStatus)
 	p.mux.HandleFunc("POST /panel/api/session/bootstrap", p.bootstrapStart)
 	p.mux.HandleFunc("GET /panel/api/logs", p.logsHandler)
@@ -788,6 +790,41 @@ func (p *Panel) overview(w http.ResponseWriter, r *http.Request) {
 		"data":                     data,
 	})
 }
+
+// TelemetrySnapshot 导出轻量级、只读、完全脱敏的系统实时指标快照。
+// 供未登录开屏阶段高频（1秒）滑动采样，绝不包含任何账号、凭证或业务数据。
+func (p *Panel) TelemetrySnapshot() map[string]any {
+	var memory runtime.MemStats
+	runtime.ReadMemStats(&memory)
+	serviceMemory, serviceMemoryAvailable := serviceMemoryBytes()
+	cpuPercent, cpuAvailable := p.cpu.sample(time.Now(), serviceCPUUsage)
+	var upSpeed, downSpeed int64
+	var trafficAvailable bool
+	if p.cfg.Meta != nil {
+		stats := p.cfg.Meta.Stats()
+		trafficAvailable = !stats.Demo && (!stats.Running || stats.SampledAt != nil)
+		if trafficAvailable {
+			upSpeed = stats.UploadSpeed
+			downSpeed = stats.DownloadSpeed
+		}
+	}
+	return map[string]any{
+		"service_memory_bytes":     serviceMemory,
+		"service_memory_available": serviceMemoryAvailable,
+		"service_cpu_percent":      cpuPercent,
+		"service_cpu_available":    cpuAvailable,
+		"upload_speed":             upSpeed,
+		"download_speed":           downSpeed,
+		"traffic_available":        trafficAvailable,
+		"uptime_sec":               int(time.Since(p.started).Seconds()),
+		"timestamp":                time.Now().Unix(),
+	}
+}
+
+func (p *Panel) telemetryHandler(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, p.TelemetrySnapshot())
+}
+
 
 // logsHandler 返回日志环形缓冲快照（时间升序，含频道标记 chat/task/sys）。
 func (p *Panel) logsHandler(w http.ResponseWriter, r *http.Request) {

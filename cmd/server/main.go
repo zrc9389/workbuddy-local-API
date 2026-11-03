@@ -484,9 +484,23 @@ func run() error {
 
 	// 绑定开机真预加载：当用户访问首页加载动画（69%~100%）时，
 	// 后台并发刷新所有可用账号的最新余额并落盘，用优雅的动画掩盖上游网络耗时
+	// 绑定轻量只读遥测快照数据源：供未登录开屏阶段高频（1秒）滑动采样
+	if localAuth != nil && pn != nil {
+		localAuth.SetTelemetryProvider(pn.TelemetrySnapshot)
+	}
+
+	// 绑定开机真预加载：当用户访问首页加载动画（69%~100%）时，
+	// 后台并发刷新所有可用账号的最新余额并落盘，用优雅的动画掩盖上游网络耗时，
+	// 并提前预热用量聚合与错误日志快照
 	if up != nil && sch != nil && localAuth != nil && localAuth.Preload() != nil {
 		localAuth.Preload().SetProvider(func() ([]byte, error) {
 			sch.RunBalanceRefreshNow()
+			if rec != nil {
+				rec.Rollup(time.Now())
+			}
+			if requestLog != nil {
+				_ = requestLog.Snapshot()
+			}
 			return localAuth.Preload().DefaultSensitiveData()
 		})
 	}

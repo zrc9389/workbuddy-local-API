@@ -38,12 +38,13 @@ type session struct {
 	Expires time.Time
 }
 type Auth struct {
-	mu       sync.Mutex
-	path     string
-	record   passwordRecord
-	sessions map[string]session
-	attempts []time.Time
-	preload  *PreloadManager
+	mu                sync.Mutex
+	path              string
+	record            passwordRecord
+	sessions          map[string]session
+	attempts          []time.Time
+	preload           *PreloadManager
+	telemetryProvider func() map[string]any
 }
 
 func ValidateListen(addr string) error {
@@ -226,6 +227,10 @@ func (a *Auth) Wrap(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		if !localBoundary(w, r) {
+			return
+		}
+		if (r.URL.Path == "/api/telemetry" || r.URL.Path == "/panel/api/telemetry") && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			a.serveTelemetry(w, r)
 			return
 		}
 		if r.URL.Path == "/api/preload-bundle" || r.URL.Path == "/api/unlock" {
@@ -431,3 +436,32 @@ func denyRequest(w http.ResponseWriter, r *http.Request, status int, msg string)
 
 // Preload 返回绑定的 PreloadManager
 func (a *Auth) Preload() *PreloadManager { return a.preload }
+
+
+func (a *Auth) SetTelemetryProvider(fn func() map[string]any) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.telemetryProvider = fn
+}
+
+func (a *Auth) serveTelemetry(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	fn := a.telemetryProvider
+	a.mu.Unlock()
+	var data map[string]any
+	if fn != nil {
+		data = fn()
+	} else {
+		data = map[string]any{
+			"service_memory_available": false,
+			"service_cpu_available":    false,
+			"traffic_available":        false,
+			"uptime_sec":               0,
+			"timestamp":                time.Now().Unix(),
+		}
+	}
+	jsonReply(w, http.StatusOK, data)
+}
