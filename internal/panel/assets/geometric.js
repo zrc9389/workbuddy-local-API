@@ -1678,7 +1678,7 @@ export function expiryTone(days) {
 
             try {
                 // 登录前只等待公开 bootstrap。受保护的面板接口必须等登录成功后再请求。
-                const bundle = await safeApiFetch('/api/preload-bundle', {}, 3000);
+                const bundle = await safeApiFetch('/api/preload-bundle', {}, 5500);
                 if (!bundle || !bundle.ciphertext || !bundle.iv) throw new Error('bootstrap unavailable');
                 memoryEncryptedBundle = bundle;
                 backendPreloadFinished = true;

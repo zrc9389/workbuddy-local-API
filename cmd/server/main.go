@@ -482,6 +482,15 @@ func run() error {
 		sch.StartBalanceRefresh(ctx, cfg.BalanceRefreshInterval)
 	}
 
+	// 绑定开机真预加载：当用户访问首页加载动画（69%~100%）时，
+	// 后台并发刷新所有可用账号的最新余额并落盘，用优雅的动画掩盖上游网络耗时
+	if up != nil && sch != nil && localAuth != nil && localAuth.Preload() != nil {
+		localAuth.Preload().SetProvider(func() ([]byte, error) {
+			sch.RunBalanceRefreshNow()
+			return localAuth.Preload().DefaultSensitiveData()
+		})
+	}
+
 	// 启动即预热模型积分倍率表：倍率只在 FetchModels/FetchGlobalModelInfos 成功时
 	// 填充（两者均懒触发），重启后到首次 /v1/models 或面板模型页被访问之前，
 	// ModelRate 恒返回空串——积分保底的目录兜底在这段空窗期内形同虚设，触底号

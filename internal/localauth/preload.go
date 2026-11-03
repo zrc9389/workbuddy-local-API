@@ -78,6 +78,20 @@ func NewPreloadManager(a *Auth, provider ...func() ([]byte, error)) *PreloadMana
 	return pm
 }
 
+// SetProvider 注册自定义敏感数据生成函数（如开机真预加载余额与凭据）
+func (pm *PreloadManager) SetProvider(p func() ([]byte, error)) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if p != nil {
+		pm.provider = p
+	}
+}
+
+// DefaultSensitiveData 导出默认敏感数据包
+func (pm *PreloadManager) DefaultSensitiveData() ([]byte, error) {
+	return pm.defaultSensitiveDataProvider()
+}
+
 // defaultSensitiveDataProvider 默认核心敏感数据生成
 func (pm *PreloadManager) defaultSensitiveDataProvider() ([]byte, error) {
 	data := map[string]any{

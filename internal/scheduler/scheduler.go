@@ -216,6 +216,10 @@ func poke(ch chan struct{}) {
 	}
 }
 
+// beijingLocation 锁定北京时间（CST / UTC+8），调度器统一按北京时间计算任务触发整点，
+// 彻底解耦海外 VPS 与各类容器宿主机的默认 UTC 零时区差异。
+var beijingLocation = time.FixedZone("CST", 8*3600)
+
 // nextFire 返回 now 之后最近的一个整点触发时间；hours 为本地小时（0-23）。
 func nextFire(now time.Time, hours []int) time.Time {
 	var earliest time.Time
@@ -378,7 +382,7 @@ func (s *Scheduler) waitSlot(ctx context.Context, next time.Time, step time.Dura
 // Reconfigure 触发 rearmSchedule 时提前唤醒重算（新时点/开关立即生效）。
 func (s *Scheduler) Run(ctx context.Context) {
 	for {
-		next, kinds := s.nextWake(time.Now())
+		next, kinds := s.nextWake(time.Now().In(beijingLocation))
 		if next.IsZero() {
 			// 四类任务全部禁用：不空转，等重排通知（在线改配置重新启用）或退出信号。
 			select {

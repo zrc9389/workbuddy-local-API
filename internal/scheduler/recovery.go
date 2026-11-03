@@ -9,5 +9,5 @@ func (s *Scheduler) NextCreditRecovery(now time.Time) time.Time {
 	if s.cfg.CheckinDisabled {
 		return time.Time{}
 	}
-	return nextFire(now, s.cfg.CheckinHours)
+	return nextFire(now.In(beijingLocation), s.cfg.CheckinHours)
 }
