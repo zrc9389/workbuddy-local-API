@@ -111,6 +111,7 @@ func New(cfg Config) *Scheduler {
 	if len(cfg.BlackcatHours) == 0 {
 		cfg.BlackcatHours = []int{23}
 	}
+
 	return &Scheduler{
 		cfg:           cfg,
 		adoptTried:    make(map[string]string),
@@ -427,6 +428,7 @@ func (s *Scheduler) runBatch(ctx context.Context, kinds []taskKind) {
 				s.RunCheckinNow()
 			case taskTravel:
 				s.RunTravelNow()
+				s.RunBalanceRefreshNow()
 			case taskActivity:
 				s.runActivity(ctx)
 			case taskKeepalive:
@@ -678,8 +680,8 @@ func (s *Scheduler) RunBalanceRefreshNow() BalanceRefreshResult {
 // 独立于 Run 的小时制排程：余额是分钟级观测量，不值得为它扩展 nextFire 的粒度。
 // 运行期可用 SetBalanceInterval 热改间隔（下一轮生效）。
 func (s *Scheduler) StartBalanceRefresh(ctx context.Context, interval time.Duration) {
-	if interval <= 0 {
-		return
+	if interval < 0 {
+		interval = 0
 	}
 	s.balanceInterval.Store(int64(interval))
 	go func() {

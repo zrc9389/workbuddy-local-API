@@ -1,10 +1,12 @@
 // 冷却与熔断：Cooldown（固定时长账号级冷却）、CooldownSoftRate（账号级软冷却，对齐
 // 上游重置时间或有界退避）、CooldownSoftForModel（模型级软冷却，对齐重置墙钟）、
-// BlockModelBackoff/Clear（11102 负缓存）、软冷却封顶、熔断失败累计、签到解冻。
+// CooldownModelBusy（14003 模型繁忙短冷却）、BlockModelBackoff/Clear（11102/11158 负缓存）、
+// 软冷却封顶、熔断失败累计、签到解冻。
 package pool
 
 import (
 	"log"
+	"sort"
 	"strings"
 	"time"
 )
@@ -224,14 +226,63 @@ func clearRoutingModelCooldownsLocked(e *entry) {
 	}
 }
 
-// modelBlock TTL 常量（11102 负缓存退避）：
-// 首次命中 6h；半开到期后允许放行重试，再次命中 TTL = base × 2^min(hits-1, shift)；
-// 封顶 24h（最多一天再试一次）。该模型请求成功即由 BlockModelClear 清除。
+// modelBlock TTL 常量（11102/11158 负缓存退避）：
+// 首次命中 2m；半开到期后允许放行重试，再次命中 TTL = base × 2^min(hits-1, shift)；
+// 封顶 10m（最多十分钟再试一次）。该模型请求成功即由 BlockModelClear 清除。
+//
+// 为什么从 6h/24h 缩到 2m/10m：瞬时 11102 并不总是「账号永久无此模型」，也会因
+// 上游路由抖动、临时发布或分类误判触发；旧 6h~24h 参数会把偶发错误放大成半天到一天
+// 的全池模型不可用，缩到 2m~10m 既保留指数退避，也能在数分钟内自动探测自愈。
 const (
-	modelBlockBaseTTL = 6 * time.Hour
+	modelBlockBaseTTL = 2 * time.Minute
 	modelBlockShift   = 4
-	modelBlockMaxTTL  = 24 * time.Hour
+	modelBlockMaxTTL  = 10 * time.Minute
 )
+
+// modelBusyBase/modelBusyMax 为 14003「模型繁忙」的模型级短冷却窗口：
+// 14003 属于间歇性拥塞抖动，仅影响单账号上的该模型（同号其他模型立即可用），
+// 故按 10s 起步指数退避并封顶 1m，避免复用长冷却把瞬时抖动放大成长时间不可用。
+const (
+	modelBusyBase = 10 * time.Second
+	modelBusyMax  = time.Minute
+)
+
+// CooldownModelBusy 为 (账号, 模型) 记录 14003「模型繁忙」短冷却。
+//   - 只写 e.modelCooldowns[model]，不碰账号级 e.until（同号其他模型立即可选）；
+//   - 若当前已有未过期的模型冷却，直接返回，既不缩短长冷却也不延长有效窗口；
+//   - 从 10s 起按命中次数指数翻倍，封顶 1m。
+func (p *Pool) CooldownModelBusy(uid, model, reason string) {
+	if uid == "" || model == "" {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	acctEntry, ok := p.byUID[uid]
+	if !ok {
+		return
+	}
+	now := time.Now()
+	if oldEntry, exists := acctEntry.modelCooldowns[model]; exists && oldEntry.Until.After(now) {
+		return
+	}
+	if acctEntry.modelCooldowns == nil {
+		acctEntry.modelCooldowns = map[string]modelCooldown{}
+	}
+	hits := acctEntry.modelCooldowns[model].Hits + 1
+	busyDur := modelBusyBase
+	for idx := 1; idx < hits && busyDur < modelBusyMax; idx++ {
+		busyDur *= 2
+	}
+	if busyDur > modelBusyMax {
+		busyDur = modelBusyMax
+	}
+	acctEntry.modelCooldowns[model] = modelCooldown{
+		Until:  now.Add(busyDur),
+		Reason: reason,
+		Hits:   hits,
+	}
+	p.dirty.Store(true)
+}
 
 // BlockModelBackoff 11102「该后端无此模型」的 (账号, 模型) 负缓存入口
 // （handler.applyErrorPolicy 调用）。复用 modelCooldowns 机制（不新建平行状态）：
@@ -275,27 +326,27 @@ func (p *Pool) BlockModelBackoff(uid, model, reason string) {
 	p.dirty.Store(true)
 }
 
-// BlockModelClear 清除 (账号, 模型) 的 11102 负缓存条目（该模型实测又通了）。半开探测
-// 或正常请求对该模型成功后调用（handler 成功路径）。只清 11102 条目、不碰 6004 独立
-// 冷却表——6004 有自身上游重置墙钟语义，成功不该抹掉。reason 前缀判定区分两者：
-// 11102 条目的 reason 恒以 "11102" 开头（见 upstream.BlockModelReason）。
+// BlockModelClear 清除 (账号, 模型) 的 11102/11158 负缓存条目（该模型实测又通了）。半开探测
+// 或正常请求对该模型成功后调用（handler 成功路径）。只清 11102 与 11158 条目、不碰
+// 6004/14003 独立冷却表——6004 有自身上游重置墙钟语义，14003 为短窗繁忙退避，成功不该抹掉。
+// 通过 reason 前缀区分各类模型冷却条目。
 func (p *Pool) BlockModelClear(uid, model string) {
 	if uid == "" || model == "" {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	e, ok := p.byUID[uid]
-	if !ok || len(e.modelCooldowns) == 0 {
+	acctEntry, ok := p.byUID[uid]
+	if !ok || len(acctEntry.modelCooldowns) == 0 {
 		return
 	}
-	mc, exists := e.modelCooldowns[model]
-	if !exists || !strings.HasPrefix(mc.Reason, "11102") {
+	modelEntry, exists := acctEntry.modelCooldowns[model]
+	if !exists || (!strings.HasPrefix(modelEntry.Reason, "11102") && !strings.HasPrefix(modelEntry.Reason, "11158")) {
 		return
 	}
-	delete(e.modelCooldowns, model)
-	if len(e.modelCooldowns) == 0 {
-		e.modelCooldowns = nil
+	delete(acctEntry.modelCooldowns, model)
+	if len(acctEntry.modelCooldowns) == 0 {
+		acctEntry.modelCooldowns = nil
 	}
 	p.dirty.Store(true)
 }
@@ -304,6 +355,7 @@ func (p *Pool) BlockModelClear(uid, model string) {
 type ModelBlockStatus struct {
 	Blocked bool      // true = 每个非禁用账号都对该模型处于冷却中
 	Reason  string    // 冷却原因（通常为上游原文，如 "11102 model ... not found"）
+	Reasons []string  // 全部冷却账号的非空原因列表（用于区分纯 11102 与混合原因）
 	Until   time.Time // 最早解封时间（零值 = 上游未给重置时刻）
 	Count   int       // 因此被挡的账号数
 }
@@ -330,34 +382,38 @@ func (p *Pool) ModelBlocked(model string) ModelBlockStatus {
 	defer p.mu.Unlock()
 	now := time.Now()
 
-	var st ModelBlockStatus
-	for _, e := range p.byUID {
+	var status ModelBlockStatus
+	for _, acctEntry := range p.byUID {
 		// 暂停选号（paused）号与禁用号同口径跳过：它此刻不可选，「能服务」的
 		// 证明不成立——否则一个暂停的健康号会掩盖「其余号全被模型级冷却挡住」。
-		if e.manualDisabled || e.balanceBlocked() || e.disabled || e.paused {
+		if acctEntry.manualDisabled || acctEntry.balanceBlocked() || acctEntry.disabled || acctEntry.paused {
 			continue // 禁用/暂停号不参与：它们的不可用与模型无关
 		}
-		if !e.modelCooled(now, model) {
+		if !acctEntry.modelCooled(now, model) {
 			// 还有账号能服务这个模型 → 不是模型级阻塞。
 			return ModelBlockStatus{}
 		}
-		st.Count++
-		if mc, ok := e.modelCooldowns[model]; ok {
-			if st.Reason == "" {
-				st.Reason = mc.Reason
+		status.Count++
+		if modelEntry, ok := acctEntry.modelCooldowns[model]; ok {
+			if status.Reason == "" {
+				status.Reason = modelEntry.Reason
+			}
+			if modelEntry.Reason != "" {
+				status.Reasons = append(status.Reasons, modelEntry.Reason)
 			}
 			// 取最早解封：那才是"再等多久值得重试"的答案。
-			if !mc.Until.IsZero() && (st.Until.IsZero() || mc.Until.Before(st.Until)) {
-				st.Until = mc.Until
+			if !modelEntry.Until.IsZero() && (status.Until.IsZero() || modelEntry.Until.Before(status.Until)) {
+				status.Until = modelEntry.Until
 			}
 		}
 	}
-	if st.Count == 0 {
+	if status.Count == 0 {
 		// 池里压根没有非禁用账号：这是"真的没号"，不是模型问题。
 		return ModelBlockStatus{}
 	}
-	st.Blocked = true
-	return st
+	sort.Strings(status.Reasons)
+	status.Blocked = true
+	return status
 }
 
 // CooldownSoftRate 429/限流文案的**账号级**软冷却入口（handler.applyErrorPolicy 调用）。
@@ -443,6 +499,11 @@ func (p *Pool) softDurationLocked(d time.Duration, streak int) time.Duration {
 // 熔断与冷却（until）解耦：冷却按错误类别给固定时长，熔断则对"反复失败"逐次加长封禁。
 // 调用方必须已持有 p.mu。
 func (p *Pool) recordBreakerFailureLocked(e *entry) {
+	now := time.Now()
+	if !e.lastFailAt.IsZero() && now.Sub(e.lastFailAt) > 10*time.Minute {
+		e.fails = 0
+	}
+	e.lastFailAt = now
 	e.fails++
 	if e.fails < p.breakerThreshold {
 		return

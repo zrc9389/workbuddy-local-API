@@ -302,3 +302,61 @@ test('update check and apply reflect actual asynchronous outcomes', async () => 
   assert.equal(frames.at(-1),'error');
   assert.ok(classes.has('border-rose-500'));
 });
+
+test('update check forwards platform errors and uses the extended timeout', async () => {
+  const cases = [
+    [{ok:false,code:'not_configured',error:'update source is not configured'}, /NOT_CONFIGURED: UPDATE SOURCE IS NOT CONFIGURED/],
+    [{ok:true,has_update:true,current_version:'3.0.1',latest_version:'3.0.2'}, /NO VERIFIED BINARY FOR THIS PLATFORM/],
+  ];
+  for (const [response, expected] of cases) {
+    const state = {currentChapter:'sphere', sphereUpdateReady:false, sphereUpdating:false, sphereCheckingUpdate:false};
+    const notices = [], frames = [], requests = [];
+    const button = {classList:{add(){}, remove(){}}, addEventListener:(_type,fn)=>button.handler=fn};
+    const source = functionSource("        document.getElementById('btn-page-chord').addEventListener('click', () => {", '// second ch removed') + '});';
+    runFunction(source, 'null', {
+      document:{getElementById:()=>button}, WBState:state, soundscape:{triggerTileNote(){}},
+      notifyEditorialStatus:value=>notices.push(value), syncDynamicBottomButtons(){}, setPreviewFrameState:x=>frames.push(x),
+      safeApiFetch:(...args)=>{requests.push(args); return Promise.resolve(response)},
+      setTimeout:fn=>{fn()}, Promise, Error, location:{reload(){}}
+    });
+    button.handler();
+    for (let i=0;i<6;i++) await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0][0], '/panel/api/update/check');
+    assert.equal(requests[0][2], 15000);
+    assert.equal(requests[0][3], true);
+    assert.equal(state.sphereCheckingUpdate, false);
+    assert.equal(state.sphereUpdateReady, false);
+    assert.equal(frames.at(-1), 'error');
+    assert.match(notices.at(-1), expected);
+  }
+});
+
+test('applied update requires restart and never re-sends apply', async () => {
+  const state = {currentChapter:'sphere', sphereUpdateReady:true, sphereUpdating:false};
+  const notices = [], frames = [], requests = [];
+  const button = {classList:{add(){}, remove(){}}, addEventListener:(_type,fn)=>button.handler=fn};
+  const source = functionSource("        document.getElementById('btn-page-chord').addEventListener('click', () => {", '// second ch removed') + '});';
+  runFunction(source, 'null', {
+    document:{getElementById:()=>button}, WBState:state, soundscape:{triggerTileNote(){}},
+    notifyEditorialStatus:value=>notices.push(value), syncDynamicBottomButtons(){}, setPreviewFrameState:x=>frames.push(x),
+    safeApiFetch:(...args)=>{requests.push(args); return Promise.resolve({ok:true})},
+    setTimeout:fn=>{fn()}, Promise, Error, location:{reload(){}}
+  });
+  button.handler();
+  for (let i=0;i<6;i++) await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][0], '/panel/api/update/apply');
+  assert.equal(requests[0][2], 0x7fffffff);
+  assert.equal(requests[0][3], true);
+  assert.equal(state.sphereUpdateApplied, true);
+  assert.equal(state.sphereUpdateReady, false);
+  assert.equal(state.sphereUpdating, false);
+  assert.equal(frames.at(-1), 'success');
+  assert.equal(notices.at(-1), 'UPDATE INSTALLED // RESTART SERVICE TO ACTIVATE');
+
+  button.handler();
+  for (let i=0;i<6;i++) await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(requests.length, 1);
+  assert.equal(notices.at(-1), 'UPDATE ALREADY INSTALLED // RESTART SERVICE TO ACTIVATE');
+});

@@ -229,6 +229,7 @@ type entry struct {
 	// fails 是唯一的"连续失败"计数器：任何错误喂入，达到 breakerThreshold 触发熔断（指数退避），
 	// 跨入口累计，成功/熔断/统一复活时清零（保留 retryCount 驱动退避指数）。
 	breakerUntil time.Time // 熔断截止（指数退避）
+	lastFailAt   time.Time // 上次失败时间（FAIL_WINDOW衰减用）
 	fails        int       // 连续失败计数（熔断用，唯一权威）
 	retryCount   int       // 已熔断次数（指数退避的指数）
 	// softStreak 连续软冷却次数（CoolSoft），独立于熔断器 fails 的**冷却域**计数器：

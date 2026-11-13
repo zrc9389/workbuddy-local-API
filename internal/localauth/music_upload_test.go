@@ -62,4 +62,13 @@ func TestMusicUploadRequiresAuthAndAllowsLargeBody(t *testing.T) {
 	if w.Code != 204 {
 		t.Fatalf("authenticated=%d", w.Code)
 	}
+	r = mk()
+	r.Header.Set("Content-Type", "multipart/form-data; boundary=upload-boundary")
+	r.AddCookie(login.Result().Cookies()[0])
+	r.Header.Set("X-CSRF-Token", s.CSRF)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 204 {
+		t.Fatalf("authenticated multipart upload=%d", w.Code)
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,28 +30,21 @@ func TestChatCompletions_LargeRequestStreamForwardAndCleaned(t *testing.T) {
 	reqBody := fmt.Sprintf(`{"model":"deepseek-v4.1","stream":true,"stream_options":{"include_usage":true},"messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"%s"}]}`, userText)
 	reqBytes := []byte(reqBody)
 
-	var upstreamReceivedBytes atomic.Int64
-	var upstreamContentSHA atomic.Value
+	var upstreamBodyBytes atomic.Value
 
-	// Mock 上游客户端：直接读取流式 body，校验流式传输与内容无损性
+	// Mock 上游客户端：校验流式传输、用户正文内容无损性与出站规范字段
 	mockUpstream := &upstream.Client{
 		HTTP: &http.Client{
 			Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				// 记录收到的请求体哈希与字节数
-				h := sha256.New()
-				n, err := io.Copy(h, r.Body)
+				b, err := io.ReadAll(r.Body)
 				if err != nil {
 					return nil, err
 				}
-				upstreamReceivedBytes.Store(n)
-				upstreamContentSHA.Store(hex.EncodeToString(h.Sum(nil)))
-
-				// 返回标准 SSE 成功响应流
-				sseResp := sseOK
+				upstreamBodyBytes.Store(b)
 				return &http.Response{
 					StatusCode: 200,
 					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-					Body:       io.NopCloser(strings.NewReader(sseResp)),
+					Body:       io.NopCloser(strings.NewReader(sseOK)),
 				}, nil
 			}),
 		},
@@ -65,9 +59,10 @@ func TestChatCompletions_LargeRequestStreamForwardAndCleaned(t *testing.T) {
 		MaxConcurrent: 4,
 	})
 
-	// 记录处理前系统临时文件目录下的 spool 临时文件
-	pattern := filepath.Join(os.TempDir(), "wb_req_spool_*.tmp")
-	filesBefore, _ := filepath.Glob(pattern)
+	reqPattern := filepath.Join(os.TempDir(), "wb_req_spool_*.tmp")
+	prepPattern := filepath.Join(os.TempDir(), "wb_spool_prep_*.tmp")
+	reqBefore, _ := filepath.Glob(reqPattern)
+	prepBefore, _ := filepath.Glob(prepPattern)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(reqBytes))
 	req = req.WithContext(context.Background())
@@ -79,23 +74,27 @@ func TestChatCompletions_LargeRequestStreamForwardAndCleaned(t *testing.T) {
 		t.Fatalf("handler failed with status %d: %s", w.Code, w.Body.String())
 	}
 
-	// 1. 验证上游确实完整接收了 1MB+ 的流式数据（未截断）
-	if upstreamReceivedBytes.Load() != int64(len(reqBytes)) {
-		t.Fatalf("upstream received %d bytes, want %d", upstreamReceivedBytes.Load(), len(reqBytes))
+	rawOut := upstreamBodyBytes.Load().([]byte)
+	var parsed map[string]any
+	if err := json.Unmarshal(rawOut, &parsed); err != nil {
+		t.Fatalf("upstream body invalid JSON: %v", err)
+	}
+	if parsed["model"] != "deepseek-v4.1" || parsed["stream"] != true {
+		t.Fatalf("unexpected model/stream: %v %v", parsed["model"], parsed["stream"])
+	}
+	if key, _ := parsed["prompt_cache_key"].(string); !strings.HasPrefix(key, "wb2a-u_spool_") {
+		t.Fatalf("expected prompt_cache_key injected, got %q", key)
+	}
+	msgs := parsed["messages"].([]any)
+	gotUser, _ := msgs[1].(map[string]any)["content"].(string)
+	gotUserSum := sha256.Sum256([]byte(gotUser))
+	if gotUserSum != userSum {
+		t.Fatalf("user content sha256 mismatch: got %s, want %s", hex.EncodeToString(gotUserSum[:]), hex.EncodeToString(userSum[:]))
 	}
 
-	// 2. 验证内容哈希 100% 一致，无任何截断、折叠摘要或零宽字符污染
-	expectedSum := sha256.Sum256(reqBytes)
-	reqSumHex := hex.EncodeToString(expectedSum[:])
-	if upstreamContentSHA.Load().(string) != reqSumHex {
-		t.Fatalf("upstream payload hash mismatch: got %s, want %s", upstreamContentSHA.Load(), reqSumHex)
+	reqAfter, _ := filepath.Glob(reqPattern)
+	prepAfter, _ := filepath.Glob(prepPattern)
+	if len(reqAfter) > len(reqBefore) || len(prepAfter) > len(prepBefore) {
+		t.Fatalf("leaked spool temp files detected: req=%d->%d prep=%d->%d", len(reqBefore), len(reqAfter), len(prepBefore), len(prepAfter))
 	}
-
-	// 3. 验证生命周期结束清理：临时文件在请求处理完毕后被彻底物理删除，无泄漏
-	filesAfter, _ := filepath.Glob(pattern)
-	if len(filesAfter) > len(filesBefore) {
-		t.Fatalf("leaked spool temp files detected: before=%d, after=%d (%v)", len(filesBefore), len(filesAfter), filesAfter)
-	}
-
-	_ = userSum
 }

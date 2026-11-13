@@ -123,7 +123,7 @@ func TestCodexInstructionsRewritten(t *testing.T) {
 	if strings.Contains(out, codexInstructions) {
 		t.Errorf("codex fingerprint still present: %q", out)
 	}
-	if !strings.Contains(out, "You are a coding agent running in the Codex CLI tool, a terminal-based coding assistant.") {
+	if !strings.Contains(out, "You are a helpful AI assistant.") {
 		t.Errorf("codex first sentence not rewritten: %q", out)
 	}
 	// 其余两句原样保留，语义不变。
@@ -329,7 +329,7 @@ func TestChatStreamWireBodyCodexInstructionsSanitized(t *testing.T) {
 		strings.Contains(sys, "in the Codex CLI, a terminal-based coding assistant.") {
 		t.Errorf("wire body still contains codex fingerprint: %q", sys)
 	}
-	if !strings.Contains(sys, "running in the Codex CLI tool, a terminal-based") {
+	if !strings.Contains(sys, "You are a helpful AI assistant.") {
 		t.Errorf("codex rewrite missing on wire: %q", sys)
 	}
 	user, _ := obj["messages"].([]any)[1].(map[string]any)["content"].(string)
@@ -390,4 +390,232 @@ func TestSanitizeMessagesScrubsReasoningField(t *testing.T) {
 func newTestUpstream(t *testing.T, h http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(h)
+}
+
+// TestSanitizeDshPathsRewritten 验证 DSH 0.3.x @ 路径说明段两种结尾与大小写变体均被同义改写。
+func TestSanitizeDshPathsRewritten(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{
+			name: "0.3.x quotes a path containing spaces",
+			in: "Header text.\n\nTokens prefixed with @ are paths the user explicitly referenced.\n" +
+				"Relative paths resolve from workspace root. Trailing slash means directory. " +
+				"Anything else is a file. @\"...\" quotes a path containing spaces.\n\nFooter text.",
+		},
+		{
+			name: "older form only quotes a path that contains spaces",
+			in: "Header text.\n\nTokens prefixed with @ are paths the user explicitly referenced. " +
+				"A trailing slash means directory. The @\"...\" form only quotes a path that contains spaces.\n\nFooter text.",
+		},
+		{
+			name: "case insensitive match",
+			in:   "TOKENS PREFIXED WITH @ ARE PATHS THE USER EXPLICITLY REFERENCED. Something quotes a path containing spaces.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := sanitizeText(tc.in)
+			if strings.Contains(strings.ToLower(out), "tokens prefixed with @") {
+				t.Fatalf("DSH @ 路径原文残留: %q", out)
+			}
+			if !strings.Contains(out, "Paths beginning with @ refer to files the user explicitly mentioned.") {
+				t.Fatalf("未替换为合规路径说明: %q", out)
+			}
+			if strings.Contains(tc.in, "Header text.") && (!strings.Contains(out, "Header text.") || !strings.Contains(out, "Footer text.")) {
+				t.Fatalf("周围文本被破坏: %q", out)
+			}
+			if again := sanitizeText(out); again != out {
+				t.Fatalf("改写不幂等: %q -> %q", out, again)
+			}
+		})
+	}
+
+	normal := "email dev@example.com or read @/tmp/foo.go"
+	if got := sanitizeText(normal); got != normal {
+		t.Fatalf("普通 @ 用法被误改: %q -> %q", normal, got)
+	}
+}
+
+// TestSanitizeInjectedIdentityAndTags 验证服务端注入身份句与 </?model_identity> 标签剥离，且不误伤合法指令。
+func TestSanitizeInjectedIdentityAndTags(t *testing.T) {
+	in := "<model_identity>When asked about your model identity, identify yourself as Tencent Hunyuan Hy.</model_identity>\nNormal reply."
+	out := sanitizeText(in)
+	if strings.Contains(out, "model_identity") || strings.Contains(out, "identify yourself as") || strings.Contains(out, "Tencent Hunyuan Hy") {
+		t.Fatalf("注入身份泄露残留: %q", out)
+	}
+	want := "When asked about your capabilities, answer using only the information available in this conversation.\nNormal reply."
+	if out != want {
+		t.Fatalf("got %q, want %q", out, want)
+	}
+
+	upper := "<MODEL_IDENTITY>When asked about your identity, IDENTIFY YOURSELF AS FooBot.</MODEL_IDENTITY>"
+	outUpper := sanitizeText(upper)
+	if strings.Contains(strings.ToLower(outUpper), "model_identity") || strings.Contains(strings.ToLower(outUpper), "identify yourself as") {
+		t.Fatalf("大小写变体未被清洗: %q", outUpper)
+	}
+
+	bareTags := "prefix <model_identity>inner</model_identity> suffix"
+	if got := sanitizeText(bareTags); got != "prefix inner suffix" {
+		t.Fatalf("单独标签未剥离: %q", got)
+	}
+
+	safe := "Do not identify yourself as an AI."
+	if got := sanitizeText(safe); got != safe {
+		t.Fatalf("合法指令被误伤: %q -> %q", safe, got)
+	}
+
+	msgs := []any{
+		map[string]any{
+			"role":              "assistant",
+			"content":           "ok",
+			"reasoning_content": "<model_identity>When asked about your model identity, identify yourself as Tencent Hunyuan Hy.</model_identity>",
+		},
+	}
+	if !SanitizeMessages(msgs) {
+		t.Fatal("SanitizeMessages 应清洗 assistant.reasoning_content")
+	}
+	rc := msgs[0].(map[string]any)["reasoning_content"].(string)
+	if strings.Contains(rc, "model_identity") || strings.Contains(rc, "identify yourself as") {
+		t.Fatalf("reasoning_content 未清洗: %q", rc)
+	}
+}
+
+// TestSanitizeGeneralIdentityAndWorkBuddyPreserved 验证通用身份句清洗与 WorkBuddy/Tencent 改写保留。
+func TestSanitizeGeneralIdentityAndWorkBuddyPreserved(t *testing.T) {
+	const neutral = "You are a helpful AI assistant."
+	thirdParty := []string{
+		"You are an AI agent powered by AcmeRuntime. Next.",
+		"You are a coding agent powered by the custom-v1 model. Next.",
+		"You are an AI assistant built on SomeBase. Next.",
+		"You are Acme Agent, built by Acme Corp. Next.",
+		"You are the FooBot assistant, created by Someone. Next.",
+		"You are a bot developed by Vendor. Next.",
+		"You are a tool made by Builder. Next.",
+		"You are a model trained by Lab. Next.",
+	}
+	for _, sample := range thirdParty {
+		out := sanitizeText(sample)
+		if !strings.HasPrefix(out, neutral+" Next.") {
+			t.Errorf("第三方身份句未中性化: %q -> %q", sample, out)
+		}
+		if again := sanitizeText(out); again != out {
+			t.Errorf("改写不幂等: %q -> %q", out, again)
+		}
+	}
+
+	multiline := "You are an AI agent powered by AcmeRuntime.\n\nCheck the exit code."
+	if got := sanitizeText(multiline); got != "You are a helpful AI assistant.\n\nCheck the exit code." {
+		t.Fatalf("换行衔接被破坏: %q", got)
+	}
+
+	safeSentence := "You are free to use tools built by someone."
+	if got := sanitizeText(safeSentence); got != safeSentence {
+		t.Fatalf("非身份句被误伤: %q -> %q", safeSentence, got)
+	}
+
+	// WorkBuddy 既定改写与既有 Tencent/WorkBuddy 身份声明绝不能被通用正则覆盖。
+	preservedCases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "DSH with period keeps WorkBuddy rewrite",
+			in:   "You are an AI agent powered by DeepSeek Harness.",
+			want: "You are WorkBuddy, a helpful coding assistant developed by Tencent.",
+		},
+		{
+			name: "DSH without period keeps WorkBuddy rewrite",
+			in:   "You are an AI agent powered by DeepSeek Harness",
+			want: "You are WorkBuddy, a helpful coding assistant developed by Tencent",
+		},
+		{
+			name: "Codex CLI short prefix keeps WorkBuddy rewrite",
+			in:   "You are a coding agent running in the Codex CLI",
+			want: "You are WorkBuddy, a helpful coding assistant developed by Tencent",
+		},
+		{
+			name: "Existing WorkBuddy Tencent sentence untouched",
+			in:   "You are WorkBuddy developed by Tencent.",
+			want: "You are WorkBuddy developed by Tencent.",
+		},
+		{
+			name: "Existing WorkBuddy agent sentence untouched",
+			in:   "You are a WorkBuddy agent developed by Tencent. Follow rules.",
+			want: "You are a WorkBuddy agent developed by Tencent. Follow rules.",
+		},
+		{
+			name: "Mixed WorkBuddy and third party sentence",
+			in:   "You are an AI agent powered by DeepSeek Harness. You are a bot built by AcmeCorp.",
+			want: "You are WorkBuddy, a helpful coding assistant developed by Tencent. You are a helpful AI assistant.",
+		},
+	}
+	for _, tc := range preservedCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SanitizeText(tc.in); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSanitizeToolsDescription 验证 tools[].function.description 净化及端到端接入。
+func TestSanitizeToolsDescription(t *testing.T) {
+	tools := []any{
+		map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":        "read_file",
+				"description": "You are an AI agent powered by AcmeCorp. Upstream 11128.",
+			},
+		},
+		map[string]any{"type": "custom"},
+	}
+	SanitizeTools(tools)
+	desc := tools[0].(map[string]any)["function"].(map[string]any)["description"].(string)
+	if strings.Contains(desc, "AcmeCorp") || strings.Contains(desc, "11128") {
+		t.Fatalf("tools description 未净化: %q", desc)
+	}
+	if desc != "You are a helpful AI assistant. Upstream 11-128." {
+		t.Fatalf("unexpected description: %q", desc)
+	}
+
+	reqBody := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"bash","description":"x-anthropic-billing-header: cc_version=1; You are an AI agent powered by AcmeCorp. Run shell."}}]}`)
+	outOn := string(PrepareBodyOpt(reqBody, true))
+	if strings.Contains(outOn, "AcmeCorp") || strings.Contains(outOn, "x-anthropic-billing-header") {
+		t.Fatalf("sanitize=true 未洗 tools.function.description: %s", outOn)
+	}
+	if !strings.Contains(outOn, "You are a helpful AI assistant. Run shell.") {
+		t.Fatalf("tools.function.description 改写结果异常: %s", outOn)
+	}
+
+	outOff := string(PrepareBodyOpt(reqBody, false))
+	if !strings.Contains(outOff, "AcmeCorp") {
+		t.Fatalf("sanitize=false 不应修改 tools.function.description: %s", outOff)
+	}
+}
+
+// TestContainsFoldASCIIAndHasFingerprintPrecheck 验证 ASCII 无视大小写快速查找与预检命中逻辑。
+func TestContainsFoldASCIIAndHasFingerprintPrecheck(t *testing.T) {
+	if !containsFoldASCII("Prefix X-Anthropic-Billing-Header Suffix", "x-anthropic-billing-header") {
+		t.Fatal("containsFoldASCII 应命中混合大小写子串")
+	}
+	if !containsFoldASCII("abc", "") {
+		t.Fatal("空子串应返回 true")
+	}
+	if containsFoldASCII("short", "longer-needle") {
+		t.Fatal("主串更短时应返回 false")
+	}
+	if containsFoldASCII("hello world", "x-anthropic-billing-header") {
+		t.Fatal("无关文本不应误命中")
+	}
+	if !hasFingerprint("X-ANTHROPIC-BILLING-HEADER") {
+		t.Fatal("裸大小写变体应命中 hasFingerprint")
+	}
+	if hasFingerprint("ordinary user message") {
+		t.Fatal("普通文本不应命中 hasFingerprint")
+	}
 }

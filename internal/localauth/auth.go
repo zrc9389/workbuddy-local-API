@@ -201,7 +201,7 @@ func localBoundary(w http.ResponseWriter, r *http.Request) bool {
 	}
 	if isWrite(r) {
 		ct, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
-		if ct != "application/json" && !(r.Method == http.MethodPost && r.URL.Path == "/panel/api/music/upload" && strings.HasPrefix(ct, "audio/")) {
+		if ct != "application/json" && !(r.Method == http.MethodPost && r.URL.Path == "/panel/api/music/upload" && (strings.HasPrefix(ct, "audio/") || ct == "multipart/form-data")) {
 			denyRequest(w, r, 415, "unsupported content type")
 			return false
 		}
@@ -436,7 +436,6 @@ func denyRequest(w http.ResponseWriter, r *http.Request, status int, msg string)
 
 // Preload 返回绑定的 PreloadManager
 func (a *Auth) Preload() *PreloadManager { return a.preload }
-
 
 func (a *Auth) SetTelemetryProvider(fn func() map[string]any) {
 	if a == nil {

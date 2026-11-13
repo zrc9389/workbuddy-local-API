@@ -52,13 +52,17 @@ type ipAttemptState struct {
 
 // PreloadManager 负责启动动画期密文预加载与极速验密下发
 type PreloadManager struct {
-	mu         sync.Mutex
-	auth       *Auth
-	dataKey    []byte    // 32 字节 AES-256 密钥（在 60 秒生命周期内安全供合法用户解密）
-	iv         []byte    // 12 字节 IV
-	ciphertext []byte    // AES-GCM 密文
-	cachedAt   time.Time // 缓存生成时间戳
-	provider   func() ([]byte, error)
+	mu          sync.Mutex
+	auth        *Auth
+	dataKey     []byte    // 32 字节 AES-256 密钥（在 60 秒生命周期内安全供合法用户解密）
+	iv          []byte    // 12 字节 IV
+	ciphertext  []byte    // AES-GCM 密文
+	cachedAt    time.Time // 缓存生成时间戳
+	provider    func() ([]byte, error)
+	refreshMu   sync.Mutex
+	refreshing  chan struct{}
+	refreshAt   time.Time
+	refreshData []byte
 
 	ipMu     sync.Mutex
 	ipLimits map[string]*ipAttemptState
@@ -80,11 +84,15 @@ func NewPreloadManager(a *Auth, provider ...func() ([]byte, error)) *PreloadMana
 
 // SetProvider 注册自定义敏感数据生成函数（如开机真预加载余额与凭据）
 func (pm *PreloadManager) SetProvider(p func() ([]byte, error)) {
+	pm.refreshMu.Lock()
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
 	if p != nil {
 		pm.provider = p
+		pm.refreshAt = time.Time{}
+		pm.refreshData = nil
 	}
+	pm.mu.Unlock()
+	pm.refreshMu.Unlock()
 }
 
 // DefaultSensitiveData 导出默认敏感数据包
@@ -106,8 +114,6 @@ func (pm *PreloadManager) defaultSensitiveDataProvider() ([]byte, error) {
 // GetOrCreateBundle 互斥惰性获取或生成 60 秒加密包（Singleflight 模式）
 func (pm *PreloadManager) GetOrCreateBundle() (*PreloadBundleResponse, error) {
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
 	now := time.Now()
 	// 60 秒惰性缓存命中（多标签页、多客户端在 60 秒内共享同一密文包与密钥）
 	if pm.dataKey != nil && pm.ciphertext != nil && now.Sub(pm.cachedAt) < BundleLifetime {
@@ -115,21 +121,35 @@ func (pm *PreloadManager) GetOrCreateBundle() (*PreloadBundleResponse, error) {
 		if remaining < 0 {
 			remaining = 0
 		}
-		return &PreloadBundleResponse{
+		response := &PreloadBundleResponse{
 			Ciphertext: base64.StdEncoding.EncodeToString(pm.ciphertext),
 			IV:         base64.StdEncoding.EncodeToString(pm.iv),
 			ExpiresIn:  remaining,
 			CachedAt:   pm.cachedAt.Unix(),
-		}, nil
+		}
+		pm.mu.Unlock()
+		return response, nil
+	}
+	pm.mu.Unlock()
+
+	plaintext, err := pm.refreshedSensitiveData()
+	if err != nil {
+		return nil, fmt.Errorf("provider: %w", err)
+	}
+
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	now = time.Now()
+	if pm.dataKey != nil && pm.ciphertext != nil && now.Sub(pm.cachedAt) < BundleLifetime {
+		remaining := int(BundleLifetime.Seconds() - now.Sub(pm.cachedAt).Seconds())
+		if remaining < 0 {
+			remaining = 0
+		}
+		return &PreloadBundleResponse{Ciphertext: base64.StdEncoding.EncodeToString(pm.ciphertext), IV: base64.StdEncoding.EncodeToString(pm.iv), ExpiresIn: remaining, CachedAt: pm.cachedAt.Unix()}, nil
 	}
 
 	// 缓存未命中或已过期：擦除旧密钥内存，生成新 Bundle
 	pm.eraseDataKeyLocked()
-
-	plaintext, err := pm.provider()
-	if err != nil {
-		return nil, fmt.Errorf("provider: %w", err)
-	}
 
 	// 生成随机 32 字节 Key 与 12 字节 IV
 	key := make([]byte, 32)
@@ -165,6 +185,50 @@ func (pm *PreloadManager) GetOrCreateBundle() (*PreloadBundleResponse, error) {
 	}, nil
 }
 
+func (pm *PreloadManager) refreshedSensitiveData() ([]byte, error) {
+	for {
+		pm.refreshMu.Lock()
+		now := time.Now()
+		if len(pm.refreshData) > 0 && now.Sub(pm.refreshAt) < 180*time.Second {
+			data := append([]byte(nil), pm.refreshData...)
+			pm.refreshMu.Unlock()
+			return data, nil
+		}
+		if pending := pm.refreshing; pending != nil {
+			pm.refreshMu.Unlock()
+			<-pending
+			continue
+		}
+		pending := make(chan struct{})
+		pm.refreshing = pending
+		pm.mu.Lock()
+		provider := pm.provider
+		pm.mu.Unlock()
+		pm.refreshMu.Unlock()
+
+		var data []byte
+		var err error
+		if provider == nil {
+			err = errors.New("provider unavailable")
+		} else {
+			data, err = provider()
+		}
+
+		pm.refreshMu.Lock()
+		if err == nil {
+			pm.refreshAt = time.Now()
+			pm.refreshData = append(pm.refreshData[:0], data...)
+		}
+		pm.refreshing = nil
+		close(pending)
+		pm.refreshMu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		return append([]byte(nil), data...), nil
+	}
+}
+
 // ErrBundleExpired Bundle 已过期
 var ErrBundleExpired = errors.New("bundle expired, please reload")
 
@@ -184,9 +248,12 @@ func (pm *PreloadManager) checkIPRateLimit(ip string) error {
 		return nil
 	}
 	now := time.Now()
-	state.lastSeen = now
-	if now.Before(state.lockedUntil) {
-		return ErrRateLimited
+	if !state.lockedUntil.IsZero() {
+		if now.Before(state.lockedUntil) {
+			return ErrRateLimited
+		}
+		state.failCount = 0
+		state.lockedUntil = time.Time{}
 	}
 	return nil
 }

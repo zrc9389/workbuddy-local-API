@@ -18,7 +18,9 @@ import (
 	"github.com/linguo2625469/workbuddy2api-panel/internal/usage"
 	"io"
 	"log"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -54,17 +56,29 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		Stream bool   `json:"stream"`
 		Model  string `json:"model"`
 	}
-	// 1. Fast Path：首先尝试从头部快速反序列化
-	peekBytes := payload.Peek(64 * 1024)
-	fastErr := json.Unmarshal(peekBytes, &peek)
-	if fastErr != nil || peek.Model == "" {
-		// 2. Slow Path：头部无法闭合或未找到 model，使用精准扫描
-		if !payload.IsSpool {
-			// 内存请求（<= 256KiB）：先尝试对完整内存切片反序列化
+	var spoolMeta upstream.SpoolMeta
+	if payload.IsSpool {
+		ra, closer, rerr := payload.OpenReaderAt()
+		if rerr != nil {
+			writeOpenAIError(w, 500, "spool_error", rerr.Error())
+			return
+		}
+		var scanErr error
+		spoolMeta, scanErr = upstream.ExtractSpoolMeta(ra, payload.Size)
+		closer.Close()
+		if scanErr != nil || spoolMeta.Model == "" {
+			writeOpenAIError(w, 400, "invalid_request", "invalid JSON")
+			return
+		}
+		peek.Model = spoolMeta.Model
+		peek.Stream = spoolMeta.Stream
+	} else {
+		peekBytes := payload.Peek(64 * 1024)
+		fastErr := json.Unmarshal(peekBytes, &peek)
+		if fastErr != nil || peek.Model == "" {
 			if err := json.Unmarshal(payload.Memory, &peek); err == nil && peek.Model != "" {
 				// 完整内存反序列化成功
 			} else {
-				// 容错：使用 jsonscan 从内存切片中提取 model 和 stream 控制字段
 				spans, scanErr := jsonscan.Object(bytes.NewReader(payload.Memory))
 				if scanErr == nil {
 					for _, span := range spans {
@@ -88,40 +102,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-		} else {
-			// 落盘大请求（> 256KiB）：通过 jsonscan 扫描文件流提取 model 与 stream，避免全量反序列化
-			ra, closer, rerr := payload.OpenReaderAt()
-			if rerr != nil {
-				writeOpenAIError(w, 500, "spool_error", rerr.Error())
-				return
-			}
-			spans, scanErr := jsonscan.Object(io.NewSectionReader(ra, 0, payload.Size))
-			if scanErr == nil {
-				for _, span := range spans {
-					if span.Key != "model" && span.Key != "stream" {
-						continue
-					}
-					if span.End-span.Start > 65536 {
-						scanErr = errors.New("control field too large")
-						break
-					}
-					value := make([]byte, span.End-span.Start)
-				if _, e := ra.ReadAt(value, span.Start); e != nil && e != io.EOF {
-					scanErr = e
-					break
-				}
-				if span.Key == "model" {
-					_ = json.Unmarshal(value, &peek.Model)
-				} else {
-					_ = json.Unmarshal(value, &peek.Stream)
-				}
-			}
-		}
-		closer.Close()
-		if scanErr != nil || peek.Model == "" {
-			writeOpenAIError(w, 400, "invalid_request", "invalid JSON")
-			return
-		}
 		}
 	}
 
@@ -193,38 +173,28 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	sessKey := strings.TrimSpace(r.Header.Get("X-Conversation-ID"))
 	if sessKey == "" {
 		if payload.IsSpool {
-			sessKey = session.ExtractKey(payload.Peek(64 * 1024))
+			sessKey = spoolMeta.SessKey
 		} else {
 			sessKey = session.ExtractKey(body)
 		}
 	}
 	stickyUID := ""
 	if h.cfg.Session != nil && sessKey != "" {
-		// 按模型解析：绑定号在**当前模型**被 6004 限额时视为不可用 → 重新分配，
-		// 而不是钉在限额号上反复失败（"限额后换不动号"的正解）。
 		if uid, ok := h.cfg.Session.ResolveForModel(sessKey, peek.Model); ok {
 			stickyUID = uid
 		}
 	}
 
-	// 轮级聚合键：按 body 里最后一条 user 消息派生（同轮内所有上游调用同键，
-	// 换 user 消息换键）。#170 起带会话键的客户端也统一走轮级（对齐官方桌面 CLI
-	// 的 X-Conversation-Request-ID 轮级语义——TraceStartHook 每次 USER_PROMPT_SUBMIT
-	// 清空重生成），故不再限 sessKey=="" 才计算；sessKey 由下方派生处以复合键方式
-	// 入键（防不同会话同轮文本互撞）。
-	// 必须在下方 prompt.Rewrite 之前取——改写会动 messages 内容，之后取会让键漂移。
 	var turnKey string
 	if payload.IsSpool {
-		turnKey = session.TurnKey(payload.Peek(64 * 1024))
+		turnKey = spoolMeta.TurnKey
 	} else {
 		turnKey = session.TurnKey(body)
 	}
 
-	// gateway_hint 判定所需的请求形态（image_url part）：在改写前取（与 turnKey
-	// 同理）。11133「模型不支持图片」指向的前提。
 	var reqHasImage bool
 	if payload.IsSpool {
-		reqHasImage = bytes.Contains(payload.Peek(len(payload.Memory)), []byte("image_url"))
+		reqHasImage = spoolMeta.HasImage
 	} else {
 		reqHasImage = hasImagePart(body)
 	}
@@ -334,32 +304,31 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 降级裁决：append 在降级期退化为 replace（Rewrite(Degraded)）——append 带
 	// 指纹原文重试是确定性再撞墙，replace 是一次性最小抢救。
 	degradedApplied := false
+	spoolApplyPrompt := ""
+	spoolPromptText := h.cfg.PromptText
 	if !h.cfg.StrictContext && h.cfg.PromptMode == "custom" && h.cfg.PromptText != "" {
 		body = prompt.Rewrite(body, h.cfg.PromptText)
+		spoolApplyPrompt = "custom"
 	} else if !h.cfg.StrictContext && h.cfg.PromptMode == "append" && h.cfg.PromptText != "" && !h.degrade.Active() {
 		body = prompt.Append(body, h.cfg.PromptText)
+		spoolApplyPrompt = "append"
 	} else if !h.cfg.StrictContext && (h.cfg.PromptMode == "passthrough" || h.cfg.PromptMode == "append") && h.degrade.Active() {
 		body = prompt.Rewrite(body, prompt.Degraded)
+		spoolApplyPrompt = "custom"
+		spoolPromptText = prompt.Degraded
 		degradedApplied = true
 	}
 
-	// outbound model 名重写为 bareModel（D6）：realm 前缀是网关侧路由协议，
-	// 上游不认前缀（global 账号也请求裸模型名）。裸名时 bareModel==peek.Model 恒等。
 	if bareModel != peek.Model {
 		body = rewriteModel(body, bareModel)
 	}
 
-	// 会话头族：后台按 X-Conversation-Request-ID（对话轮级）聚合请求，
-	// 官方客户端一次 user send 内所有 tool call/重试/换号复用同一个 ID。此处**轮转
-	// 循环外**生成一次，循环内每次出站原样复用 → 换号/重试/降级全部同 ID，后台不再
-	// 碎片化（此前网关一个都不发，上游按 HTTP 请求逐条记账，同一对话几十上百个
-	// RequestID）。
-	//   - conversationID：body 提取（透传客户端原值，缺省空串——不伪造）；
-	//   - conversationRequestID：入站 X-Conversation-Request-ID 透传优先，否则按
-	//     粘性 key 进程内稳定生成；粘性 key 也空时走轮级兜底（TurnKey/TurnRequestID），
-	//     无 user 消息时退化成本请求级随机——轮转内捕获一次即共享；
-	//   - messageID 在 ChatHeaders 内每条消息生成（消息级独立，无需外部可见）。
-	resolvedConvID := session.ResolveConversationID(body)
+	var resolvedConvID string
+	if payload.IsSpool {
+		resolvedConvID = spoolMeta.ResolvedConvID
+	} else {
+		resolvedConvID = session.ResolveConversationID(body)
+	}
 	if resolvedConvID == "" && sessKey != "" {
 		resolvedConvID = sessKey
 	}
@@ -380,6 +349,20 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		chatMeta.ConversationRequestID = session.TurnRequestID("")
 	}
 	chatMeta.TraceID = r.Header.Get("X-Trace-ID")
+
+	if active, rem := h.restrict.active(); active {
+		secs := int(math.Ceil(rem.Seconds()))
+		if secs < 1 {
+			secs = 1
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		st.status = http.StatusServiceUnavailable
+		st.outcome = telemetry.OutcomeHTTPError
+		writeOpenAIErrorHint(w, http.StatusServiceUnavailable, "account_restricted_hold",
+			fmt.Sprintf("upstream restricted accounts recently (403 / code 11140); dispatch paused for %ds to protect remaining accounts", secs),
+			"wait for the restriction hold window to expire before retrying")
+		return
+	}
 
 	boundUID := stickyUID
 	for i := 0; i < h.cfg.MaxRotate; i++ {
@@ -464,32 +447,25 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		// 大请求（落盘至私有临时文件）：流式读取临时文件发往上游，控制堆内存驻留；大请求改写需兼顾流式与控制字段规范
 		if payload.IsSpool {
-			// 落盘原文无法在不重建全文的情况下剥离旧账号的 conversation_id。
-			// 首次请求可以按原账号发送；跨账号重试需清除旧 conversation_id，避免跨账号会话串扰。
-			// 检查客户端是否显式指定了会话标识（Header 显式携带或落盘请求体中显式包含 conversation_id）
-			clientHasConvID := r.Header.Get("X-Conversation-ID") != "" || payload.HasConversationID()
+			clientHasConvID := r.Header.Get("X-Conversation-ID") != "" || spoolMeta.ClientHasConvID
 			if isCrossAccount && clientHasConvID {
 				st.status = http.StatusBadGateway
 				st.outcome = telemetry.OutcomeHTTPError
 				writeOpenAIError(w, http.StatusBadGateway, "conversation_replay_blocked", "large request was not replayed across accounts because its conversation id cannot be safely rewritten in a streaming path")
 				return
 			}
-
-			// 若跨账号且未带任何 conversation_id，清空请求头中的会话标识以防串号
 			if isCrossAccount {
 				attemptMeta.ConversationID = ""
 			}
-
-			rdr, rerr := payload.OpenReader()
+			ra, closer, rerr := payload.OpenReaderAt()
 			if rerr != nil {
 				st.status = http.StatusInternalServerError
 				st.outcome = telemetry.OutcomeHTTPError
 				writeOpenAIError(w, http.StatusInternalServerError, "spool_open_failed", "request body spool could not be reopened")
 				return
 			}
-			unmodified := upstream.IsPayloadUnmodified(payload.Peek(64 * 1024))
-			rc, status, respBody, terr = h.cfg.Upstream.ChatStreamReaderContext(r.Context(), acct, rdr, payload.Size, clientIP, attemptMeta, unmodified)
-			_ = rdr.Close() // 每次 attempt 发送完毕后立即显式关闭文件描述符，避免句柄堆叠阻碍 Windows 上的磁盘删除
+			rc, status, respBody, terr = h.cfg.Upstream.ChatStreamSpoolContext(r.Context(), acct, ra, payload.Size, clientIP, attemptMeta, isCrossAccount, spoolApplyPrompt, spoolPromptText)
+			_ = closer.Close()
 		} else {
 			attemptBody := body
 			if isCrossAccount {
@@ -506,7 +482,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			status = uerr.Status
 		}
 		if uerr == nil && terr != nil {
-			if r.Context().Value(spoolKey{}) != nil {
+			if hasSpoolJob(r) {
 				st.status = http.StatusBadGateway
 				st.outcome = telemetry.OutcomeHTTPError
 				writeOpenAIError(w, 502, "upstream_result_unknown", "pressure-queued request may have reached upstream; not automatically replayed")
@@ -622,28 +598,47 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// rotateBackoff 占用在途名额）。更要紧的是：继续轮转后末端会落到
 			// 「其余保持 503」，把确定失败的请求伪装成"账号不可用、稍后再试"，
 			// 客户端于是对必然失败的请求无限重试。立即透传上游原文回 400。
-			if kind == upstream.ErrBadParams {
+			if kind == upstream.ErrUpstreamBusy {
+				h.applyErrorPolicy(acct.UID, kind, string(respBody), bareModel, uerr)
+				releaseHeld()
+				lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody), RetryAfter: uerr.RetryAfter}
+				if uerr.RetryAfter > 0 {
+					break
+				}
+				if !rotateBackoff(i, r.Context()) {
+					break
+				}
+				continue
+			}
+			if kind == upstream.ErrBadParams || kind == upstream.ErrModelParamInvalid || kind == upstream.ErrToolMismatch || kind == upstream.ErrEmptyContent {
+				errCode, fallback := "bad_params", "chat request body was rejected by upstream"
+				switch kind {
+				case upstream.ErrModelParamInvalid:
+					errCode, fallback = "model_param_invalid", "request parameters were rejected by the upstream model provider"
+				case upstream.ErrToolMismatch:
+					errCode, fallback = "tool_call_mismatch", "upstream rejected the request: tool calls and tool results do not match"
+				case upstream.ErrEmptyContent:
+					errCode, fallback = "empty_content", "a message in the request history has empty content"
+				}
 				h.applyErrorPolicy(acct.UID, kind, string(respBody), bareModel, uerr)
 				fail(acct.UID)
 				msg := string(respBody)
 				if strings.TrimSpace(msg) == "" {
-					msg = "chat request body was rejected by upstream"
+					msg = fallback
 				}
-				writeOpenAIErrorHint(w, http.StatusBadRequest, "bad_params", msg,
-					h.hintOf(upstream.ErrBadParams, string(respBody), bareModel, reqHasImage, uerr))
+				writeOpenAIErrorHint(w, http.StatusBadRequest, errCode, msg,
+					h.hintOf(kind, string(respBody), bareModel, reqHasImage, uerr))
 				st.status = http.StatusBadRequest
 				st.outcome = telemetry.OutcomeHTTPError
 				return
 			}
-			// lastErr 携带完整 body（uerr.Msg 在 upstream 侧截断 200 字符，透传语义
-			// 要求原文全量）+ Kind/RetryAfter（末端映射与冷却时长共用）。
 			lastErr = &upstream.Error{Kind: kind, Status: status, Msg: string(respBody), RetryAfter: uerr.RetryAfter}
-			h.applyErrorPolicy(acct.UID, kind, string(respBody), bareModel, uerr)
+			restricted := h.applyErrorPolicy(acct.UID, kind, string(respBody), bareModel, uerr)
 			fail(acct.UID)
-			// WAF IP 级 fail-fast（优先于 rotateBackoff 退避——IP 级拦截时退避无意义）：
-			// 该次 WAF 403 喂入 IP 级状态机，若激活（短窗多号命中，IP 被拦而非账号）
-			// 则立即终止轮转——继续换号只会把请求放大 MaxRotate 倍打同一出口 IP，
-			// 加重风控。账号级软冷却已在上方 applyErrorPolicy 照常记账。
+			if restricted {
+				h.restrict.note(acct.UID, h.cfg.RestrictionHold)
+				break
+			}
 			if kind == upstream.ErrWafBlock && h.wafIP.noteWaf(acct.UID) {
 				break
 			}
@@ -774,12 +769,36 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var observer upstream.StreamObserver
-		if sink, ok := w.(interface{ streamObserver() upstream.StreamObserver }); ok && sink != nil {
+		if sink, ok := w.(interface {
+			streamObserver() upstream.StreamObserver
+		}); ok && sink != nil {
 			observer = sink.streamObserver()
 		} else if sink, ok := w.(interface{ observeResponseText(string) error }); ok && sink != nil {
 			observer = upstream.TextStreamObserver(sink.observeResponseText)
 		}
 		resp, responseSpool, err := upstream.AggregateSpoolWithObserver(rc, observer)
+		rc.Close()
+		if err == nil && !payload.IsSpool && aggregateStarved(resp) && !liveResponseStarted(w) {
+			if starvedBody, ok := starvedRetryBodyWithFloor(body, 0); ok {
+				if isCrossAccount {
+					starvedBody = upstream.StripConversationID(starvedBody)
+				}
+				if sRC, sStatus, _, sErr := h.cfg.Upstream.ChatStreamContext(r.Context(), acct, starvedBody, clientIP, attemptMeta); sErr == nil && sStatus < 400 && sRC != nil {
+					sResp, sSpool, aErr := upstream.AggregateSpoolWithObserver(resource.LimitResponse(sRC, 32<<20), observer)
+					sRC.Close()
+					if aErr == nil && !aggregateStarved(sResp) {
+						if responseSpool != nil {
+							_ = responseSpool.Close()
+						}
+						resp, responseSpool = sResp, sSpool
+					} else if sSpool != nil {
+						_ = sSpool.Close()
+					}
+				} else if sRC != nil {
+					_ = sRC.Close()
+				}
+			}
+		}
 		if sink, ok := w.(interface{ acceptResponseSpool(*upstream.ResponseSpool) }); ok && responseSpool != nil {
 			sink.acceptResponseSpool(responseSpool)
 			responseSpool = nil
@@ -787,7 +806,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if responseSpool != nil {
 			defer responseSpool.Close()
 		}
-		rc.Close()
 		if err != nil {
 			recordAttempt(acct.UID, pool.TokenUsageDelta{}, 0, false, attemptStarted, 0)
 			h.cfg.Pool.NoteFailures(acct.UID)
@@ -858,6 +876,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// upstreamMsgPassed 记录 error.message 是否已被上游原文占据：模型级阻塞分支
 	// 据此决定要不要覆盖 msg（上游原文优先，含 requestId）。
 	upstreamMsgPassed := false
+	retryAfterSec := 0
 	var ue *upstream.Error
 	if errors.As(lastErr, &ue) {
 		hint = h.hintOf(ue.Kind, ue.Msg, bareModel, reqHasImage, ue)
@@ -866,51 +885,87 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusTooManyRequests
 			code = "rate_limit_exceeded"
 			msg = "rate limited: all accounts are cooling down, please wait a moment and try again"
+		case upstream.ErrUpstreamBusy:
+			status = http.StatusTooManyRequests
+			code = "upstream_busy"
+			msg = "upstream queue is full; retry after a short wait"
+			if ue.RetryAfter > 0 {
+				if secs := int(math.Ceil(ue.RetryAfter.Seconds())); secs > 0 {
+					retryAfterSec = secs
+					if retryAfterSec > 60 {
+						retryAfterSec = 60
+					}
+				}
+			}
+			if retryAfterSec == 0 {
+				retryAfterSec = 5
+			}
 		case upstream.ErrWafBlock:
 			if h.wafIP.active() {
-				// IP 级拦截措辞（fail-fast 终止路径）：网关出口 IP 被 WAF 拦截、
-				// 轮转已止损、窗口过后自动解除。客户端提前重试无意义（换号不换 IP）；
-				// 有上游原文时原文优先（下方统一）。
 				code = "waf_ip_blocked"
 				msg = "waf ip-level block: upstream firewall is blocking the gateway IP, rotation stopped; retry after the block window expires"
 			}
 		case upstream.ErrModelBlocked:
-			// 11102「该后端无此模型」：上游原文（下方统一透传）已经写清了原因，但
-			// code 此前停在默认的 no_healthy_account —— 那是"服务端过载"的语义，
-			// 客户端据此会不断重试（#81 里就是 503 → 客户端自动重试 5 次），而真正
-			// 该做的是换个模型。用 400 + 明确的 code 把不可重试的性质讲清楚。
 			code = "model_unavailable"
 			status = http.StatusBadRequest
 		}
 		if s := strings.TrimSpace(ue.Msg); s != "" {
-			// 上游原文优先：透传 code/msg/requestId，不拼接本地前缀。
 			msg = s
 			upstreamMsgPassed = true
 		}
 	}
-	// 模型级阻塞覆盖上面的通用文案（放在最后 = 优先级最高）。
-	//
-	// 为什么能覆盖 code 而不丢信息：modelBlock.Reason 就是 BlockModelBackoff 存下的
-	// 上游原因，已在 hint 里原样带出，所以覆盖 message 不会丢掉上游信息，反而补上
-	// 了上游不会告诉客户端的两件事——「有几个号被挡」和「最早什么时候解封」。
-	//
-	// 用 400 而非 503：这是"你选的这个模型当前不可用"，不是"服务端暂时过载"。
-	// 换号重试必然同样失败，客户端不该按可重试错误处理。
 	if modelBlock.Blocked {
-		code = "model_unavailable"
-		// 有上游原文时保留它（含 requestId，用户要拿去向上游反馈），只把"有几个号
-		// 被挡、最早何时解封"这类本地调度信息放进 gateway_hint。
-		if !upstreamMsgPassed {
-			msg = "model is unavailable on every account (per-model cooldown), try another model"
+		switch {
+		case modelBlockAllBusy(modelBlock):
+			code = "model_busy"
+			status = http.StatusServiceUnavailable
+			if !upstreamMsgPassed {
+				msg = "model is temporarily busy on every account (per-model cooldown); retry after the cooldown window"
+			}
+			hint = fmt.Sprintf("model_busy: %d account(s) cooling down this model", modelBlock.Count)
+			if !modelBlock.Until.IsZero() {
+				if rem := time.Until(modelBlock.Until); rem > 0 {
+					secs := int(math.Ceil(rem.Seconds()))
+					if secs > 60 {
+						secs = 60
+					}
+					if secs < 1 {
+						secs = 1
+					}
+					retryAfterSec = secs
+					hint += fmt.Sprintf("; earliest unblock in %ds", secs)
+				}
+			}
+			if s := strings.TrimSpace(modelBlock.Reason); s != "" {
+				hint += "; upstream: " + s
+			}
+		case modelBlockAllQuota(modelBlock):
+			code = "rate_limit_exceeded"
+			status = http.StatusTooManyRequests
+			if !upstreamMsgPassed {
+				msg = "model usage limit reached on every account; retry after the quota window resets"
+			}
+			hint = fmt.Sprintf("model_quota: %d account(s) hit this model's usage limit", modelBlock.Count)
+			if !modelBlock.Until.IsZero() {
+				hint += "; resets at " + modelBlock.Until.Format(time.RFC3339)
+			}
+		default:
+			code = "model_unavailable"
+			if !upstreamMsgPassed {
+				msg = "model is unavailable on every account (per-model cooldown), try another model"
+			}
+			hint = fmt.Sprintf("model_blocked: %d account(s) cooling down this model", modelBlock.Count)
+			if !modelBlock.Until.IsZero() {
+				hint += "; earliest unblock at " + modelBlock.Until.Format(time.RFC3339)
+			}
+			if s := strings.TrimSpace(modelBlock.Reason); s != "" {
+				hint += "; upstream: " + s
+			}
+			status = http.StatusBadRequest
 		}
-		hint = fmt.Sprintf("model_blocked: %d account(s) cooling down this model", modelBlock.Count)
-		if !modelBlock.Until.IsZero() {
-			hint += "; earliest unblock at " + modelBlock.Until.Format(time.RFC3339)
-		}
-		if s := strings.TrimSpace(modelBlock.Reason); s != "" {
-			hint += "; upstream: " + s
-		}
-		status = http.StatusBadRequest
+	}
+	if retryAfterSec > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSec))
 	}
 	writeOpenAIErrorHint(w, status, code, msg, hint)
 	st.status = status
@@ -972,4 +1027,35 @@ func usageCreditTotal(resp map[string]any) (credit float64, total int, ok bool) 
 		return 0, 0, false
 	}
 	return c, int(t), true
+}
+
+func liveResponseStarted(w http.ResponseWriter) bool {
+	if cap, ok := w.(*chatCapture); ok && cap.live != nil && cap.live.started {
+		return true
+	}
+	return false
+}
+
+func modelBlockAllBusy(st pool.ModelBlockStatus) bool {
+	if !st.Blocked || len(st.Reasons) == 0 {
+		return false
+	}
+	for _, reason := range st.Reasons {
+		if !strings.HasPrefix(reason, "14003") {
+			return false
+		}
+	}
+	return true
+}
+
+func modelBlockAllQuota(st pool.ModelBlockStatus) bool {
+	if !st.Blocked || len(st.Reasons) == 0 {
+		return false
+	}
+	for _, reason := range st.Reasons {
+		if !strings.HasPrefix(reason, "6004") && !strings.HasPrefix(reason, "6000") {
+			return false
+		}
+	}
+	return true
 }

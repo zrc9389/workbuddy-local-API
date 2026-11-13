@@ -629,7 +629,10 @@ func (m *Manager) RemoveSubscriptionAndUnbind(ctx context.Context, id string, se
 		m.mu.Unlock()
 	}
 	clearIntent := func() error {
-		if old.PendingDelete != "" {
+		m.mu.Lock()
+		hasPending := m.state.PendingDelete != ""
+		m.mu.Unlock()
+		if !hasPending {
 			return nil
 		}
 		old.PendingDelete = ""

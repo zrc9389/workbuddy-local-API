@@ -14,6 +14,7 @@ import (
 )
 
 const proxyCacheLimit = 32
+
 // proxyCacheTTL 账号代理传输层空闲保活时长（2 分钟）：
 // 闲置 2 分钟后自动执行 CloseIdleConnections 并剔除，主动释放操作系统 socket 与网络缓冲区物理内存。
 const proxyCacheTTL = 2 * time.Minute
@@ -48,7 +49,6 @@ func (p proxyFailure) RoundTrip(r *http.Request) (*http.Response, error) {
 	}
 	return nil, errors.New("egress proxy is not configured: direct VPS connection to upstream is strictly prohibited")
 }
-
 
 type failClosedDirectTransport struct {
 	base http.RoundTripper

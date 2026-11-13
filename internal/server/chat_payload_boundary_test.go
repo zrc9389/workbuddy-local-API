@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -107,14 +108,31 @@ func TestChatCompletions_PayloadBoundaries(t *testing.T) {
 				t.Fatalf("size=%d: upstream body truncated, missing marker %q", tc.size, marker)
 			}
 
-			// 3. 对于 > 256KiB 的落盘请求，哈希与大小必须 100% 原始透传
+			// 3. 对于 > 256KiB 的落盘请求，确认控制字段合规改写且正文 content 哈希 100% 无损保留
 			if tc.size > 256*1024 {
-				if int(receivedBytes.Load()) != tc.size {
-					t.Fatalf("spool size mismatch: got %d, want %d", receivedBytes.Load(), tc.size)
+				var inObj, outObj map[string]any
+				if err := json.Unmarshal(rawBody, &inObj); err != nil {
+					t.Fatalf("unmarshal rawBody: %v", err)
 				}
-				if hex.EncodeToString(expectedHash[:]) != receivedHash.Load().(string) {
-					t.Fatalf("spool hash mismatch: got %s, want %s", receivedHash.Load(), hex.EncodeToString(expectedHash[:]))
+				if err := json.Unmarshal(upstreamData, &outObj); err != nil {
+					t.Fatalf("unmarshal upstreamData: %v", err)
 				}
+				if outObj["model"] != "deepseek-v4.1" {
+					t.Fatalf("unexpected model=%v", outObj["model"])
+				}
+				if outObj["stream"] != true {
+					t.Fatalf("expected stream=true, got %v", outObj["stream"])
+				}
+				inContent, _ := inObj["messages"].([]any)[0].(map[string]any)["content"].(string)
+				outContent, _ := outObj["messages"].([]any)[0].(map[string]any)["content"].(string)
+				inSum := sha256.Sum256([]byte(inContent))
+				outSum := sha256.Sum256([]byte(outContent))
+				if inSum != outSum {
+					t.Fatalf("spool user content hash mismatch: got %x, want %x", outSum, inSum)
+				}
+				_ = expectedHash
+				_ = receivedBytes.Load()
+				_ = receivedHash
 			}
 		})
 	}

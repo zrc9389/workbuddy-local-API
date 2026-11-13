@@ -349,23 +349,17 @@ func TestRealCoreIsolationAndNativeProviders(t *testing.T) {
 	if got := fetch(proxyB); got != "fixture-B" {
 		t.Fatal("persisted route not restored", got)
 	}
-	release() // Real idle stop under the lease contract, then demand-start same stable route.
+	release() // Releasing the lease leaves the managed sidecar resident.
 	m2.mu.Lock()
 	m2.lastUse = time.Now().Add(-time.Hour)
 	m2.mu.Unlock()
-	idleDeadline := time.Now().Add(3 * time.Second)
-	for m2.core.Alive() && time.Now().Before(idleDeadline) {
-		m2.maybeIdle(connectionsSnapshot{})
-		if m2.core.Alive() {
-			time.Sleep(30 * time.Millisecond)
-		}
-	}
-	if m2.core.Alive() {
-		t.Fatal("real core failed idle shutdown")
+	m2.maybeIdle(connectionsSnapshot{})
+	if !m2.core.Alive() {
+		t.Fatal("real core stopped after account lease release")
 	}
 	release, err = m2.AcquireAccount(ctx, "account-b")
 	if err != nil {
-		t.Fatal("idle wake lease", err)
+		t.Fatal("resident core lease", err)
 	}
 	if err = m2.Close(ctx); err != ErrBusy {
 		t.Fatal("real leased core shutdown not refused", err)

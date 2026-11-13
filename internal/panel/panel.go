@@ -1627,7 +1627,10 @@ func (p *Panel) travelAll(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": false})
 		return
 	}
-	go p.cfg.Scheduler.RunTravelNow()
+	go func() {
+		p.cfg.Scheduler.RunTravelNow()
+		p.cfg.Scheduler.RunBalanceRefreshNow()
+	}()
 	log.Printf("panel: 手动全量旅行巡检已触发")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
 }
@@ -1880,8 +1883,10 @@ func (p *Panel) packages(w http.ResponseWriter, r *http.Request) {
 					if days < 0 {
 						days = 0
 					}
-					if days < minDays {
-						minDays = days
+					if pkg.Remain > 0 && expireTime.After(now) {
+						if days < minDays {
+							minDays = days
+						}
 					}
 					// 1天(24小时)内到期判定：剩余额度>0 且到期时间在当前至24小时以内
 					if pkg.Remain > 0 && expireTime.After(now) && !expireTime.After(expiringLimit) {

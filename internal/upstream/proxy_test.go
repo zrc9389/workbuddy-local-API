@@ -96,18 +96,17 @@ func TestAccountLeaseRechecksProxyAfterAdmission(t *testing.T) {
 	}
 }
 
-
 func TestFailClosedDirectConnectionToExternalProhibited(t *testing.T) {
 	c := New() // base c with no default proxy
 	a := &auth.Auth{UID: "unproxied-user", ProxyURL: ""}
-	
+
 	targets := []string{
 		"https://copilot.tencent.com/v2/chat/completions",
 		"https://www.workbuddy.ai/v2/chat/completions",
 		"https://api.tencent.com/v1/test",
 		"http://1.1.1.1/test",
 	}
-	
+
 	for _, target := range targets {
 		req, err := http.NewRequest("POST", target, nil)
 		if err != nil {

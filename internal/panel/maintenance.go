@@ -130,7 +130,15 @@ func (p *Panel) preferencesGet(w http.ResponseWriter, r *http.Request) {
 	p.customMu.RLock()
 	customCopy := make(map[string]any, len(p.customData))
 	for k, val := range p.customData {
-		customCopy[k] = val
+		if sub, ok := val.(map[string]any); ok {
+			subCopy := make(map[string]any, len(sub))
+			for sk, sv := range sub {
+				subCopy[sk] = sv
+			}
+			customCopy[k] = subCopy
+		} else {
+			customCopy[k] = val
+		}
 	}
 	p.customMu.RUnlock()
 

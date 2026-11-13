@@ -100,7 +100,12 @@ func main() {
 			continue
 		}
 
-		r.status, r.detail = classifyTrial(up.ClaimTrial(a))
+		if a.NeedsRefresh(2 * 3600) {
+		if err := up.RefreshToken(a); err == nil {
+			_ = a.SaveAtomic()
+		}
+	}
+	r.status, r.detail = classifyTrial(up.ClaimTrial(a))
 		rows = append(rows, r)
 	}
 

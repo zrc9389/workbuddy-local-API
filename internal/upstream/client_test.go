@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,34 @@ func TestChatStreamReaderContextReturnsMalformedEndpointError(t *testing.T) {
 	_, _, _, err := c.ChatStreamReaderContext(context.Background(), nil, strings.NewReader(`{"model":"x"}`), 13, "", ChatMeta{}, true)
 	if err == nil {
 		t.Fatal("expected malformed endpoint error")
+	}
+}
+
+func TestChatStreamReaderContextSanitizesLargeSpool(t *testing.T) {
+	var got []byte
+	ts := newTestUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	})
+	defer ts.Close()
+	c := New()
+	c.ChatBaseCN = ts.URL
+	c.SanitizeFingerprints.Store(true)
+	body := []byte(fmt.Sprintf("{\"model\":\"cn:deepseek-v4-pro\",\"stream\":true,\"messages\":[{\"role\":\"system\",\"content\":%s},{\"role\":\"user\",\"content\":\"%sTAIL_MARKER\"}] }", strconv.Quote(codexInstructions), strings.Repeat("x", 300<<10)))
+	rc, status, _, err := c.ChatStreamReaderContext(context.Background(), &auth.Auth{AccessToken: "test-token", UID: "large-spool"}, bytes.NewReader(body), int64(len(body)), "", ChatMeta{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	if status >= 400 {
+		t.Fatalf("upstream status=%d", status)
+	}
+	if bytes.Contains(got, []byte("in the Codex CLI, a terminal-based coding assistant.")) {
+		t.Fatal("large spool fingerprint remained on wire")
+	}
+	if !bytes.Contains(got, []byte("You are a helpful AI assistant.")) || !bytes.Contains(got, []byte("TAIL_MARKER")) {
+		t.Fatal("large request content was not preserved")
 	}
 }
 
@@ -67,7 +96,7 @@ func TestClassify(t *testing.T) {
 		{400, `{"code": 11135, "msg":"image data invalid"}`, ErrImageInvalid},
 		{400, `{"error":{"code": "11135", "message":"image invalid"}}`, ErrImageInvalid},
 		// 防过宽：11133（模型不支持图片）不进 image_invalid。
-		{400, `{"code": 11133, "msg":"model does not support image"}`, ErrClient},
+		{400, `{"code": 11133, "msg":"model does not support image"}`, ErrModelParamInvalid},
 		{200, `quota exceeded`, ErrHardCredit},
 		// session 死亡优先于限流文案（401+12153 需人工重登，短冷却无意义）。
 		{401, `{"code":12153,"msg":"Offline user session not found, rate limit"}`, ErrSessionDead},

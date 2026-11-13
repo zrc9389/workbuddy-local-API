@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -124,6 +125,7 @@ func TestUpdateChecker(t *testing.T) {
 	}{
 		{"api error", "secret token", "0.2.0-local", "", 403, false, "api_error"},
 		{"new release", `{"tag_name":"v0.2.0"}`, "0.2.0-local", "v0.2.0", 200, true, ""},
+		{"3.0.1 to v3.0.2", `{"tag_name":"v3.0.2"}`, "3.0.1", "v3.0.2", 200, true, ""},
 		{"equal", `{"tag_name":"v0.2.0"}`, "0.2.0", "v0.2.0", 200, false, ""},
 		{"older", `{"tag_name":"v0.1.9"}`, "0.2.0-local", "v0.1.9", 200, false, ""},
 		{"invalid tag", `{"tag_name":"nightly"}`, "0.2.0", "", 200, false, "invalid_version"},
@@ -152,6 +154,41 @@ func TestUpdateChecker(t *testing.T) {
 		})
 	}
 }
+
+func TestUpdateCheckerFindsSHA256SumsAsset(t *testing.T) {
+	assetName := "wb2api-" + runtime.GOOS + "-" + runtime.GOARCH
+	if runtime.GOOS == "windows" {
+		assetName += ".exe"
+	}
+	sum := strings.Repeat("a", 64)
+	assetURL := "https://github.com/acme/workbuddy/releases/download/v3.0.2/" + assetName
+	sumsURL := "https://github.com/acme/workbuddy/releases/download/v3.0.2/sha256sums.txt"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/acme/workbuddy/releases/latest":
+			_, _ = io.WriteString(w, `{"tag_name":"v3.0.2","assets":[`+
+				`{"name":"`+assetName+`","browser_download_url":"`+assetURL+`"},`+
+				`{"name":"sha256sums.txt","browser_download_url":"`+sumsURL+`"}]}`)
+		case "/acme/workbuddy/releases/download/v3.0.2/sha256sums.txt":
+			_, _ = io.WriteString(w, sum+"  ./"+assetName+"\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	target, _ := url.Parse(srv.URL)
+	result, err := newUpdateChecker(UpdateSource{GitHubOwner: "acme", GitHubRepo: "workbuddy"}, "3.0.1", artifactTransport{target})(context.Background())
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if result.CurrentVersion != "3.0.1" || result.LatestVersion != "v3.0.2" || !result.HasUpdate {
+		t.Fatalf("result = %+v", result)
+	}
+	if result.Artifact == nil || !result.Artifact.Verified || result.Artifact.SHA256 != sum || result.Artifact.Name != assetName {
+		t.Fatalf("artifact = %+v", result.Artifact)
+	}
+}
+
 func errorsAs(err error, target **UpdateError) bool {
 	if e, ok := err.(*UpdateError); ok {
 		*target = e

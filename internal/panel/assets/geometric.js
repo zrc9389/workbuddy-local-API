@@ -1,3 +1,8 @@
+    function formatCredits(val) {
+        if (val === null || val === undefined || isNaN(val)) return '0';
+        const num = Number(val);
+        return parseFloat(num.toFixed(2)).toString();
+    }
 import { initEditorialEventDelegation, handleDataAction } from './editorial-events.js';
 'use strict';
 let mainSceneActive = false;
@@ -1416,6 +1421,9 @@ export function expiryTone(days) {
 
         function syncOverviewData(ov) {
             if (!ov) return;
+            if (typeof ov.version === 'string' && ov.version.trim()) {
+                WBState.coreVersion = ov.version.trim().replace(/^v/i, '');
+            }
             if (typeof ov.uptime_sec === 'number') WBState.uptimeSec = ov.uptime_sec;
             WBState.cpuAvailable = ov.service_cpu_available === true;
             if (WBState.cpuAvailable) WBState.cpuPct = ov.service_cpu_percent;
@@ -1507,7 +1515,16 @@ export function expiryTone(days) {
             if (!logs) return;
             if (Array.isArray(logs.entries)) {
                 WBState.logs = logs.entries.map((item, i) => {
-                    const timeStr = item.time ? (item.time.includes('T') ? item.time.split('T')[1].slice(0, 8) : item.time) : '12:00:00';
+                    let timeStr = '12:00:00';
+                    if (item.time) {
+                        const d = new Date(item.time);
+                        if (!isNaN(d.getTime())) {
+                            const bd = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000);
+                            timeStr = `${String(bd.getHours()).padStart(2, '0')}:${String(bd.getMinutes()).padStart(2, '0')}:${String(bd.getSeconds()).padStart(2, '0')}`;
+                        } else {
+                            timeStr = item.time.includes('T') ? item.time.split('T')[1].slice(0, 8) : item.time;
+                        }
+                    }
                     return {
                         id: String(item.id || i),
                         time: timeStr,
@@ -1526,7 +1543,7 @@ export function expiryTone(days) {
             WBState.usageCacheHitRate = data.totals?.cache_hit_rate ?? null;
             WBState.usageByModel = (data.by_model || []).map(item => ({
                 name: item.key, reqs: String(item.requests || 0), prompt: String(item.prompt_tokens || 0),
-                comp: String(item.completion_tokens || 0), credits: String(item.credits || 0)
+                comp: String(item.completion_tokens || 0), credits: formatCredits(item.credits)
             }));
             const points = Array.isArray(data.series) ? data.series.slice(-24) : [];
             if (points.length >= 2) {
@@ -3943,11 +3960,23 @@ export function expiryTone(days) {
         /* =========================================================================
          * 核心物理与视觉渲染循环 (60fps)
          * ========================================================================= */
+        let mainWorldRafId = null;
+        let lastMainWorldNow = 0;
+
         function renderMainWorld(now) {
+            if (mainWorldRafId) {
+                cancelAnimationFrame(mainWorldRafId);
+                mainWorldRafId = null;
+            }
             if (!mainSceneActive) {
-                requestAnimationFrame(renderMainWorld);
+                mainWorldRafId = requestAnimationFrame(renderMainWorld);
                 return;
             }
+            if (!now) now = performance.now();
+            if (!lastMainWorldNow) lastMainWorldNow = now;
+            const dtMs = Math.min(48, Math.max(8, now - lastMainWorldNow));
+            lastMainWorldNow = now;
+            const dtScale = dtMs / 16.67;
 
             stepWeatherBlend();
 
@@ -4454,8 +4483,8 @@ export function expiryTone(days) {
                     wCtx.lineTo(dx - 1.5 * currentUiScale, drop.y + drop.len * currentUiScale);
                     wCtx.stroke();
 
-                    drop.y += drop.speed * currentUiScale;
-                    drop.nx -= 0.00025;
+                    drop.y += drop.speed * currentUiScale * dtScale;
+                    drop.nx -= 0.00025 * dtScale;
                     if (drop.nx < 0) drop.nx += 1;
 
                     if (drop.y >= hitY) {
@@ -4630,7 +4659,7 @@ export function expiryTone(days) {
                 hintEl.style.transform = 'translate(-50%, -50%)';
             }
 
-            requestAnimationFrame(renderMainWorld);
+            mainWorldRafId = requestAnimationFrame(renderMainWorld);
         }
 
         /* =========================================================================
@@ -4722,7 +4751,7 @@ export function expiryTone(days) {
 
     // 积分用量时间轴截止位：按照用户明确规范，严格锚定真实北京时间“后一位”（当前小时 + 1）作为时段结算截止点
     function getBeijingUsageTargetHour() {
-        return (getBeijingCurrentHour() + 1) % 24;
+        return getBeijingCurrentHour();
     }
 
         const WBState = {
@@ -4737,6 +4766,7 @@ export function expiryTone(days) {
 
             overviewMode: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_overview_mode')) || 'TRAFFIC', // 'TRAFFIC' | 'RESOURCE'
             uptimeSec: 412929,
+            coreVersion: '3.0.1',
             goroutines: 34,
             memMb: 48.2,
             cpuPct: 14.6,
@@ -5428,16 +5458,6 @@ export function expiryTone(days) {
             }
             btn2.className = 'editorial-action-btn border border-white/25 hover:border-white bg-white/[0.02] text-white/70 hover:text-white transition-colors';
 
-            // 重置基础类名，确保更新按钮的绿色仅在关于页面 (sphere) 且更新就绪时生效，绝不污染其他所有页面
-            if (ch === 'sphere' && (WBState.sphereUpdateApplied || (WBState.sphereUpdateReady && !WBState.sphereUpdating))) {
-                btn1.className = 'editorial-action-btn border border-emerald-400 hover:border-emerald-300 text-emerald-300 bg-emerald-400/10 transition-colors';
-            } else if (ch === 'sphere' && (WBState.sphereCheckingUpdate || WBState.sphereUpdating)) {
-                btn1.className = 'editorial-action-btn border border-amber-400 hover:border-amber-300 text-amber-300 bg-amber-400/10 animate-pulse transition-colors';
-            } else {
-                btn1.className = 'editorial-action-btn border border-white/25 hover:border-white bg-white/[0.04] text-white/80 hover:text-white transition-colors';
-            }
-            btn2.className = 'editorial-action-btn border border-white/25 hover:border-white bg-white/[0.02] text-white/70 hover:text-white transition-colors';
-
             if (ch === 'customization') {
                 const cust = WBState.customization;
                 if (cust.isAdding) {
@@ -5454,7 +5474,10 @@ export function expiryTone(days) {
                     t2 = '[ RANDOM ASSIGN ]';
                 }
             } else if (ch === 'sphere') {
-                if (WBState.sphereUpdating) {
+                t2 = '[ MATRIX ]';
+                if (WBState.sphereUpdateApplied) {
+                    t1 = '[ RESTART REQUIRED ]';
+                } else if (WBState.sphereUpdating) {
                     t1 = '[ UPDATING... ]';
                 } else if (WBState.sphereUpdateReady) {
                     t1 = '[ RESTART & UPDATE ]';
@@ -5463,7 +5486,6 @@ export function expiryTone(days) {
                 } else {
                     t1 = '[ CHECK UPDATE ]';
                 }
-                t2 = '[ MATRIX ]';
             } else if (ch === 'overview' || ch === 'gateway') {
                 t1 = WBState.overviewMode === 'TRAFFIC' ? '[ RESOURCE CURVE ]' : '[ TRAFFIC CURVE ]';
             } else if (ch === 'accounts') {
@@ -5503,9 +5525,12 @@ export function expiryTone(days) {
                     const h = (targetH - s + 48) % 24;
                     WBState.usage6h.labels.push(String(h).padStart(2, '0') + ':00');
                 }
-                WBState.usageRange = '24H';
+                if (WBState.usage24h.outVals && WBState.usage24h.outVals.length >= 6) {
+                    WBState.usage6h.outVals = WBState.usage24h.outVals.slice(-6);
+                    WBState.usage6h.inVals = WBState.usage24h.inVals.slice(-6);
+                }
                 t1 = WBState.usageView === 'CURVE' ? '[ MODEL RANK ]' : '[ TIME CURVE ]';
-                t2 = '[ TIME: 24H ]';
+                t2 = WBState.usageRange === '6H' ? '[ TIME: 6H ]' : '[ TIME: 24H ]';
             } else if (ch === "packages") {
                 if (WBState.selectedPackageUid) {
                     t1 = "[ PACKAGE DETAIL ]";
@@ -5575,7 +5600,7 @@ export function expiryTone(days) {
             } else if (ch === 'sphere') {
                 const col2 = l2 ? (document.getElementById('kpi-col-2') || l2.parentElement) : null;
                 if (col2) col2.style.transform = 'translateX(-16px)';
-                l1.textContent = '核心版本'; v1.textContent = '3.0.1'; v1.className = "text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap";
+                l1.textContent = '核心版本'; v1.textContent = WBState.coreVersion || '3.0.1'; v1.className = "text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap";
                 l2.textContent = '网关端点'; v2.textContent = '127.0.0.1:7863'; v2.className = "text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap";
                 l3.textContent = 'FPS'; v3.textContent = '60'; v3.className = "text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap";
                 return;
@@ -5698,7 +5723,7 @@ export function expiryTone(days) {
                 setVertexHover(-1);
                 return; // 移开时不自动跳回 16点！保持在最后悬停点
             }
-            const hIdx = WBState.logModelHoverIdx >= 0 ? WBState.logModelHoverIdx : 4;
+            const hIdx = WBState.logModelHoverIdx >= 0 ? WBState.logModelHoverIdx : (em.labels.length - 1);
             const curX = ((hIdx / (em.labels.length - 1)) * 520).toFixed(1);
             const lineEl = document.getElementById('err-model-cursor-line');
             const labelEl = document.getElementById('err-model-readout');
@@ -6583,7 +6608,7 @@ export function expiryTone(days) {
                             <span class="text-white font-medium truncate">${r.name}</span>
                             <span class="text-white/55 tabular-nums-left">请求 <strong class="text-white/90 font-normal font-['Space_Grotesk']">${r.reqs}</strong></span>
                             <span class="text-white/55 tabular-nums-left">I/O <strong class="text-white/90 font-normal font-['Space_Grotesk']">${r.prompt} / ${r.comp}</strong></span>
-                            <span class="text-white/85 font-['Space_Grotesk'] tabular-nums-left">${r.credits} 积分</span>
+                            <span class="text-white/85 font-['Space_Grotesk'] tabular-nums-left">${formatCredits(r.credits)} 积分</span>
                         </div>
                     `).join('');
 
@@ -6620,14 +6645,11 @@ export function expiryTone(days) {
 
                 commitStageMarkup(container, `
                     <div class="space-y-3 pt-0.5">
-                        <div class="flex justify-between items-center text-[10.5px] tracking-[0.14em] text-white/45">
-                            <div class="flex items-center space-x-3 tabular-nums-left">
-                                <span id="usage-cursor-readout">时刻 <strong class="text-white font-normal">${ds.labels[hIdx]}</strong> &mdash; 输出 ${ds.outVals[hIdx]}K / 输入 ${ds.inVals[hIdx]}K</span>
+                        <div class="flex items-center justify-between text-[10.5px] tracking-[0.14em] text-white/45 whitespace-nowrap overflow-hidden text-ellipsis w-full">
+                            <div class="flex items-center space-x-3 tabular-nums-left whitespace-nowrap overflow-hidden text-ellipsis">
+                                <span id="usage-cursor-readout">时刻 <strong class="text-white font-normal">${ds.labels[hIdx] || ''}</strong> &mdash; 输出 ${ds.outVals[hIdx] || 0}K / 输入 ${ds.inVals[hIdx] || 0}K</span>
                                 <span class="text-white/28">|</span>
-                                <span class="text-white/60">区间累计: 输出 ${((ds.outVals.reduce((a,b)=>a+b,0))/1000).toFixed(2)}M / 输入 ${((ds.inVals.reduce((a,b)=>a+b,0))/1000).toFixed(2)}M</span>
-                            </div>
-                            <div class="text-[10px] text-white/40 tracking-wider font-mono">
-                                [ 24H 北京时间时序 ]
+                                <span class="text-white/60">${WBState.usageRange}区间累计: 输出 ${((ds.outVals.reduce((a,b)=>a+b,0))/1000).toFixed(2)}M / 输入 ${((ds.inVals.reduce((a,b)=>a+b,0))/1000).toFixed(2)}M</span>
                             </div>
                         </div>
                         <div class="relative w-full h-[132px]">
@@ -7015,7 +7037,7 @@ export function expiryTone(days) {
                     }
 
                     const warnY = (h - 18 - (em.warnLine / maxL) * (h - 30)).toFixed(1);
-                    const hIdx = WBState.logModelHoverIdx >= 0 ? WBState.logModelHoverIdx : 4;
+                    const hIdx = WBState.logModelHoverIdx >= 0 ? WBState.logModelHoverIdx : (em.labels.length - 1);
                     const curX = ((hIdx / (em.labels.length - 1)) * w).toFixed(1);
 
                     // 离散观测脉冲柱
@@ -10085,6 +10107,10 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             const ch = WBState.currentChapter;
             if (ch === 'sphere') {
                 const btn1 = document.getElementById('btn-page-chord');
+                if (WBState.sphereUpdateApplied) {
+                    notifyEditorialStatus('UPDATE ALREADY INSTALLED // RESTART SERVICE TO ACTIVATE');
+                    return;
+                }
                 if (!WBState.sphereUpdateReady) {
                     if (WBState.sphereCheckingUpdate) return;
                     WBState.sphereCheckingUpdate = true;
@@ -10098,7 +10124,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                     syncDynamicBottomButtons();
 
                     const checkPromise = (typeof safeApiFetch === 'function')
-                        ? safeApiFetch('/panel/api/update/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 2500)
+                        ? safeApiFetch('/panel/api/update/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 15000, true)
                         : fetch('/panel/api/update/check', { method: 'POST' }).then(r => r.json()).catch(() => null);
 
                     Promise.all([
@@ -10106,7 +10132,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                         new Promise(resolve => setTimeout(resolve, 800))
                     ]).then(([data]) => {
                         WBState.sphereCheckingUpdate = false;
-                        if (data && data.has_update === false) {
+                        if (data && data.ok !== false && data.has_update === false) {
                             WBState.sphereUpdateReady = false;
                             syncDynamicBottomButtons();
                             if (btn1) {
@@ -10116,19 +10142,23 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                             }
                             setPreviewFrameState('success', 1200);
                             notifyEditorialStatus('UPDATE CHECK COMPLETE // ALREADY UP TO DATE');
-                        } else if (data && data.has_update === true && data.data?.artifact?.verified === true) {
+                        } else if (data && data.ok !== false && data.has_update === true && data.data?.artifact?.verified === true) {
                             WBState.sphereUpdateReady = true;
                             if (btn1) {
                                 btn1.classList.remove('border-amber-400', 'text-amber-300', 'animate-pulse', 'border-rose-500', 'border-white/50');
                                 btn1.classList.add('border-emerald-400', 'text-emerald-300', 'bg-emerald-400/10');
                             }
                             setPreviewFrameState('success', 1200);
-                            notifyEditorialStatus(`UPDATE AVAILABLE // V${data.current_version || '—'} -> V${data.latest_version || '—'}`);
+                            notifyEditorialStatus(`UPDATE AVAILABLE // V${String(data.current_version || '—').replace(/^v/i, '')} -> V${String(data.latest_version || '—').replace(/^v/i, '')}`);
                             syncDynamicBottomButtons();
+                        } else if (data && data.ok !== false && data.has_update === true) {
+                            throw new Error('no verified binary for this platform');
+                        } else if (data && data.error) {
+                            throw new Error(data.code ? `${data.code}: ${data.error}` : data.error);
                         } else {
                             throw new Error('Check failed');
                         }
-                    }).catch(() => {
+                    }).catch((err) => {
                         WBState.sphereCheckingUpdate = false;
                         WBState.sphereUpdateReady = false;
                         syncDynamicBottomButtons();
@@ -10138,7 +10168,9 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                             setTimeout(() => { btn1.classList.remove('canvas-fault-jolt'); if (WBState.currentChapter === 'sphere') syncDynamicBottomButtons(); }, 1200);
                         }
                         setPreviewFrameState('error', 800);
-                        notifyEditorialStatus('UPDATE CHECK FAILED // CLICK TO RETRY');
+                        notifyEditorialStatus(err && err.message && err.message !== 'Check failed'
+                            ? `UPDATE CHECK FAILED // ${String(err.message).toUpperCase()}`
+                            : 'UPDATE CHECK FAILED // CLICK TO RETRY');
                     });
                 } else {
                     if (WBState.sphereUpdating) {
@@ -10156,20 +10188,24 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                     syncDynamicBottomButtons();
 
                     const applyPromise = (typeof safeApiFetch === 'function')
-                        ? safeApiFetch('/panel/api/update/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 0x7fffffff)
+                        ? safeApiFetch('/panel/api/update/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }, 0x7fffffff, true)
                         : fetch('/panel/api/update/apply', { method: 'POST' }).then(r => r.json()).catch(() => null);
 
                     applyPromise.then(data => {
-                        if (!data || data.ok !== true) throw new Error('verified update is unavailable');
+                        if (!data || data.ok !== true) {
+                            throw new Error(data && data.error ? (data.code ? `${data.code}: ${data.error}` : data.error) : 'verified update is unavailable');
+                        }
                         WBState.sphereUpdateApplied = true;
+                        WBState.sphereUpdateReady = false;
+                        WBState.sphereUpdating = false;
                         if (btn1) {
                             btn1.classList.remove('border-amber-400', 'text-amber-300', 'animate-pulse');
                             btn1.classList.add('border-emerald-400', 'text-emerald-300');
                         }
                         setPreviewFrameState('success', 1000);
-                        WBState.sphereUpdating = false;
+                        syncDynamicBottomButtons();
                         notifyEditorialStatus('UPDATE INSTALLED // RESTART SERVICE TO ACTIVATE');
-                    }).catch(() => {
+                    }).catch((err) => {
                         WBState.sphereUpdating = false;
                         syncDynamicBottomButtons();
                         if (btn1) {
@@ -10178,7 +10214,9 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                             setTimeout(() => { btn1.classList.remove('canvas-fault-jolt'); if (WBState.currentChapter === 'sphere') syncDynamicBottomButtons(); }, 1200);
                         }
                         setPreviewFrameState('error', 800);
-                        notifyEditorialStatus('UPDATE FAILED');
+                        notifyEditorialStatus(err && err.message && err.message !== 'verified update is unavailable'
+                            ? `UPDATE FAILED // ${String(err.message).toUpperCase()}`
+                            : 'UPDATE FAILED');
                     });
                 }
                 return;
@@ -10618,7 +10656,11 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                 void setDailyTasksFromToggle();
             } else if (ch === 'usage') {
                 WBState.usageRange = (WBState.usageRange === '6H') ? '24H' : '6H';
-                const nextTargetBtnText = WBState.usageRange === '24H' ? '[ TIME: 6H ]' : '[ TIME: 24H ]';
+                if (WBState.usageRange === '6H' && WBState.usage24h.outVals && WBState.usage24h.outVals.length >= 6) {
+                    WBState.usage6h.outVals = WBState.usage24h.outVals.slice(-6);
+                    WBState.usage6h.inVals = WBState.usage24h.inVals.slice(-6);
+                }
+                const nextTargetBtnText = WBState.usageRange === '6H' ? '[ TIME: 6H ]' : '[ TIME: 24H ]';
                 scrambleActionButton(document.getElementById('btn-page-ripple'), nextTargetBtnText, 220);
                 notifyEditorialStatus(`TIME WINDOW -> ${WBState.usageRange} (MAX 24H ARCHIVE)`);
                 renderEditorialStage(true);
@@ -10744,10 +10786,16 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
          * 8. 顶栏声波指示器动画与进入主场景过渡（100% 保留原版时序）
          * ========================================================================= */
         const waveCanvas = document.getElementById('sound-wave-canvas');
-        const waveCtx = waveCanvas.getContext('2d');
+        const waveCtx = waveCanvas ? waveCanvas.getContext('2d') : null;
         let wavePhase = 0;
+        let soundWaveRafId = null;
 
         function animateSoundWaveIcon() {
+            if (!waveCtx) return;
+            if (soundWaveRafId) {
+                cancelAnimationFrame(soundWaveRafId);
+                soundWaveRafId = null;
+            }
             waveCtx.clearRect(0, 0, 22, 12);
             waveCtx.strokeStyle = '#ffffff';
             waveCtx.lineWidth = 1.4;
@@ -10760,7 +10808,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             }
             waveCtx.stroke();
             wavePhase += 0.18;
-            requestAnimationFrame(animateSoundWaveIcon);
+            soundWaveRafId = requestAnimationFrame(animateSoundWaveIcon);
         }
 
         function enterMainExperience(withSound) {
@@ -11265,7 +11313,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             startStrictLoadingSequence();
 
             initMainWorld();
-            requestAnimationFrame(renderMainWorld);
+            renderMainWorld();
             requestAnimationFrame(renderProjectArtifactPreview);
             animateSoundWaveIcon();
         };

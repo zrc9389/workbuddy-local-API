@@ -3,7 +3,6 @@ package upstream
 
 import (
 	"bufio"
-	"sync"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -12,6 +11,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -79,7 +79,6 @@ func parseSSELine(line string) (isData bool, isDone bool, payload string) {
 	return true, false, p
 }
 
-
 // IsEmptyStreamError 报告错误是否为「上游空流」（无有效 SSE 帧）——供 handler
 // 在流式路径把空流记为失败观测（HTTP 头已发出只能 200，但日志/状态应收敛到
 // upstream_parse 同语义），与客户端断连类错误区分。
@@ -109,9 +108,9 @@ type StreamObserver interface {
 
 type textStreamObserver func(string) error
 
-func (f textStreamObserver) OnResponseStart(id, model string) error                   { return nil }
-func (f textStreamObserver) OnContentDelta(text string) error                        { return f(text) }
-func (f textStreamObserver) OnReasoningDelta(text string) error                      { return nil }
+func (f textStreamObserver) OnResponseStart(id, model string) error                 { return nil }
+func (f textStreamObserver) OnContentDelta(text string) error                       { return f(text) }
+func (f textStreamObserver) OnReasoningDelta(text string) error                     { return nil }
 func (f textStreamObserver) OnToolCallDelta(index int, id, name, args string) error { return nil }
 
 // TextStreamObserver 将传统的单个文本回调封装为 StreamObserver 接口。
@@ -1005,7 +1004,7 @@ func PrecheckStream(rc io.ReadCloser) (io.ReadCloser, error) {
 	for {
 		line, err := readBoundedLine(br, maxSSELineBytes)
 		if len(line) > 0 {
-			peeked = append(peeked, []byte(line + "\n")...)
+			peeked = append(peeked, []byte(line+"\n")...)
 		}
 		isData, isDone, _ := parseSSELine(line)
 		if isData && isDone {

@@ -43,11 +43,12 @@ const (
 )
 
 type Options struct {
-	Demo        bool
-	Dir         string
-	Binary      string
-	IdleTimeout time.Duration
-	OnUnbind    func(uid string) error
+	Demo            bool
+	Dir             string
+	Binary          string
+	IdleTimeout     time.Duration
+	DisableIdleStop bool
+	OnUnbind        func(uid string) error
 }
 type Binding struct {
 	UID     string `json:"uid"`
@@ -516,6 +517,9 @@ func (m *Manager) StartSubscriptionRefresh(ctx context.Context, interval time.Du
 					log.Printf("metacore: scheduled subscription refresh %s failed: %v", sub.ID, err)
 				} else {
 					delete(retryAfter, sub.ID)
+					go func() {
+						_, _ = m.StartTests(context.Background())
+					}()
 				}
 			}
 		}
@@ -698,8 +702,16 @@ func (m *Manager) apply(ctx context.Context, old, next diskState) error {
 		return ErrApply
 	}
 	nodes, err := m.readNodes(ctx, next)
+	var unbound []string
 	if err == nil {
-		err = m.selectBindings(ctx, next)
+		next.Bindings, unbound = reconcileBindings(next.Bindings, nodes)
+		b, err = renderConfig(next, m.controller, m.secret)
+		if err == nil {
+			err = m.core.Apply(ctx, b)
+		}
+		if err == nil {
+			err = m.selectBindings(ctx, next)
+		}
 		if err == nil {
 			err = m.verifyBindings(ctx, next)
 		}
@@ -739,7 +751,58 @@ func (m *Manager) apply(ctx context.Context, old, next diskState) error {
 	m.lastUse = time.Now()
 	m.lastError = ""
 	m.mu.Unlock()
+	if m.opts.OnUnbind != nil {
+		for _, uid := range unbound {
+			_ = m.opts.OnUnbind(uid)
+		}
+	}
 	return nil
+}
+
+func reconcileBindings(bindings []bindingRecord, nodes map[string]Node) ([]bindingRecord, []string) {
+	updated := make([]bindingRecord, 0, len(bindings))
+	var unbound []string
+	for _, binding := range bindings {
+		if node, ok := nodes[binding.Node]; ok && node.Provider == binding.Provider && node.Name == binding.Name {
+			updated = append(updated, binding)
+			continue
+		}
+		bestID, bestScore, ties := "", 0, 0
+		for id, node := range nodes {
+			if node.Provider != binding.Provider {
+				continue
+			}
+			a, b := []rune(binding.Name), []rune(node.Name)
+			limit := len(a)
+			if len(b) < limit {
+				limit = len(b)
+			}
+			score := 0
+			for score < limit && a[score] == b[score] {
+				score++
+			}
+			shorter := len(a)
+			if len(b) < shorter {
+				shorter = len(b)
+			}
+			if score < 4 || score*100 < shorter*60 {
+				continue
+			}
+			if score > bestScore {
+				bestID, bestScore, ties = id, score, 1
+			} else if score == bestScore {
+				ties++
+			}
+		}
+		if ties == 1 {
+			binding.Node = bestID
+			binding.Name = nodes[bestID].Name
+			updated = append(updated, binding)
+		} else {
+			unbound = append(unbound, binding.UID)
+		}
+	}
+	return updated, unbound
 }
 
 func cloneHistoryMap(in map[string][]History) map[string][]History {
@@ -846,12 +909,6 @@ func (m *Manager) readNodes(ctx context.Context, s diskState) (map[string]Node, 
 			if len(result) > maxNodes {
 				return nil, errors.New("node limit exceeded")
 			}
-		}
-	}
-	for _, b := range s.Bindings {
-		n, ok := result[b.Node]
-		if !ok || n.Name != b.Name || n.Provider != b.Provider {
-			return nil, errors.New("subscription removes a bound node")
 		}
 	}
 	return result, nil

@@ -215,15 +215,18 @@ func (p *Panel) AccountsImport(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if existing := p.cfg.Pool.AuthByUID(a.UID); existing != nil {
-			if unlock != nil {
-				unlock()
-			}
-			// 修复同 UID 重新导入：若提供了有效 refreshToken，说明是重新导入的有效凭证，复活旧禁用账号
+			// 修复同 UID 重新导入：将新凭据合入旧对象并持久化落盘，重新载入号池并复活
 			if a.RefreshTokenValue() != "" {
-				p.cfg.Pool.ReviveDisabled(a.UID)
+				if err := existing.ImportCredentialsAndSave(a, true); err == nil {
+					p.cfg.Pool.Add(existing)
+					p.cfg.Pool.ReviveDisabled(a.UID)
+				}
 			}
 			if it.binding != nil && p.cfg.Meta != nil {
-				_ = p.cfg.Meta.RestoreAccountBinding(ctx, a.UID, it.binding.URL, it.binding.Node, a.SetProxyAndSave)
+				_ = p.cfg.Meta.RestoreAccountBinding(ctx, a.UID, it.binding.URL, it.binding.Node, existing.SetProxyAndSave)
+			}
+			if unlock != nil {
+				unlock()
 			}
 			retained = append(retained, a.UID)
 			continue

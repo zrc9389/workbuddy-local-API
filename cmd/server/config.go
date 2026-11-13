@@ -260,6 +260,11 @@ func Default() *Config {
 		AuthDir:   "./auths",
 		StateFile: "./data/state.json",
 	}
+	// 官方更新源缺省开启：未配置 update 段时也能检查 stable 发布；
+	// 用户显式写入空 owner/repo 会反序列化覆盖为空并保持禁用。
+	c.Update.GitHubOwner = "zrc9389"
+	c.Update.GitHubRepo = "workbuddy-local-API"
+	c.Update.Channel = "stable"
 	c.Cooldown.SoftRate = "600s"
 	c.Cooldown.SoftRateMax = "2h"
 	c.Server.ReadTimeout = "300s"
@@ -411,6 +416,16 @@ func applyEnv(c *Config) {
 	}
 	if v := os.Getenv("WB2A_STATE_FILE"); v != "" {
 		c.StateFile = v
+	}
+	// 用 LookupEnv 区分“未设置”与“显式置空”：空值同样覆盖，便于临时禁用更新检查。
+	if v, ok := os.LookupEnv("WB2A_UPDATE_GITHUB_OWNER"); ok {
+		c.Update.GitHubOwner = v
+	}
+	if v, ok := os.LookupEnv("WB2A_UPDATE_GITHUB_REPO"); ok {
+		c.Update.GitHubRepo = v
+	}
+	if v, ok := os.LookupEnv("WB2A_UPDATE_CHANNEL"); ok {
+		c.Update.Channel = v
 	}
 	if v := os.Getenv("WB2A_SOFT_RATE"); v != "" {
 		c.Cooldown.SoftRate = v

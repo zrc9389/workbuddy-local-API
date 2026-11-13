@@ -816,7 +816,7 @@ func runSkillFresh(p *Service, a *auth.Auth) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("真实对话: %w", err)
 	}
-	msgID := "msg-" + req[len(req)-8:]
+	msgID := "msg-" + safeReqSuffix(req)
 	events := upstream.DesktopChatSequence(conv, req, msgID, "fast-model", "fast-model")
 	for _, ev := range events {
 		if ev["eventCode"] == "chat_message_response" {
@@ -1084,18 +1084,28 @@ func (p *Service) runAutoAll(a *auth.Auth) []map[string]any {
 			out = append(out, item)
 			continue
 		}
-		if before.Claimed || before.Current >= before.Target && before.Target > 0 {
+		if before.Claimed {
 			item["status"] = "skipped"
 			item["message"] = "已完成（" + taskProgressText(before) + "）"
 			out = append(out, item)
 			continue
 		}
-		msg, err := act.run(p, a)
-		if err != nil {
-			item["status"] = "error"
-			item["message"] = err.Error()
+		if before.Locked {
+			item["status"] = "skipped"
+			item["message"] = "任务未解锁（locked）"
 			out = append(out, item)
 			continue
+		}
+		var msg string
+		if !(before.Current >= before.Target && before.Target > 0) {
+			msg, err = act.run(p, a)
+			if err != nil {
+				item["status"] = "error"
+				item["message"] = err.Error()
+				out = append(out, item)
+				continue
+			}
+			item["message"] = msg
 		}
 		var after *upstream.Task
 		if isMPTaskCode(act.TaskCode) {
@@ -1138,3 +1148,10 @@ func (p *Service) runAutoAll(a *auth.Auth) []map[string]any {
 }
 
 // accountTaskAutoAll 一键完成该账号全部可自动任务。
+
+func safeReqSuffix(req string) string {
+	if len(req) > 8 {
+		return req[len(req)-8:]
+	}
+	return req
+}

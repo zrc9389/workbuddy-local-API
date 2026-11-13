@@ -39,9 +39,10 @@ type Config struct {
 	// StickyCount 返回当前粘性会话绑定数（供 /status）；nil 时报告 0。
 	StickyCount func() int
 	// RedisMode 观测字段（"upstash" / "noop"），供 /status 透出。
-	RedisMode    string
-	SoftCooldown time.Duration // 429/限流文案软冷却基数，默认 600s（连续触发指数退避，封顶 soft_rate_max）
-	RefreshSkew  time.Duration // token 提前刷新窗口，默认 10m
+	RedisMode       string
+	SoftCooldown    time.Duration // 429/限流文案软冷却基数，默认 600s（连续触发指数退避，封顶 soft_rate_max）
+	RefreshSkew     time.Duration // token 提前刷新窗口，默认 10m
+	RestrictionHold time.Duration // 11140 风控连坐全池暂停时长（默认 30m；<0 关闭）
 
 	// Panel 管理面板 handler（可选；nil = 不挂载）。挂载在 /panel/ 前缀下，
 	// 会话鉴权位于 localauth 边界，面板提供内嵌静态资源。
@@ -111,6 +112,7 @@ type Handler struct {
 	// wafIP WAF IP 级拦截状态机（fail-fast，wafip.go）：短窗多号 WAF 403 →
 	// 激活期轮转遇 WAF 403 直接终止（不放大请求量）。进程内状态、重启清零。
 	wafIP      wafIPGate
+	restrict   restrictGate
 	slots      chan struct{}
 	bodyBudget *resource.Budget
 	workBudget *resource.Budget
@@ -140,6 +142,9 @@ func NewHandler(cfg Config) *Handler {
 	if cfg.MaxConcurrent <= 0 {
 		cfg.MaxConcurrent = 8
 	}
+	if cfg.RestrictionHold == 0 {
+		cfg.RestrictionHold = 30 * time.Minute
+	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), slots: make(chan struct{}, cfg.MaxConcurrent)}
 	if cfg.MaxWorkingBytes <= 0 {
 		cfg.MaxWorkingBytes = 256 << 20
@@ -152,6 +157,7 @@ func NewHandler(cfg Config) *Handler {
 	h.workLimit = cfg.MaxWorkingBytes
 	h.workBudget = resource.NewBudget(cfg.MaxWorkingBytes)
 	h.mux.HandleFunc("POST /v1/chat/completions", h.chatCompletions)
+	h.mux.HandleFunc("POST /v1/messages", h.claudeMessages)
 	h.mux.HandleFunc("POST /v1/responses", h.responses)
 	h.mux.HandleFunc("POST /responses", h.responses)
 	h.mux.HandleFunc("GET /panel/api/capabilities", h.capabilities)
@@ -182,7 +188,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Method == "POST" && (r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/responses" || r.URL.Path == "/responses") {
+	if r.Method == "POST" && (r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/responses" || r.URL.Path == "/responses" || r.URL.Path == "/v1/messages") {
 		next, cleanup, ok := h.admit(w, r)
 		if !ok {
 			return
@@ -191,7 +197,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer cleanup()
 	}
 
-	if h.cfg.RequestLog != nil && r.Method == http.MethodPost && (r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/responses" || r.URL.Path == "/responses") {
+	if h.cfg.RequestLog != nil && r.Method == http.MethodPost && (r.URL.Path == "/v1/chat/completions" || r.URL.Path == "/v1/responses" || r.URL.Path == "/responses" || r.URL.Path == "/v1/messages") {
 		trace := &requestTrace{path: r.URL.Path, id: telemetry.NewRequestID(), start: time.Now()}
 		if h.loadLive().RecordClientInfo {
 			trace.captureClientInfo(r)

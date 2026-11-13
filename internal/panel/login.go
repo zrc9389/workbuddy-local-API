@@ -311,6 +311,8 @@ func (p *Panel) loginPoll(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "could not save credentials")
 			return
 		}
+		a.FilePath = old.FilePath
+		a.ProxyURL = old.ProxyURLValue() // 保留原有代理配置，并作为全新隔离实例入池
 	} else {
 		if safeCredentialPath(p.cfg.AuthDir, a.FilePath) != nil || a.SaveAtomic() != nil {
 			writeErr(w, http.StatusInternalServerError, "could not save credentials")

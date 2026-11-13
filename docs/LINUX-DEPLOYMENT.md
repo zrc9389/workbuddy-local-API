@@ -100,6 +100,60 @@ sudo -u workbuddy-local /opt/workbuddy-local/deployment/linux/start.sh \
 
 退出优先 Ctrl+C 并等日志结束，不把 kill -9 当正常停机。
 
+### 3.3 从 3.0.1 预览版/测试版升级到 3.0.1 正式版
+
+`3.0.1 预览版 / 测试版` 不能依赖旧版面板自动更新完成升级，请先手动下载 `3.0.1 正式版` 的发行包或匹配架构的 `wb2api`，按本次 `SHA256SUMS.txt` 核验后再替换。升级只替换程序文件，保留 `/etc/workbuddy-local/config.json`、`/var/lib/workbuddy-local` 下的账号、状态、用量和密码数据，不重新生成配置，也不覆盖账号目录。
+
+systemd 模板使用 `ProtectSystem=strict`，而 `ReadWritePaths=` 只放行 `/etc/workbuddy-local` 与 `/var/lib/workbuddy-local`，因此 `/opt/workbuddy-local` 对服务进程默认只读，面板的下载替换会因无法重命名 `wb2api` 而失败。推荐由管理员人工替换：
+
+```sh
+# 以 amd64 为例；arm64 请替换包名。先核对归档与本次 SHA256SUMS.txt。
+tar -xzf workbuddy-local-v3.0.1-linux-amd64.tar.gz
+cd workbuddy-local-v3.0.1-linux-amd64
+sha256sum -c SHA256SUMS.txt
+sudo systemctl stop workbuddy-local.service
+sudo install -d -m 0700 /root/workbuddy-backup-3.0.1-preview
+sudo cp -a /opt/workbuddy-local/wb2api /root/workbuddy-backup-3.0.1-preview/wb2api
+sudo install -m 0755 -o root -g root ./wb2api /opt/workbuddy-local/wb2api
+sudo systemctl start workbuddy-local.service
+sudo systemctl status --no-pager workbuddy-local.service
+```
+
+自 `3.0.1 正式版` 起，更新器已支持自动安全轮转常规旧版 `.bak` 文件；需要人工归档的旧程序仍建议放到 `/opt/workbuddy-local` 之外。
+
+如确需使用面板下载替换，不要修改发行包内的 `deployment/linux/workbuddy-local.service` 模板，改用 systemd drop-in 临时放开该目录写权限：
+
+```sh
+sudo install -d -m 0755 /etc/systemd/system/workbuddy-local.service.d
+printf '%s\n' '[Service]' 'ReadWritePaths=/opt/workbuddy-local' \
+  | sudo tee /etc/systemd/system/workbuddy-local.service.d/10-update-writable.conf >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl restart workbuddy-local.service
+```
+
+`ReadWritePaths=` 只解除 systemd 的只读挂载，不会改变 Unix 所有权或模式。还需临时让服务用户能写该目录，二选一：
+
+```sh
+sudo setfacl -m u:workbuddy-local:rwx /opt/workbuddy-local
+# 或临时：sudo chown workbuddy-local:workbuddy-local /opt/workbuddy-local
+```
+
+在面板完成检查和替换后，人工执行 `sudo systemctl restart workbuddy-local.service` 激活新二进制。确认升级完成后删除该 drop-in、重新 `daemon-reload` 并再次重启，恢复 `/opt/workbuddy-local` 只读，并撤销临时授权：
+
+```sh
+sudo rm /etc/systemd/system/workbuddy-local.service.d/10-update-writable.conf
+sudo systemctl daemon-reload
+sudo systemctl restart workbuddy-local.service
+sudo setfacl -x u:workbuddy-local /opt/workbuddy-local
+# 若曾使用 chown：sudo chown root:root /opt/workbuddy-local
+sudo chown root:root /opt/workbuddy-local/wb2api
+sudo chmod 0755 /opt/workbuddy-local/wb2api
+```
+
+不要使用 `chmod 777`。若磁盘或挂载本身为只读，`ReadWritePaths=` 不能绕过底层只读超级块，此时必须使用人工替换。
+
+已有 `config.json` 不会被升级覆盖；若其中 `update.github_owner` / `update.github_repo` 为空，面板更新仍保持禁用。需要启用默认源时手工填写 `zrc9389` 与 `workbuddy-local-API`，不需要时保持为空即可。
+
 ## 4. systemd、停机与资源
 
 模板：`deployment/linux/workbuddy-local.service`。审阅后安装/验证，最后再由管理员选择启动：

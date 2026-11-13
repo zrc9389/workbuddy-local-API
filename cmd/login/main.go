@@ -292,6 +292,10 @@ func buildLoginOutput(tok struct {
 	Nickname     string `json:"nickname"`
 }) map[string]any {
 	return map[string]any{
+		"accessToken":   tok.AccessToken,
+		"refreshToken":  tok.RefreshToken,
+		"expiresAt":     time.Now().Unix() + tok.ExpiresIn,
+		"enterpriseId":  acct.EnterpriseID,
 		"access_token":  tok.AccessToken,
 		"refresh_token": tok.RefreshToken,
 		"expires_in":    tok.ExpiresIn,

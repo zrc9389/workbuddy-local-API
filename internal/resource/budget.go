@@ -38,7 +38,12 @@ type responseReader struct {
 func LimitResponse(r io.ReadCloser, n int64) io.ReadCloser { return &responseReader{r, n} }
 func (r *responseReader) Read(p []byte) (int, error) {
 	if r.left <= 0 {
-		return 0, errors.New("upstream response exceeds local byte budget")
+		var probe [1]byte
+		n, err := r.ReadCloser.Read(probe[:])
+		if n > 0 {
+			return 0, errors.New("upstream response exceeds local byte budget")
+		}
+		return 0, err
 	}
 	if int64(len(p)) > r.left {
 		p = p[:r.left]

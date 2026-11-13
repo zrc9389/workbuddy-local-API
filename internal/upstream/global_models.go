@@ -160,6 +160,17 @@ func (c *Client) fetchGlobalModels(a *auth.Auth, force bool) (names []string, in
 		c.storeEfforts("global", efforts, defaults)
 	}
 	c.storeModelRates("global", infos)
+	if len(infos) > 0 {
+		maxOutCache := make(map[string]int64, len(infos))
+		for _, mi := range infos {
+			if mi.MaxTokens > 0 {
+				maxOutCache[mi.ID] = mi.MaxTokens
+			}
+		}
+		if len(maxOutCache) > 0 {
+			c.storeMaxOuts("global", maxOutCache)
+		}
+	}
 
 	// 成功：探测结果去重。names/infos 均落缓存；倍率等选号敏感字段只透出展示，
 	// 不注入 costTier。

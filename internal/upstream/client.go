@@ -28,20 +28,24 @@ import (
 type ErrKind int
 
 const (
-	ErrNone           ErrKind = iota // 成功
-	ErrHardCredit                    // 余额不足（402 或 body 关键词）→ 长冷却
-	ErrSoftRate                      // 429 软限流 → 短冷却
-	ErrSessionDead                   // 401 + 12153 offline session 失效 → 禁用
-	ErrNotFound                      // 404 上游偶发 → 短冷却，不累计错误计数（防雪崩）
-	ErrServer                        // 5xx 上游故障
-	ErrContentBlocked                // 内容策略拦截（400 + 审核文案）→ 不罚账号，走降级重试
-	ErrBadParams                     // 请求体解析失败（400 + Unmarshal chat params failed / 11101）→ 请求级错误：不罚号、不轮转，末端 400 透传原文
-	ErrAccountFault                  // 账号级授权/配额故障（11140 request illegal / 14017 trial not activated）→ 冷却轮换，不无限重试
-	ErrModelBlocked                  // 11102「该后端无此模型」→ (账号,模型) 负缓存避让，切模型/切账号
-	ErrWafBlock                      // 403 + 非业务信封体（APISIX WAF 拦截页/空体）→ 账号软冷却 + 抖动退避
-	ErrPromptTooLong                 // 11115「prompt is too long」→ 请求级错误（上下文超限是请求的问题非账号的问题）：不罚号、不轮转，末端透传原文
-	ErrImageInvalid                  // 图片请求格式/数据无效 → 请求级错误：不罚号、不轮转，末端透传原文
-	ErrClient                        // 其他 4xx / 业务错误
+	ErrNone              ErrKind = iota // 成功
+	ErrHardCredit                       // 余额不足（402 或 body 关键词）→ 长冷却
+	ErrSoftRate                         // 429 软限流 → 短冷却
+	ErrSessionDead                      // 401 + 12153 offline session 失效 → 禁用
+	ErrNotFound                         // 404 上游偶发 → 短冷却，不累计错误计数（防雪崩）
+	ErrServer                           // 5xx 上游故障
+	ErrContentBlocked                   // 内容策略拦截（400 + 审核文案）→ 不罚账号，走降级重试
+	ErrBadParams                        // 请求体解析失败（400 + Unmarshal chat params failed / 11101）→ 请求级错误：不罚号、不轮转，末端 400 透传原文
+	ErrAccountFault                     // 账号级授权/配额故障（11140 request illegal / 14017 trial not activated）→ 冷却轮换，不无限重试
+	ErrModelBlocked                     // 11102「该后端无此模型」→ (账号,模型) 负缓存避让，切模型/切账号
+	ErrWafBlock                         // 403 + 非业务信封体（APISIX WAF 拦截页/空体）→ 账号软冷却 + 抖动退避
+	ErrPromptTooLong                    // 11115「prompt is too long」→ 请求级错误（上下文超限是请求的问题非账号的问题）：不罚号、不轮转，末端透传原文
+	ErrImageInvalid                     // 图片请求格式/数据无效 → 请求级错误：不罚号、不轮转，末端透传原文
+	ErrClient                           // 其他 4xx / 业务错误
+	ErrModelParamInvalid                // 11133 模型参数拒绝 → 请求级错误：不罚号、不轮转
+	ErrUpstreamBusy                     // 6020/6021 排队满、11134 供应商过载 → 容量信号：不罚号不解绑粘性
+	ErrToolMismatch                     // 11148 工具调用与结果不匹配 → 请求级错误：不罚号、不轮转
+	ErrEmptyContent                     // 11151 空 text 段 → 请求级错误：不罚号、不轮转
 )
 
 func (k ErrKind) String() string {
@@ -70,6 +74,14 @@ func (k ErrKind) String() string {
 		return "image_invalid"
 	case ErrAccountFault:
 		return "account_fault"
+	case ErrModelParamInvalid:
+		return "model_param_invalid"
+	case ErrUpstreamBusy:
+		return "upstream_busy"
+	case ErrToolMismatch:
+		return "tool_mismatch"
+	case ErrEmptyContent:
+		return "empty_content"
 	case ErrClient:
 		return "client"
 	default:
@@ -139,18 +151,27 @@ var accountFaultMarkers = []string{
 	"request illegal",
 	"trial not activated",
 	"trial version is not yet activated",
+	"unusual activity",
+	"账号存在异常行为",
+}
+
+// IsRestricted 报告错误响应是否属于 11140 设备/出口级账号限制（禁止同请求继续轮转）。
+func IsRestricted(body string) bool {
+	if body == "" {
+		return false
+	}
+	lower := strings.ToLower(body)
+	return strings.Contains(lower, "request illegal") ||
+		strings.Contains(lower, "unusual activity") ||
+		strings.Contains(body, "账号存在异常行为")
 }
 
 // contentBlockedMarkers 内容策略拦截关键词（大小写不敏感子串匹配）。
-//
-// 定位：上游按逐字精确指纹审核，system 来源的模板句（如 Claude Code/Codex
-// 注入指令）触发 HTTP 400 + 以下文案。这是「误报」（合法流量被审核误杀），
-// 非账号问题——该账号余额健康、未限流、session 未死，故 ErrContentBlocked
-// 在 applyErrorPolicy 中不罚账号（无冷却/熔断/NoteError），改由网关降级重试。
 var contentBlockedMarkers = []string{
 	"blocked by security policy",
 	"unapproved channel",
 	"illegal api invocation",
+	"content failed safety review",
 }
 
 // badParamsMarkers 请求体解析失败关键词：HTTP 400 + 上游
@@ -211,18 +232,20 @@ func SoftRateResetLoc() *time.Location { return softRateResetLoc }
 // modelRateLimitCode 明确指向「模型级 429 限流」的业务 code。
 // 上游用它表达"该模型的使用量超限"（code 6004，msg 带「将在 … 重置」），
 // 而不是账号整体被限流——账号健康，只是这个模型此刻被限。
-const modelRateLimitCode = "6004"
+const modelRateLimitCodes = "6004|14003"
+const modelBusyCode = "14003"
+const modelUsageLimitCode = "6000"
+const modelSwitchModelHint = "切换其他模型"
 
 // softRateResetPatternCN/EN 匹配重置文案（CN「将在 … 重置」/ global 域英文
 // "reset at <固定格式时间>"），捕获中间的时间串。
 const softRateResetPatternCN = `将在 (.+?) 重置`
 const softRateResetPatternEN = `(?i)reset at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})`
 
-// 限流判定正则预编译为包级 var：IsModelRateLimit / ParseRateReset 在每次错误
-// 分类、每个限流 body 上调用，函数体内 MustCompile 是纯浪费；错误风暴（429
-// 轰炸）时尤甚。模式串均为纯常量。regexp 并发安全（匹配只读），无需额外锁。
 var (
-	reModelRateLimit  = regexp.MustCompile(`"code"\s*:\s*"?` + modelRateLimitCode + `"?`)
+	reModelRateLimit  = regexp.MustCompile(`"code"\s*:\s*"?(` + modelRateLimitCodes + `)"?`)
+	reModelBusy       = regexp.MustCompile(`"code"\s*:\s*"?` + modelBusyCode + `"?`)
+	reModelUsageLimit = regexp.MustCompile(`"code"\s*:\s*"?` + modelUsageLimitCode + `"?`)
 	reSoftRateResetCN = regexp.MustCompile(softRateResetPatternCN)
 	reSoftRateResetEN = regexp.MustCompile(softRateResetPatternEN)
 )
@@ -230,11 +253,67 @@ var (
 // softRateTimeLayout 上游重置时间的格式（无时区后缀；时区固定 UTC+8）。
 const softRateTimeLayout = "2006-01-02 15:04:05"
 
-// IsModelRateLimit 报告 429 body 是否明确指向模型级限流（业务 code 6004）。
-// 用于区分"账号级软限流"（按账号冷却）与"模型级用量限流"（切模型即可用）。
+// IsModelRateLimit 报告 body 是否指向模型级限流（业务 code 6004 / 14003 / 带换模型提示的 6000）。
 func IsModelRateLimit(body string) bool {
-	// `"code":6004` / `"code": 6004` / `"code":"6004"` 均可命中（JSON 空格容差）。
-	return reModelRateLimit.MatchString(body)
+	if reModelRateLimit.MatchString(body) {
+		return true
+	}
+	return reModelUsageLimit.MatchString(body) && strings.Contains(body, modelSwitchModelHint)
+}
+
+// IsModelBusy 报告 body 是否属于瞬时模型繁忙（code 14003），用于套用短窗冷却与 503 model_busy。
+func IsModelBusy(body string) bool {
+	return reModelBusy.MatchString(body)
+}
+
+// IsUpstreamBusyBody 报告 body 是否属于渠道排队满（6020/6021）或供应商过载（11134）。
+func IsUpstreamBusyBody(body string) bool {
+	if body == "" {
+		return false
+	}
+	lower := strings.ToLower(body)
+	if hasBusinessCode(body, "6020") || hasBusinessCode(body, "6021") || hasBusinessCode(body, "11134") {
+		return true
+	}
+	return strings.Contains(lower, "queue.waiting.title") ||
+		strings.Contains(lower, "queue.full.title") ||
+		strings.Contains(lower, "provider is overloaded") ||
+		strings.Contains(lower, "model provider overloaded")
+}
+
+// extractUpstreamRetryAfter 从 6020/排队 JSON 响应提取 data.retry_after（秒）。
+func extractUpstreamRetryAfter(body string) time.Duration {
+	if !strings.Contains(body, "retry_after") {
+		return 0
+	}
+	var root map[string]any
+	if json.Unmarshal([]byte(body), &root) != nil {
+		return 0
+	}
+	var ra float64
+	if v, ok := root["retry_after"].(float64); ok {
+		ra = v
+	} else if data, ok := root["data"].(map[string]any); ok {
+		if v, ok := data["retry_after"].(float64); ok {
+			ra = v
+		}
+	} else if errObj, ok := root["error"].(map[string]any); ok {
+		if v, ok := errObj["retry_after"].(float64); ok {
+			ra = v
+		}
+	}
+	if ra <= 0 || ra > float64(retryAfterSanity/time.Second) {
+		return 0
+	}
+	return time.Duration(ra * float64(time.Second))
+}
+
+// ModelBlockReasonFor 返回 11102/11158 的规范化冷却前缀原因。
+func ModelBlockReasonFor(body string) string {
+	if hasBusinessCode(body, "11158") || strings.Contains(strings.ToLower(body), "not allowed for account type") {
+		return "11158 model not allowed for account type"
+	}
+	return ModelBlockReason
 }
 
 // modelBlockCode 明确指向「该后端无此模型」的业务 code。
@@ -553,8 +632,11 @@ func classifyRaw(status int, body string) ErrKind {
 	// 计费/限流都更具体——若不先判，msg 里的 "service info not found" 会被更宽的
 	// 4xx 兜底归为 ErrClient（只换号不避让），该坏号会留在池内反复被选中。
 	// 只认 400/404（见 IsModelBlocked），429+11102 落下方 status==429 层走限流语义。
-	if IsModelBlocked(status, body) {
+	if IsModelBlocked(status, body) || (status >= 400 && status != http.StatusTooManyRequests && hasBusinessCode(body, "11158")) {
 		return ErrModelBlocked
+	}
+	if IsUpstreamBusyBody(body) {
+		return ErrUpstreamBusy
 	}
 	// 402：真正的计费余额耗尽状态码，最严、最不可自愈，最先判。
 	if status == http.StatusPaymentRequired {
@@ -609,6 +691,9 @@ func classifyRaw(status int, body string) ErrKind {
 			}
 		}
 	}
+	if codeMarker(lower, "11148") || strings.Contains(lower, "tool results do not match") || strings.Contains(body, "工具调用与工具结果不匹配") {
+		return ErrToolMismatch
+	}
 	if status == http.StatusNotFound {
 		return ErrNotFound
 	}
@@ -634,6 +719,12 @@ func classifyRaw(status int, body string) ErrKind {
 				return ErrImageInvalid
 			}
 		}
+	}
+	if status == http.StatusBadRequest && isModelParamInvalid(body) {
+		return ErrModelParamInvalid
+	}
+	if status == http.StatusBadRequest && hasBusinessCode(body, "11151") {
+		return ErrEmptyContent
 	}
 	// 内容策略拦截（HTTP 400 + 审核文案）：判在通用 ErrClient 之前。
 	// 这是误报信号，不罚账号，由网关降级重试处理（见 handler.applyErrorPolicy）。
@@ -692,6 +783,7 @@ type Client struct {
 	// thinking.go 补档：缺显式 effort 时优先用模型声明默认档，空串回退硬编码 high。
 	// 与 efforts 同 realm 分层桶（同 C-2 隔离原则），共用 effortsMu。
 	defaultEfforts map[string]map[string]string
+	maxOuts        map[string]map[string]int64
 	// modelRates 缓存各模型当前生效积分倍率（规范化数值，如 "0.5"）。
 	// 与 efforts 共用 realm 分层和锁；每次成功刷新模型目录时整体替换对应域。
 	modelRates map[string]map[string]string
@@ -858,11 +950,40 @@ func (c *Client) prepareBody(body []byte, realm, uid, conversationID string) []b
 		//。
 		efforts, defs = globalEffortMap(efforts, defs)
 	}
-	body = PrepareBodyOptWithEffortsAndDefault(body, c.SanitizeFingerprints.Load(), efforts, defs)
+	maxOut := c.maxOutSnapshot(realm)
+	body, _ = PrepareBodyOptWithEffortsDefaultAndCaps(body, c.SanitizeFingerprints.Load(), efforts, defs, maxOut)
 	// prompt_cache_key 注入（P0 费用优化，费用降 ~17×）：按账号隔离的稳定缓存键，
 	// 让同一客户端对同一账号的连续请求命中上游前缀缓存。
 	body = InjectPromptCacheKey(body, uid, conversationID)
 	return body
+}
+
+func (c *Client) maxOutSnapshot(realm string) map[string]int64 {
+	c.effortsMu.RLock()
+	defer c.effortsMu.RUnlock()
+	bucket, ok := c.maxOuts[realmKey(realm)]
+	if !ok || len(bucket) == 0 {
+		return nil
+	}
+	cp := make(map[string]int64, len(bucket))
+	for k, v := range bucket {
+		cp[k] = v
+	}
+	return cp
+}
+
+func (c *Client) storeMaxOuts(realm string, caps map[string]int64) {
+	c.effortsMu.Lock()
+	defer c.effortsMu.Unlock()
+	if c.maxOuts == nil {
+		c.maxOuts = make(map[string]map[string]int64)
+	}
+	k := realmKey(realm)
+	if len(caps) == 0 {
+		delete(c.maxOuts, k)
+		return
+	}
+	c.maxOuts[k] = caps
 }
 
 // effortsSnapshot 返回 effort 能力缓存副本；nil 表示未知（透传不降级）。
@@ -973,6 +1094,7 @@ const refreshTokenExpiresInMax = 10 * 365 * 24 * time.Hour
 //     独占 a.mu，阻塞同账号的 SaveAtomic / 其他刷新（issue:持锁 120s I/O）。
 //   - 写回前重新校验快照一致性：若锁外期间另一 goroutine 已完成刷新（refreshToken
 //     已变），本次结果直接采用（新 token 已生效），不再重复写回。
+//
 // RefreshToken 刷新 access token；成功时更新 a 的字段（缺省值保留旧值），
 // 调用方负责 SaveAtomic。
 func (c *Client) RefreshToken(a *auth.Auth) error {
@@ -1113,6 +1235,41 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 	return c.ChatStreamReaderContext(ctx, a, bytes.NewReader(prepared), int64(len(prepared)), clientIP, meta, true)
 }
 
+// ChatStreamSpoolContext 对已落盘的大请求流式逐项改写后发往上游，严格控制堆内存驻留。
+func (c *Client) ChatStreamSpoolContext(ctx context.Context, a *auth.Auth, ra io.ReaderAt, size int64, clientIP string, meta ChatMeta, stripConvID bool, applyPrompt, promptText string) (rc io.ReadCloser, status int, respBody []byte, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	realm := "cn"
+	uid := ""
+	if a != nil {
+		realm = a.Realm()
+		uid = a.UID
+	}
+	efforts, defs := c.effortsSnapshot(realm), c.defaultEffortsSnapshot(realm)
+	if realmKey(realm) == "global" {
+		efforts, defs = globalEffortMap(efforts, defs)
+	}
+	prepReader, prepSize, cleanup, perr := PrepareSpoolFile(ra, size, SpoolPrepareOptions{
+		Sanitize:       c.SanitizeFingerprints.Load(),
+		Efforts:        efforts,
+		DefaultEfforts: defs,
+		MaxOut:         c.maxOutSnapshot(realm),
+		EnsureSystem:   c.globalOn(a),
+		InjectCacheKey: true,
+		CacheUID:       uid,
+		CacheConvID:    meta.ConversationID,
+		StripConvID:    stripConvID,
+		ApplyPrompt:    applyPrompt,
+		PromptText:     promptText,
+	})
+	if perr != nil {
+		return nil, 0, nil, perr
+	}
+	defer cleanup()
+	return c.ChatStreamReaderContext(ctx, a, prepReader, prepSize, clientIP, meta, true)
+}
+
 // ChatStreamReaderContext 原生支持 io.Reader 请求体流式出站：
 // unmodified=true 时直接将 bodyReader 以指定 Content-Length POST 上游，堆内存零驻留；
 // 在跨路径重试时通过 io.Seeker 重置流偏移。
@@ -1123,6 +1280,14 @@ func (c *Client) ChatStreamReaderContext(ctx context.Context, a *auth.Auth, body
 	acctLabel := "-"
 	if a != nil {
 		acctLabel = logfmt.Label(a.UID, a.Nickname)
+	}
+	if size > LargePayloadThreshold && !unmodified && c.SanitizeFingerprints.Load() {
+		var cleanup func()
+		bodyReader, size, cleanup, err = rewriteLargePayload(bodyReader, true)
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		defer cleanup()
 	}
 	for _, path := range c.chatPaths(a) {
 		if s, ok := bodyReader.(io.Seeker); ok {
@@ -1173,6 +1338,8 @@ func (c *Client) ChatStreamReaderContext(ctx context.Context, a *auth.Auth, body
 			}
 			ue := &Error{Kind: kind, Status: resp.StatusCode, Msg: truncate(string(raw), 200)}
 			if d, ok := ParseRetryAfter(resp.Header); ok {
+				ue.RetryAfter = d
+			} else if d := extractUpstreamRetryAfter(string(raw)); d > 0 {
 				ue.RetryAfter = d
 			}
 			return nil, resp.StatusCode, raw, ue
@@ -1376,6 +1543,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 	// 空桶时跳过写：避免「某探测无档位数据」清掉既有桶。
 	cache := make(map[string][]string, len(out))
 	defCache := make(map[string]string, len(out))
+	maxOutCache := make(map[string]int64, len(out))
 	for _, mi := range out {
 		if len(mi.Efforts) > 0 {
 			cache[mi.ID] = mi.Efforts
@@ -1383,6 +1551,12 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 		if mi.DefaultEffort != "" {
 			defCache[mi.ID] = mi.DefaultEffort
 		}
+		if mi.MaxTokens > 0 {
+			maxOutCache[mi.ID] = mi.MaxTokens
+		}
+	}
+	if len(maxOutCache) > 0 {
+		c.storeMaxOuts(a.Realm(), maxOutCache)
 	}
 	if len(cache) == 0 && len(defCache) == 0 {
 		return out, nil
@@ -2306,7 +2480,6 @@ func IsAlreadyCheckin(err error) bool {
 func truncate(s string, n int) string {
 	return logfmt.Truncate(s, n)
 }
-
 
 // SetDefaultProxy 动态更新未指定节点账号的全局兜底代理通道（并发安全）
 func (c *Client) SetDefaultProxy(raw string) {

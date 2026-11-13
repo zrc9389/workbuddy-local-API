@@ -201,3 +201,47 @@ func TestPreloadIPLimitStateIsBounded(t *testing.T) {
 		t.Fatalf("expired IP states were not pruned: %d", count)
 	}
 }
+
+func TestUnlockDoesNotWaitForSensitiveDataProvider(t *testing.T) {
+	a := &Auth{path: filepath.Join(t.TempDir(), "password.json")}
+	if err := a.setPassword("fixture-password"); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	block := make(chan struct{})
+	pm := NewPreloadManager(a, func() ([]byte, error) {
+		close(started)
+		<-block
+		return []byte("{\"ready\":true}"), nil
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := pm.GetOrCreateBundle()
+		done <- err
+	}()
+	<-started
+	pm.mu.Lock()
+	pm.dataKey = make([]byte, 32)
+	pm.iv = make([]byte, 12)
+	pm.ciphertext = []byte("cached")
+	pm.cachedAt = time.Now()
+	pm.mu.Unlock()
+
+	unlockDone := make(chan error, 1)
+	go func() {
+		_, err := pm.Unlock("127.0.0.1", "fixture-password")
+		unlockDone <- err
+	}()
+	select {
+	case err := <-unlockDone:
+		if err != nil {
+			t.Fatal("unlock failed while provider was blocked:", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("unlock waited for provider I/O")
+	}
+	close(block)
+	if err := <-done; err != nil {
+		t.Fatal("provider refresh failed:", err)
+	}
+}

@@ -22,6 +22,7 @@ func UpstreamAction(p *pool.Pool, up *upstream.Client) Action {
 			if e := up.RefreshToken(a); e != nil {
 				return "", e
 			}
+			p.ClearSessionDead(uid)
 			return "Token已刷新", a.SaveAtomic()
 		case "checkin":
 			if !a.IsGlobal() && !a.IsEnterprise() {
@@ -40,6 +41,9 @@ func UpstreamAction(p *pool.Pool, up *upstream.Client) Action {
 		case "activity":
 			if a.IsEnterprise() {
 				return "企业账号不适用", nil
+			}
+			if a.IsGlobal() {
+				return "国际版账号不适用连登", nil
 			}
 			id := fmt.Sprintf("local-%d", time.Now().UnixNano())
 			if e := up.ReportChatActivity(a, id, id); e != nil {
@@ -62,10 +66,18 @@ func UpstreamAction(p *pool.Pool, up *upstream.Client) Action {
 				return "", e
 			}
 			if buddy == nil {
+				_ = up.ReportChatActivity(a, fmt.Sprintf("pre-buddy-%d", time.Now().UnixNano()), "")
+				time.Sleep(1050 * time.Millisecond)
 				if e = up.BuddyAgreement(a); e != nil {
 					return "", e
 				}
-				return "已提交领养", up.BuddyFirst(a)
+				if fe := up.BuddyFirst(a); fe != nil {
+					if upstream.IsBuddyTaskIncomplete(fe) {
+						return "领养门槛未达，待后续重试", nil
+					}
+					return "", fe
+				}
+				return "已提交领养", nil
 			}
 			st, e := up.TravelStatus(a)
 			if e != nil {

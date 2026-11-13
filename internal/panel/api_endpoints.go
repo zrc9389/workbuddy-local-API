@@ -116,6 +116,18 @@ func (p *Panel) tasksRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	started, total, seq, msg := p.cfg.Tasks.StartGrowthQueue(concurrency, growth)
+	if started && p.cfg.Scheduler != nil {
+		go func() {
+			for {
+				time.Sleep(1 * time.Second)
+				st := p.cfg.Tasks.QueueStatus()
+				if !st.Running {
+					break
+				}
+			}
+			p.cfg.Scheduler.RunBalanceRefreshNow()
+		}()
+	}
 	if seq == -1 {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"ok":    false,

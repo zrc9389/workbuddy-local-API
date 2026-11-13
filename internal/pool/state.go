@@ -90,8 +90,11 @@ func (p *Pool) Revive(uid string) bool {
 	e.modelCooldowns = nil // 模型级限流豁免随冷却一并清（防泄漏到后续账号级限流）
 	e.sessionDeadFails = 0
 	e.fails = 0
+	e.lastFailAt = time.Time{}
 	e.retryCount = 0
 	e.breakerUntil = time.Time{}
+	e.consecutiveFails = 0
+	e.degradeUntil = time.Time{}
 	p.dirty.Store(true)
 	return true
 }
@@ -178,6 +181,7 @@ func (p *Pool) NoteSuccess(uid string) {
 		e.successCount++
 		e.lastSuccess = time.Now()
 		e.fails = 0
+		e.lastFailAt = time.Time{}
 		e.retryCount = 0
 		e.breakerUntil = time.Time{}
 		e.softStreak = 0
@@ -676,7 +680,7 @@ func (p *Pool) rateLimitedModelsLocked(e *entry, now time.Time) []RateLimitedMod
 		mc := e.modelCooldowns[m]
 		if !mc.Until.IsZero() && now.Before(mc.Until) {
 			kind := "rate_limit"
-			if strings.HasPrefix(mc.Reason, "11102") {
+			if strings.HasPrefix(mc.Reason, "11102") || strings.HasPrefix(mc.Reason, "11158") {
 				kind = "model_unavailable"
 			}
 			row := RateLimitedModel{

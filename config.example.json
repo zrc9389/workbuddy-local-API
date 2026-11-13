@@ -1,5 +1,5 @@
 {
-  "update": {"github_owner": "", "github_repo": "", "channel": ""},
+  "update": {"github_owner": "zrc9389", "github_repo": "workbuddy-local-API", "channel": "stable"},
   "listen": "127.0.0.1:7863",
   "auth_dir": "./auths",
   "state_file": "./data/state.json",

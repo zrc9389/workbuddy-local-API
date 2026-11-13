@@ -233,6 +233,10 @@ func (h *Handler) responsesLargePayload(w http.ResponseWriter, r *http.Request, 
 	var previousID string
 	_ = json.Unmarshal(previousRaw, &previousID)
 	if previousID != "" {
+		if e := h.cfg.History.CheckWorkingBudget(previousID, h.cfg.MaxBodyBytes); e != nil {
+			writeOpenAIError(w, 413, "history_working_budget", e.Error()+"; stored history retained")
+			return true
+		}
 		var ok bool
 		history, ok = h.cfg.History.OpenReader(previousID)
 		if !ok {
@@ -473,7 +477,7 @@ func largeInputObjectAt(out *bufio.Writer, ra io.ReaderAt, item jsonscan.Span) e
 		return nil
 	}
 	if typ == "function_call" || typ == "custom_tool_call" {
-		return errors.New("large tool call item cannot be converted safely")
+		return writeLargeToolCallMessage(out, ra, fields, typ)
 	}
 	role := readStringAt(ra, fields["role"], 0)
 	if role == "" {
@@ -1059,11 +1063,11 @@ func responsesInputMessages(input any) ([]map[string]any, error) {
 					"arguments": arguments,
 				},
 			}
-			if id, _ := obj["id"].(string); id != "" {
-				call["id"] = id
-			}
 			if callID, _ := obj["call_id"].(string); callID != "" {
+				call["id"] = callID
 				call["call_id"] = callID
+			} else if id, _ := obj["id"].(string); id != "" {
+				call["id"] = id
 			}
 			messages = append(messages, map[string]any{"role": "assistant", "content": "", "tool_calls": []any{call}})
 		default:
@@ -1324,14 +1328,14 @@ type liveResponsesWriter struct {
 	hasReasoning bool
 	reasoningIdx int
 
-	hasMessage   bool
-	messageIdx   int
+	hasMessage bool
+	messageIdx int
 
 	toolCalls       map[int]*liveToolCallState
 	nextOutputIndex int
 
-	stopKeepalive   chan struct{}
-	closed          bool
+	stopKeepalive chan struct{}
+	closed        bool
 
 	mu sync.Mutex
 }
@@ -1436,7 +1440,7 @@ func (l *liveResponsesWriter) OnReasoningDelta(text string) error {
 				"summary": []any{},
 			},
 		})
-	l.sequence++
+		l.sequence++
 	}
 	writeResponsesEvent(l.w, "response.reasoning_summary_text.delta", map[string]any{
 		"type":            "response.reasoning_summary_text.delta",
@@ -1474,7 +1478,7 @@ func (l *liveResponsesWriter) OnContentDelta(text string) error {
 				"content": []any{},
 			},
 		})
-	l.sequence++
+		l.sequence++
 		writeResponsesEvent(l.w, "response.content_part.added", map[string]any{
 			"type":            "response.content_part.added",
 			"sequence_number": l.sequence,
@@ -1487,7 +1491,7 @@ func (l *liveResponsesWriter) OnContentDelta(text string) error {
 				"annotations": []any{},
 			},
 		})
-	l.sequence++
+		l.sequence++
 	}
 	writeResponsesEvent(l.w, "response.output_text.delta", map[string]any{
 		"type":            "response.output_text.delta",
@@ -1538,7 +1542,7 @@ func (l *liveResponsesWriter) OnToolCallDelta(index int, id, name, argsFragment 
 				"arguments": "",
 			},
 		})
-	l.sequence++
+		l.sequence++
 	} else {
 		if id != "" && tc.id == "" {
 			tc.id = id
@@ -1555,7 +1559,7 @@ func (l *liveResponsesWriter) OnToolCallDelta(index int, id, name, argsFragment 
 			"output_index":    tc.itemIndex,
 			"delta":           argsFragment,
 		})
-	l.sequence++
+		l.sequence++
 	}
 	l.w.Flush()
 	return l.w.err
@@ -1715,25 +1719,25 @@ func (l *liveResponsesWriter) complete(response map[string]any) error {
 				"name":            name,
 				"arguments":       args,
 			})
-		l.sequence++
-		doneItem := item
-		if doneItem == nil {
-			doneItem = map[string]any{
-				"id":        tc.id,
-				"type":      "function_call",
-				"status":    "completed",
-				"name":      name,
-				"arguments": args,
+			l.sequence++
+			doneItem := item
+			if doneItem == nil {
+				doneItem = map[string]any{
+					"id":        tc.id,
+					"type":      "function_call",
+					"status":    "completed",
+					"name":      name,
+					"arguments": args,
+				}
 			}
+			writeResponsesEvent(l.w, "response.output_item.done", map[string]any{
+				"type":            "response.output_item.done",
+				"sequence_number": l.sequence,
+				"output_index":    tc.itemIndex,
+				"item":            doneItem,
+			})
+			l.sequence++
 		}
-		writeResponsesEvent(l.w, "response.output_item.done", map[string]any{
-			"type":            "response.output_item.done",
-			"sequence_number": l.sequence,
-			"output_index":    tc.itemIndex,
-			"item":            doneItem,
-		})
-		l.sequence++
-	}
 	}
 
 	// 4. 下发最终的 response.completed
@@ -2868,4 +2872,98 @@ func customToolInputValue(v any) any {
 		return v
 	}
 	return &spoolJSONString{reader, input}
+}
+
+func writeLargeToolCallMessage(out *bufio.Writer, ra io.ReaderAt, fields map[string]jsonscan.Span, typ string) error {
+	name := readStringAt(ra, fields["name"], 0)
+	id := readStringAt(ra, fields["id"], 0)
+	callID := readStringAt(ra, fields["call_id"], 0)
+	out.WriteString(`{"role":"assistant","content":"","tool_calls":[{"type":"function","function":{"name":`)
+	nb, _ := json.Marshal(name)
+	out.Write(nb)
+	out.WriteString(`,"arguments":`)
+	if typ == "custom_tool_call" {
+		if inSpan, ok := fields["input"]; ok {
+			var fb [1]byte
+			if _, err := ra.ReadAt(fb[:], inSpan.Start); err != nil {
+				return err
+			}
+			if fb[0] == '"' {
+				out.WriteString(`"{\"input\":`)
+				// 双层转义流式写入：仅对 ASCII 反斜杠与双引号再转义，多字节 UTF-8 字节原样透传防止跨块截断
+				sr := io.NewSectionReader(ra, inSpan.Start, inSpan.End-inSpan.Start)
+				buf := make([]byte, 32<<10)
+				for {
+					n, err := sr.Read(buf)
+					for idx := 0; idx < n; idx++ {
+						ch := buf[idx]
+						if ch == '\\' {
+							out.WriteString(`\\`)
+						} else if ch == '"' {
+							out.WriteString(`\"`)
+						} else {
+							out.WriteByte(ch)
+						}
+					}
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						return err
+					}
+				}
+				out.WriteString(`}"`)
+			} else {
+				raw := make([]byte, inSpan.End-inSpan.Start)
+				if _, err := io.ReadFull(io.NewSectionReader(ra, inSpan.Start, inSpan.End-inSpan.Start), raw); err != nil && err != io.EOF {
+					return err
+				}
+				var val any
+				if json.Unmarshal(raw, &val) != nil {
+					out.WriteString(`"{\"input\":\"\"}"`)
+				} else {
+					wrapped, _ := json.Marshal(map[string]any{"input": val})
+					argStr, _ := json.Marshal(string(wrapped))
+					out.Write(argStr)
+				}
+			}
+		} else {
+			out.WriteString(`"{\"input\":\"\"}"`)
+		}
+	} else {
+		if argSpan, ok := fields["arguments"]; ok {
+			var fb [1]byte
+			if _, err := ra.ReadAt(fb[:], argSpan.Start); err != nil {
+				return err
+			}
+			if fb[0] == '"' {
+				if err := jsonscan.CopySpan(out, ra, argSpan); err != nil {
+					return err
+				}
+			} else {
+				raw := make([]byte, argSpan.End-argSpan.Start)
+				if _, err := io.ReadFull(io.NewSectionReader(ra, argSpan.Start, argSpan.End-argSpan.Start), raw); err != nil && err != io.EOF {
+					return err
+				}
+				argStr, _ := json.Marshal(string(raw))
+				out.Write(argStr)
+			}
+		} else {
+			out.WriteString(`""`)
+		}
+	}
+	out.WriteByte('}')
+	if callID != "" {
+		out.WriteString(`,"id":`)
+		cb, _ := json.Marshal(callID)
+		out.Write(cb)
+		out.WriteString(`,"call_id":`)
+		out.Write(cb)
+	} else if id != "" {
+		out.WriteString(`,"id":`)
+		ib, _ := json.Marshal(id)
+		out.Write(ib)
+	}
+	out.WriteString(`}]}`)
+	return nil
 }

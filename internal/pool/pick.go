@@ -162,8 +162,8 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 	// 截断会让 uid 靠后的账号永远进不了 top5（等权重账号被字典序饿死、LRU 兜底
 	// 又只在 top5 内转——惊群集中单号的根因）。洗牌用独立的 time-seeded 源，
 	// 只在截断边界制造等权重随机次序，不影响加权抽签本身的确定性。
+	eq := false
 	if len(ws) > 5 {
-		eq := false
 		for i := 1; i < len(ws); i++ {
 			if ws[i].w == ws[0].w {
 				eq = true
@@ -183,6 +183,9 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 		}
 		if ws[i].w != ws[j].w {
 			return ws[i].w > ws[j].w
+		}
+		if eq {
+			return false // 保留 Fisher-Yates 洗牌随机顺序，杜绝 UID 升序饥饿与惊群
 		}
 		return ws[i].e.a.UID < ws[j].e.a.UID // 稳定兜底（洗牌后此项几乎不触发）
 	})

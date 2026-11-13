@@ -501,3 +501,385 @@ func TestStripConversationID(t *testing.T) {
 		t.Errorf("clean input should remain identical")
 	}
 }
+
+// TestGuardEmptyTextParts 验证空 text 段防护（含 []any parts 与字符串化 JSON 数组）。
+func TestGuardEmptyTextParts(t *testing.T) {
+	t.Run("slice parts variants", func(t *testing.T) {
+		msgs := []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "text", "text": ""},
+					map[string]any{"type": "text", "text": nil},
+					map[string]any{"type": "text"},
+					map[string]any{"type": "text", "text": " "},
+					map[string]any{"type": "text", "text": "keep"},
+					map[string]any{"type": "textarea", "text": ""},
+					map[string]any{"type": "text", "text": 123},
+					map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.test/a.png"}},
+				},
+			},
+		}
+		guardEmptyTextParts(msgs)
+		parts := msgs[0].(map[string]any)["content"].([]any)
+		for idx := 0; idx < 4; idx++ {
+			if got := parts[idx].(map[string]any)["text"]; got != " " {
+				t.Errorf("part[%d].text = %#v, want %q", idx, got, " ")
+			}
+		}
+		if got := parts[4].(map[string]any)["text"]; got != "keep" {
+			t.Errorf("part[4].text = %#v, want keep", got)
+		}
+		if got := parts[5].(map[string]any)["text"]; got != "" {
+			t.Errorf("non-text type should stay empty, got %#v", got)
+		}
+		if got := parts[6].(map[string]any)["text"]; got != 123 {
+			t.Errorf("non-string text should stay untouched, got %#v", got)
+		}
+	})
+
+	t.Run("stringified JSON array sniffed and filled", func(t *testing.T) {
+		raw := "  \n\t[{\"type\":\"text\",\"text\":\"\"},{\"type\":\"text\",\"text\":\"ok\"}]"
+		msgs := []any{
+			map[string]any{"role": "tool", "content": raw},
+		}
+		guardEmptyTextParts(msgs)
+		gotStr := msgs[0].(map[string]any)["content"].(string)
+		var decoded []map[string]any
+		if err := json.Unmarshal([]byte(gotStr), &decoded); err != nil {
+			t.Fatalf("unmarshal guarded content: %v", err)
+		}
+		if decoded[0]["text"] != " " || decoded[1]["text"] != "ok" {
+			t.Fatalf("unexpected decoded parts: %#v", decoded)
+		}
+	})
+
+	t.Run("non-array or clean strings untouched", func(t *testing.T) {
+		unchangedInputs := []string{
+			`{"type":"text","text":""}`,
+			`[invalid json`,
+			`[]`,
+			`[1,2,3]`,
+			`[{"type":"text","text":"ok"}]`,
+			`plain text`,
+		}
+		for _, raw := range unchangedInputs {
+			msgs := []any{map[string]any{"role": "user", "content": raw}}
+			guardEmptyTextParts(msgs)
+			if got := msgs[0].(map[string]any)["content"]; got != raw {
+				t.Errorf("input %q mutated to %q", raw, got)
+			}
+		}
+	})
+
+	t.Run("pipeline end-to-end including post-sanitize empty text", func(t *testing.T) {
+		body := []byte(`{"model":"kimi-k3","messages":[{"role":"user","content":[{"type":"text","text":""},{"type":"text","text":"x-anthropic-billing-header: cc_version=1;"}]}]}`)
+		out := PrepareBodyOpt(body, true)
+		obj, err := decodeBody(out)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		parts := obj["messages"].([]any)[0].(map[string]any)["content"].([]any)
+		for idx, rawPart := range parts {
+			if got := rawPart.(map[string]any)["text"]; got != " " {
+				t.Errorf("part[%d].text = %#v, want %q", idx, got, " ")
+			}
+		}
+	})
+}
+
+// TestReasoningMirror 验证特定家族模型从 reasoning_content 镜像到 reasoning 的逻辑与单消息入口。
+func TestReasoningMirror(t *testing.T) {
+	t.Run("readsUpstreamReasoning prefixes with realm", func(t *testing.T) {
+		yesModels := []string{
+			"kimi-k3.1-pro", "cn:kimi-k3.1-pro", "global:KIMI-K2.5",
+			"glm-5.3", "cn:glm-5.2", "minimax-m3", "mimo-v1", "step-2", "space-bunny-1",
+		}
+		for _, model := range yesModels {
+			if !readsUpstreamReasoning(model) {
+				t.Errorf("readsUpstreamReasoning(%q) = false, want true", model)
+			}
+		}
+		noModels := []string{"deepseek-v4.1-flash", "cn:gpt-6-sol", "hy4-preview", "", "cn:"}
+		for _, model := range noModels {
+			if readsUpstreamReasoning(model) {
+				t.Errorf("readsUpstreamReasoning(%q) = true, want false", model)
+			}
+		}
+	})
+
+	t.Run("mirrorUpstreamReasoning selective copy", func(t *testing.T) {
+		obj := map[string]any{
+			"model": "cn:kimi-k3.1-pro",
+			"messages": []any{
+				map[string]any{"role": "user", "content": "hi", "reasoning_content": "ignore user"},
+				map[string]any{"role": "assistant", "content": "a1", "reasoning_content": "thought 1"},
+				map[string]any{"role": "assistant", "content": "a2", "reasoning_content": "thought 2", "reasoning": "   "},
+				map[string]any{"role": "assistant", "content": "a3", "reasoning_content": "thought 3", "reasoning": "authoritative"},
+				map[string]any{"role": "assistant", "content": "a4", "reasoning_content": "   "},
+			},
+		}
+		mirrorUpstreamReasoning(obj)
+		msgs := obj["messages"].([]any)
+		if _, exists := msgs[0].(map[string]any)["reasoning"]; exists {
+			t.Error("user message must not get reasoning")
+		}
+		if got := msgs[1].(map[string]any)["reasoning"]; got != "thought 1" {
+			t.Errorf("assistant[1].reasoning = %#v, want thought 1", got)
+		}
+		if got := msgs[2].(map[string]any)["reasoning"]; got != "thought 2" {
+			t.Errorf("assistant[2].reasoning = %#v, want thought 2", got)
+		}
+		if got := msgs[3].(map[string]any)["reasoning"]; got != "authoritative" {
+			t.Errorf("assistant[3].reasoning overwritten: %#v", got)
+		}
+		if _, exists := msgs[4].(map[string]any)["reasoning"]; exists {
+			t.Error("whitespace-only reasoning_content must not create reasoning")
+		}
+	})
+
+	t.Run("single message streaming helper", func(t *testing.T) {
+		msg := map[string]any{"role": "assistant", "content": "ok", "reasoning_content": "chain"}
+		mirrorAssistantMessageReasoning(msg, "cn:glm-5.3")
+		if msg["reasoning"] != "chain" {
+			t.Fatalf("reasoning = %#v, want chain", msg["reasoning"])
+		}
+		other := map[string]any{"role": "assistant", "content": "ok", "reasoning_content": "chain"}
+		MirrorAssistantMessageReasoning(other, "hy4-preview")
+		if _, exists := other["reasoning"]; exists {
+			t.Fatal("non-matching model should not mirror reasoning")
+		}
+		MirrorAssistantMessageReasoning(nil, "kimi-k3")
+	})
+
+	t.Run("end-to-end prefixed kimi mirrors reasoning", func(t *testing.T) {
+		body := []byte(`{"model":"cn:kimi-k3.1-pro","messages":[{"role":"user","content":"q"},{"role":"assistant","content":"a","reasoning_content":"step 1"}]}`)
+		out := PrepareBodyOpt(body, false)
+		obj, err := decodeBody(out)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if obj["model"] != "kimi-k3.1-pro" {
+			t.Fatalf("model = %v, want kimi-k3.1-pro", obj["model"])
+		}
+		assistant := obj["messages"].([]any)[1].(map[string]any)
+		if assistant["reasoning"] != "step 1" {
+			t.Fatalf("assistant.reasoning = %#v, want step 1", assistant["reasoning"])
+		}
+	})
+}
+
+// TestOutputBudgetAndThinkingSwitch 验证目录上限注入、输出预算下限抬升与开关能力判定。
+func TestOutputBudgetAndThinkingSwitch(t *testing.T) {
+	if !ThinkingSwitchSupported("deepseek-v4.1-flash") ||
+		!ThinkingSwitchSupported("cn:deepseek-v4-pro") ||
+		!ThinkingSwitchSupported("global:DeepSeek-R1") {
+		t.Fatal("DeepSeek models should support thinking switch")
+	}
+	if ThinkingSwitchSupported("glm-5.2") || ThinkingSwitchSupported("cn:kimi-k3") || ThinkingSwitchSupported("") {
+		t.Fatal("non-DeepSeek models should not report thinking switch supported")
+	}
+
+	budgetCases := []struct {
+		effort string
+		want   int64
+	}{
+		{"minimal", 4096},
+		{"low", 4096},
+		{"medium", 6144},
+		{"HIGH", 8192},
+		{"xhigh", 12288},
+		{"max", 16384},
+		{"unknown", 0},
+		{"", 0},
+	}
+	for _, tc := range budgetCases {
+		if got := MinOutputBudget(tc.effort); got != tc.want {
+			t.Errorf("MinOutputBudget(%q) = %d, want %d", tc.effort, got, tc.want)
+		}
+	}
+
+	t.Run("EnsureMinBudget", func(t *testing.T) {
+		obj := map[string]any{"model": "m", "max_tokens": float64(1024)}
+		if !EnsureMinBudget(obj, 8192) || obj["max_tokens"] != int64(8192) {
+			t.Fatalf("EnsureMinBudget did not raise: %#v", obj)
+		}
+		probe := map[string]any{"model": "m", "max_tokens": float64(1)}
+		if EnsureMinBudget(probe, 8192) || probe["max_tokens"] != float64(1) {
+			t.Fatalf("probe max_tokens=1 should not be raised: %#v", probe)
+		}
+		noTokens := map[string]any{"model": "m"}
+		if EnsureMinBudget(noTokens, 8192) {
+			t.Fatal("missing max_tokens should not be modified")
+		}
+		if EnsureMinBudget(map[string]any{"max_tokens": float64(1024)}, 0) {
+			t.Fatal("floor<=0 should not modify")
+		}
+	})
+
+	t.Run("ensureMinOutputBudget raises, respects disabled and catalog cap", func(t *testing.T) {
+		obj := map[string]any{"model": "deepseek-v4.1-flash", "max_tokens": "2048"}
+		ensureMinOutputBudget(obj, "high", nil)
+		if obj["max_tokens"] != int64(8192) {
+			t.Fatalf("string max_tokens not raised: %#v", obj["max_tokens"])
+		}
+
+		disabled := map[string]any{
+			"model":      "deepseek-v4.1-flash",
+			"max_tokens": float64(512),
+			"thinking":   map[string]any{"type": "disabled"},
+		}
+		ensureMinOutputBudget(disabled, "high", nil)
+		if disabled["max_tokens"] != float64(512) {
+			t.Fatalf("disabled thinking budget modified: %#v", disabled["max_tokens"])
+		}
+
+		capped := map[string]any{"model": "small", "max_tokens": float64(1024)}
+		ensureMinOutputBudget(capped, "max", map[string]int64{"small": 6000})
+		if capped["max_tokens"] != int64(6000) {
+			t.Fatalf("capped budget = %#v, want 6000", capped["max_tokens"])
+		}
+	})
+
+	t.Run("PrepareBodyOptWithEffortsDefaultAndCaps nil vs non-nil maxOut", func(t *testing.T) {
+		src := []byte(`{"model":"cn:deepseek-v4.1-flash","reasoning_effort":"max","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`)
+		outNil, effNil := PrepareBodyOptWithEffortsDefaultAndCaps(src, false,
+			map[string][]string{"deepseek-v4.1-flash": {"low", "high", "max"}},
+			map[string]string{"deepseek-v4.1-flash": "high"},
+			nil,
+		)
+		objNil, err := decodeBody(outNil)
+		if err != nil {
+			t.Fatalf("decode outNil: %v", err)
+		}
+		if objNil["max_tokens"] != float64(1024) {
+			t.Fatalf("maxOut=nil should not raise max_tokens, got %v", objNil["max_tokens"])
+		}
+		if effNil != "max" {
+			t.Fatalf("effNil = %q, want max", effNil)
+		}
+
+		outCap, effCap := PrepareBodyOptWithEffortsDefaultAndCaps(src, false,
+			map[string][]string{"deepseek-v4.1-flash": {"low", "high", "max"}},
+			map[string]string{"deepseek-v4.1-flash": "high"},
+			map[string]int64{"deepseek-v4.1-flash": 131072},
+		)
+		objCap, err := decodeBody(outCap)
+		if err != nil {
+			t.Fatalf("decode outCap: %v", err)
+		}
+		if objCap["max_tokens"] != float64(16384) || effCap != "max" {
+			t.Fatalf("max_tokens=%v eff=%q, want 16384/max", objCap["max_tokens"], effCap)
+		}
+
+		noBudget := []byte(`{"model":"cn:hy3","reasoning_effort":"max","messages":[]}`)
+		outInjected, effInjected := PrepareBodyOptWithEffortsDefaultAndCaps(noBudget, false,
+			map[string][]string{"hy3": {"low", "high"}},
+			map[string]string{"hy3": "high"},
+			map[string]int64{"hy3": 64000},
+		)
+		objInj, err := decodeBody(outInjected)
+		if err != nil {
+			t.Fatalf("decode outInjected: %v", err)
+		}
+		if objInj["model"] != "hy3" || objInj["max_tokens"] != float64(64000) || effInjected != "high" {
+			t.Fatalf("unexpected injected result: model=%v max_tokens=%v eff=%q", objInj["model"], objInj["max_tokens"], effInjected)
+		}
+	})
+}
+
+// TestSplitRealmPrefixAndModelNormalization 验证域前缀解析、出站剥离、enum 类型推断及 >256KB 大请求全管线。
+func TestSplitRealmPrefixAndModelNormalization(t *testing.T) {
+	splitCases := []struct {
+		in, realm, bare string
+	}{
+		{"cn:hy3", "cn", "hy3"},
+		{"global:gpt-x", "global", "gpt-x"},
+		{"hy3", "cn", "hy3"},
+		{"weird:model", "cn", "weird:model"},
+		{"cn:", "cn", ""},
+		{":", "cn", ":"},
+		{"", "cn", ""},
+	}
+	for _, tc := range splitCases {
+		realm, bare := SplitRealmPrefix(tc.in)
+		if realm != tc.realm || bare != tc.bare {
+			t.Errorf("SplitRealmPrefix(%q) = (%q,%q), want (%q,%q)", tc.in, realm, bare, tc.realm, tc.bare)
+		}
+	}
+
+	t.Run("inferEnumType in tool schema", func(t *testing.T) {
+		bs := string(byte(92))
+		body := `{"model":"cn:kimi-k3","messages":[],"tools":[{"type":"function","function":{"name":"search","parameters":{"type":"object","properties":{"mode":{"enum":["fast","deep"]},"flag":{"enum":[true,false]},"count":{"enum":[1,2,3]},"ratio":{"enum":[1,1.5]},"mixed":{"enum":["a",1]},"typed":{"type":"string","enum":["x"]},"id":{"type":"string","pattern":"^id` + bs + bs + `_"}}}}}]}`
+		out := PrepareBodyOpt([]byte(body), false)
+		obj, err := decodeBody(out)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if obj["model"] != "kimi-k3" {
+			t.Fatalf("model = %v, want kimi-k3", obj["model"])
+		}
+		props := obj["tools"].([]any)[0].(map[string]any)["function"].(map[string]any)["parameters"].(map[string]any)["properties"].(map[string]any)
+		if got := props["mode"].(map[string]any)["type"]; got != "string" {
+			t.Errorf("mode.type = %#v, want string", got)
+		}
+		if got := props["flag"].(map[string]any)["type"]; got != "boolean" {
+			t.Errorf("flag.type = %#v, want boolean", got)
+		}
+		if got := props["count"].(map[string]any)["type"]; got != "integer" {
+			t.Errorf("count.type = %#v, want integer", got)
+		}
+		if got := props["ratio"].(map[string]any)["type"]; got != "number" {
+			t.Errorf("ratio.type = %#v, want number", got)
+		}
+		if _, has := props["mixed"].(map[string]any)["type"]; has {
+			t.Errorf("mixed enum should not infer type: %#v", props["mixed"])
+		}
+		if got := props["typed"].(map[string]any)["type"]; got != "string" {
+			t.Errorf("existing type disturbed: %#v", got)
+		}
+		if got := props["id"].(map[string]any)["pattern"]; got != "^id_" {
+			t.Errorf("pattern = %#v, want ^id_", got)
+		}
+	})
+
+	t.Run("large payload above 256KB runs full pipeline", func(t *testing.T) {
+		padding := strings.Repeat("a", LargePayloadThreshold+2048)
+		body := []byte(`{"model":"cn:kimi-k3.1-pro","messages":[{"role":"developer","content":"You are an AI agent powered by AcmeCorp. ` + padding + `"},{"role":"assistant","content":[{"type":"text","text":""}],"reasoning_content":"trace"}],"tools":[{"type":"function","function":{"name":"t","description":"11128","parameters":{"properties":{"kind":{"enum":["a","b"]}}}}}]}`)
+		out, _ := PrepareBodyOptWithEffortsDefaultAndCaps(body, true, nil, nil, map[string]int64{"kimi-k3.1-pro": 65536})
+		obj, err := decodeBody(out)
+		if err != nil {
+			t.Fatalf("decode large out: %v", err)
+		}
+		if obj["model"] != "kimi-k3.1-pro" {
+			t.Errorf("large model = %v, want kimi-k3.1-pro", obj["model"])
+		}
+		if obj["max_tokens"] != float64(65536) {
+			t.Errorf("large max_tokens = %v, want 65536", obj["max_tokens"])
+		}
+		msgs := obj["messages"].([]any)
+		devMsg := msgs[0].(map[string]any)
+		if devMsg["role"] != "system" {
+			t.Errorf("large developer role not normalized: %v", devMsg["role"])
+		}
+		if strings.Contains(devMsg["content"].(string), "AcmeCorp") {
+			t.Error("large message not sanitized")
+		}
+		assistantMsg := msgs[1].(map[string]any)
+		if assistantMsg["reasoning"] != "trace" {
+			t.Errorf("large assistant reasoning not mirrored: %#v", assistantMsg["reasoning"])
+		}
+		partText := assistantMsg["content"].([]any)[0].(map[string]any)["text"]
+		if partText != " " {
+			t.Errorf("large empty text part = %#v, want space", partText)
+		}
+		tool := obj["tools"].([]any)[0].(map[string]any)["function"].(map[string]any)
+		if tool["description"] != "11-128" {
+			t.Errorf("large tool description = %#v, want 11-128", tool["description"])
+		}
+		enumType := tool["parameters"].(map[string]any)["properties"].(map[string]any)["kind"].(map[string]any)["type"]
+		if enumType != "string" {
+			t.Errorf("large enum inferred type = %#v, want string", enumType)
+		}
+	})
+}

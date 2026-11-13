@@ -127,7 +127,10 @@ func (p *Panel) SetDefaultEgress(w http.ResponseWriter, r *http.Request) {
 
 // persistDefaultEgress 将选定的默认出口持久化写回 /etc/workbuddy-local/config.json
 func (p *Panel) persistDefaultEgress(nodeID string) {
-	cfgPath := "/etc/workbuddy-local/config.json"
+	cfgPath := p.cfg.ConfigPath
+	if cfgPath == "" {
+		cfgPath = "/etc/workbuddy-local/config.json"
+	}
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return
@@ -144,7 +147,7 @@ func (p *Panel) persistDefaultEgress(nodeID string) {
 	out, err := json.MarshalIndent(cfg, "", "  ")
 	if err == nil {
 		tmpPath := cfgPath + ".tmp"
-		if wErr := os.WriteFile(tmpPath, out, 0644); wErr == nil {
+		if wErr := os.WriteFile(tmpPath, out, 0600); wErr == nil {
 			_ = os.Rename(tmpPath, cfgPath)
 		}
 	}
@@ -152,7 +155,10 @@ func (p *Panel) persistDefaultEgress(nodeID string) {
 
 // RestoreDefaultEgress 在服务启动且 Meta 就绪后自动恢复持久化的默认出口
 func (p *Panel) RestoreDefaultEgress(ctx context.Context) {
-	cfgPath := "/etc/workbuddy-local/config.json"
+	cfgPath := p.cfg.ConfigPath
+	if cfgPath == "" {
+		cfgPath = "/etc/workbuddy-local/config.json"
+	}
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return

@@ -47,6 +47,10 @@ func (m *Manager) Stats() Stats {
 	s.Demo = m.opts.Demo
 	s.Running = m.core.Alive()
 	s.Accounts = append([]AccountStats{}, s.Accounts...)
+	if s.SampledAt != nil {
+		sampledAt := *s.SampledAt
+		s.SampledAt = &sampledAt
+	}
 	if !s.Running {
 		s.UploadSpeed = 0
 		s.DownloadSpeed = 0
@@ -154,25 +158,15 @@ func (m *Manager) recordStats(s connectionsSnapshot) {
 	}
 }
 func (m *Manager) maybeIdle(s connectionsSnapshot) {
-	if len(s.Connections) != 0 {
+	if m == nil || m.opts.DisableIdleStop {
 		return
 	}
-	if err := m.lock(); err != nil {
-		return
-	}
-	defer m.unlock()
+	// Idle stopping is retained only for callers that explicitly leave it
+	// enabled; the server sets DisableIdleStop to keep routes continuously live.
 	m.mu.Lock()
-	idle := m.leases == 0 && !m.job.Running && time.Since(m.lastUse) > m.opts.IdleTimeout
+	idle := m.leases == 0 && !m.job.Running && time.Since(m.lastUse) >= m.opts.IdleTimeout && len(s.Connections) == 0
 	m.mu.Unlock()
-	if !idle {
-		return
+	if idle {
+		_ = m.core.Stop()
 	}
-	ctx, cancel := context.WithTimeout(m.ctx, 2*time.Second)
-	defer cancel()
-	var fresh connectionsSnapshot
-	if m.core.Request(ctx, "GET", "/connections", nil, &fresh) != nil || len(fresh.Connections) > 0 {
-		return
-	}
-	m.recordStats(fresh)
-	_ = m.core.Stop()
 }

@@ -188,8 +188,11 @@ func (p *Panel) customizationSet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	outBytes, _ := json.Marshal(map[string]any{"ok": true, "data": p.customData})
 	p.customMu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "data": p.customData})
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(outBytes)
 }
 
 // globalRefresh 通用全局刷新入口

@@ -115,6 +115,11 @@ func (h *Handler) admit(w http.ResponseWriter, r *http.Request) (*http.Request, 
 type spoolKey struct{}
 type unknownBudgetKey struct{}
 
+func hasSpoolJob(r *http.Request) bool {
+	_, ok := r.Context().Value(spoolKey{}).(*spool.Job)
+	return ok
+}
+
 func finishSpool(r *http.Request, success bool) {
 	if j, ok := r.Context().Value(spoolKey{}).(*spool.Job); ok && success && r.Context().Err() == nil {
 		r.Body.Close()

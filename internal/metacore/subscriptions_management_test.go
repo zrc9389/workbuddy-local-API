@@ -260,6 +260,25 @@ func TestRenameWorksWithIdleStoppedCore(t *testing.T) {
 	}
 }
 
+func TestReconcileBindingsTracksUniqueNodeRenameAndDropsAmbiguousMatch(t *testing.T) {
+	bindings := []bindingRecord{
+		{Binding: Binding{UID: "user-one", Node: "old", RouteID: "route-one"}, Provider: "sub-one", Name: "sub-one/Unique-Region-100GB"},
+		{Binding: Binding{UID: "user-two", Node: "gone", RouteID: "route-two"}, Provider: "sub-one", Name: "sub-one/Region-Old-200GB"},
+	}
+	nodes := map[string]Node{
+		"renamed":     {ID: "renamed", Provider: "sub-one", Name: "sub-one/Unique-Region-99GB"},
+		"candidate-a": {ID: "candidate-a", Provider: "sub-one", Name: "sub-one/Region-Old-200GB-A"},
+		"candidate-b": {ID: "candidate-b", Provider: "sub-one", Name: "sub-one/Region-Old-200GB-B"},
+	}
+	updated, unbound := reconcileBindings(bindings, nodes)
+	if len(updated) != 1 || updated[0].UID != "user-one" || updated[0].Node != "renamed" || updated[0].Name != nodes["renamed"].Name {
+		t.Fatalf("unique rename was not retained: %+v", updated)
+	}
+	if len(unbound) != 1 || unbound[0] != "user-two" {
+		t.Fatalf("ambiguous rename was not unbound: %+v", unbound)
+	}
+}
+
 func TestRemoveSubscriptionFailureKeepsProviderFileAndNodes(t *testing.T) {
 	m, core := seededSubscriptions(t, 2)
 	id := m.Subscriptions()[0].ID

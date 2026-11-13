@@ -44,7 +44,7 @@ import (
 )
 
 // appVersion 网关版本（fork 版：面板 + 任务体系），透出到 /panel/api/overview。
-const appVersion = "0.2.0-local"
+var appVersion = "3.0.1"
 
 // usagePathFor 由 state 文件路径推出用量文件路径：同目录、文件名 usage.json。
 // 这样 config 里改 state_file 时用量数据跟着走，不需要额外配置项。
@@ -80,7 +80,12 @@ func run() error {
 	cfgPath := flag.String("config", "config.json", "配置文件路径（默认当前目录 config.json；不存在时自动生成推荐配置）")
 	resetPassword := flag.Bool("reset-password", false, "离线清除管理密码并要求下次启动时重新设置")
 	demoMode := flag.Bool("demo", false, "隔离演示数据与模拟上游，不读取真实账号")
+	showVersion := flag.Bool("version", false, "输出版本号并退出")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(appVersion)
+		return nil
+	}
 	if *demoMode && *cfgPath == "config.json" {
 		*cfgPath = "demo-data/config.json"
 	}
@@ -230,7 +235,7 @@ func run() error {
 	}
 	// 聊天 SSE 流中空闲上限（S3 空闲监控读取）。
 	up.IdleTimeout = time.Duration(cfg.Upstream.IdleTimeoutSeconds) * time.Second
-	up.SanitizeFingerprints.Store(cfg.Features.SanitizeBlacklistFingerprints && !cfg.Features.StrictContext)
+	up.SanitizeFingerprints.Store(cfg.Features.SanitizeBlacklistFingerprints)
 	// 出站 UA 与归属头：
 	// UserAgent 非空则完全覆盖；ClientVersion/CliVersion 缺省对齐官方形态；
 	// ClientName 非空时 chat 路径注入 X-IDE-* 四头（用量归因对齐官方桌面端）。
@@ -268,7 +273,12 @@ func run() error {
 		ActivityHours:  cfg.Schedule.ActivityHours,
 		KeepaliveHours: cfg.Schedule.KeepaliveHours,
 		BlackcatHours:  cfg.Schedule.BlackcatHours,
-		GrowthHours:    cfg.Schedule.GrowthHours,
+		GrowthHours: func() []int {
+			if len(cfg.Schedule.GrowthHours) == 0 {
+				return []int{1}
+			}
+			return cfg.Schedule.GrowthHours
+		}(),
 		// 快过期积分优先消耗：签到/余额刷新按此窗口分桶（issue:积分过期）。
 		ExpiringSoonWindow: cfg.ExpiringSoonDur,
 		CheckinDisabled:    !cfg.Schedule.CheckinEnabled,
@@ -323,7 +333,7 @@ func run() error {
 	if err := maint.SetStorage(stateSibling(cfg.StateFile, "maintenance-status.json")); err != nil {
 		log.Printf("maintenance: restore failed: %v", err)
 	}
-	metaManager, err := metacore.New(metacore.Options{Dir: stateSibling(cfg.StateFile, "meta"), Demo: *demoMode})
+	metaManager, err := metacore.New(metacore.Options{Dir: stateSibling(cfg.StateFile, "meta"), Demo: *demoMode, DisableIdleStop: true})
 	if err != nil {
 		log.Fatalf("meta: %v", err)
 	}
@@ -514,7 +524,7 @@ func run() error {
 	go warmModelRates(ctx, up, p)
 
 	// 使用统一加固的安全服务器工厂构造实例（配置防 Slowloris、MaxHeaderBytes、IdleTimeout）
-	log.SetOutput(os.Stderr)
+	// 保持前文 MultiWriter 面板日志镜像
 	srv := NewHardenedServer(cfg.Listen, localAuth.Wrap(h), cfg.ServerReadTimeoutDur)
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
@@ -660,7 +670,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 		SanitizeFingerprints: newCfg.Features.SanitizeBlacklistFingerprints,
 		RecordClientInfo:     newCfg.Logging.RequestClientInfo,
 	})
-	up.SanitizeFingerprints.Store(newCfg.Features.SanitizeBlacklistFingerprints && !newCfg.Features.StrictContext)
+	up.SanitizeFingerprints.Store(newCfg.Features.SanitizeBlacklistFingerprints)
 	p.SetBreaker(newCfg.Pool.BreakerThreshold, newCfg.BreakerCooldownDur, newCfg.BreakerCooldownMaxD)
 	p.SetMaxInFlight(newCfg.Pool.MaxInFlight)
 	p.SetMaxInFlightGlobal(newCfg.Pool.MaxInFlightGlobal)

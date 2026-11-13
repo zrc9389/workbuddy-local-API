@@ -7,8 +7,9 @@ import (
 	"time"
 )
 
-func TestAccountLeaseGatesShutdownAndReloadThenRestarts(t *testing.T) {
+func TestAccountLeaseGatesShutdownAndCoreRemainsResident(t *testing.T) {
 	m, f := fixtureManager(t)
+	m.opts.DisableIdleStop = true
 	ctx := context.Background()
 	if _, err := m.importBytes(ctx, "fixture", []byte("fixture")); err != nil {
 		t.Fatal(err)
@@ -43,12 +44,12 @@ func TestAccountLeaseGatesShutdownAndReloadThenRestarts(t *testing.T) {
 	m.lastUse = time.Now().Add(-time.Hour)
 	m.mu.Unlock()
 	m.maybeIdle(connectionsSnapshot{})
-	if f.Alive() {
-		t.Fatal("bound but idle core not stopped")
+	if !f.Alive() {
+		t.Fatal("idle core stopped despite resident-core policy")
 	}
 	release, err = m.AcquireAccount(ctx, "account")
 	if err != nil || !f.Alive() {
-		t.Fatal("failed demand restart", err)
+		t.Fatal("failed account lease with resident core", err)
 	}
 	release()
 	if err = m.Close(ctx); err != nil {

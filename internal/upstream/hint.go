@@ -65,6 +65,14 @@ func GatewayHint(kind ErrKind, msg string, ctx HintContext) string {
 		// 措辞不含 "upstream"：content_blocked 响应有不含上游字样的既有口径
 		// （handler_test 的泄漏守卫），hint 遵守同一口径。
 		return "request content was rejected by content policy; adjust the prompt and retry"
+	case ErrUpstreamBusy:
+		return "upstream queue is busy; retry after the indicated Retry-After delay"
+	case ErrToolMismatch:
+		return "tool_calls and tool results in history are mismatched; start a new conversation or repair tool history"
+	case ErrEmptyContent:
+		return "a message contains an empty content segment; provide non-empty text or remove empty parts"
+	case ErrModelParamInvalid:
+		return "request parameters were rejected by the model provider; check message format and model capabilities"
 	default:
 		// ErrNone/ErrNotFound/ErrServer/ErrBadParams/ErrClient 等未覆盖形态：无 hint。
 		return ""
@@ -103,6 +111,9 @@ func FrameHintFunc(ctxFn func() HintContext) func(string) string {
 // （IsModelRateLimit 对帧 JSON 直接命中）优先；其余取帧内 error.message 走
 // Classify（请求级 400 口径）。判不出 → ErrNone（无 hint）。
 func FrameKind(payload string) ErrKind {
+	if IsUpstreamBusyBody(payload) {
+		return ErrUpstreamBusy
+	}
 	if IsModelRateLimit(payload) {
 		return ErrSoftRate
 	}

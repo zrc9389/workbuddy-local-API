@@ -65,6 +65,9 @@ var repositoryPart = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$`)
 var semverPattern = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$`)
 var maxUpdateBinarySize int64 = 512 << 20
 
+// updateRename 是 os.Rename 的可替换引用，便于测试注入占用/替换失败场景。
+var updateRename = os.Rename
+
 type semVersion struct {
 	core [3]*big.Int
 	pre  []string
@@ -204,11 +207,11 @@ func newUpdateChecker(source UpdateSource, current string, transport http.RoundT
 			if a := selectUpdateAsset(release.Tag, release.Assets); a != nil {
 				if a.SHA256 == "" {
 					for _, asset := range release.Assets {
-						if strings.EqualFold(asset.Name, a.Name+".sha256") || strings.Contains(strings.ToLower(asset.Name), "checksums") {
+						if strings.EqualFold(asset.Name, a.Name+".sha256") || strings.Contains(strings.ToLower(asset.Name), "checksums") || strings.Contains(strings.ToLower(asset.Name), "sha256sums") {
 							if sum, ok := fetchUpdateChecksum(ctx, client, asset.URL, a.Name, strings.EqualFold(asset.Name, a.Name+".sha256")); ok {
 								a.SHA256, a.Verified = sum, true
+								break
 							}
-							break
 						}
 					}
 				}
@@ -253,7 +256,7 @@ func fetchUpdateChecksum(ctx context.Context, client *http.Client, rawURL, name 
 		if len(fields) == 1 && !single {
 			continue
 		}
-		if len(fields) > 1 && strings.TrimPrefix(fields[1], "*") != name {
+		if len(fields) > 1 && strings.TrimPrefix(strings.TrimPrefix(fields[1], "*"), "./") != name {
 			continue
 		}
 		sum := strings.TrimPrefix(strings.ToLower(fields[0]), "sha256:")
@@ -392,20 +395,53 @@ func applyUpdate(ctx context.Context, executable string, a UpdateArtifact, trans
 		return updateError("disk_error", "could not set update permissions")
 	}
 	backup := executable + ".bak"
-	if _, statErr := os.Lstat(backup); statErr == nil {
-		return updateError("backup_exists", "existing executable backup must be resolved before installing")
+	oldBackup := executable + ".bak.prev"
+	stagedOldBackup := false
+	if info, statErr := os.Lstat(backup); statErr == nil {
+		// 只轮转上一次更新留下的普通文件；符号链接/目录始终拒绝，避免覆盖攻击。
+		if info.Mode()&os.ModeSymlink != 0 || info.IsDir() || !info.Mode().IsRegular() {
+			return updateError("backup_exists", "existing executable backup must be resolved before installing")
+		}
+		if oldInfo, oldErr := os.Lstat(oldBackup); oldErr == nil {
+			if oldInfo.Mode()&os.ModeSymlink != 0 || oldInfo.IsDir() || !oldInfo.Mode().IsRegular() {
+				return updateError("backup_exists", "existing previous executable backup must be resolved before installing")
+			}
+			if err := os.Remove(oldBackup); err != nil {
+				return updateError("backup_in_use", "previous executable backup is in use; restart service before updating again")
+			}
+		} else if !os.IsNotExist(oldErr) {
+			return updateError("disk_error", "could not inspect previous executable backup")
+		}
+		// Windows 下前一次升级尚未重启时，.bak 仍被当前进程占用，此步会失败。
+		if err := updateRename(backup, oldBackup); err != nil {
+			return updateError("backup_in_use", "previous executable backup is in use; restart service before updating again")
+		}
+		stagedOldBackup = true
 	} else if !os.IsNotExist(statErr) {
 		return updateError("disk_error", "could not inspect executable backup")
 	}
-	if err := os.Rename(executable, backup); err != nil {
+	if err := updateRename(executable, backup); err != nil {
+		if stagedOldBackup {
+			if rollbackErr := updateRename(oldBackup, backup); rollbackErr != nil {
+				return updateError("replace_failed_rollback_failed", fmt.Sprintf("could not backup current executable (%v) and restore previous backup failed (%v)", err, rollbackErr))
+			}
+		}
 		return updateError("replace_failed", "could not backup current executable")
 	}
-	if err := os.Rename(tmp, executable); err != nil {
-		rollbackErr := os.Rename(backup, executable)
+	if err := updateRename(tmp, executable); err != nil {
+		rollbackErr := updateRename(backup, executable)
 		if rollbackErr != nil {
 			return updateError("replace_failed_rollback_failed", fmt.Sprintf("update replace failed (%v) and rollback failed (%v)", err, rollbackErr))
 		}
+		if stagedOldBackup {
+			if restoreErr := updateRename(oldBackup, backup); restoreErr != nil {
+				return updateError("replace_failed_rollback_failed", fmt.Sprintf("update replace failed (%v) and previous backup restore failed (%v)", err, restoreErr))
+			}
+		}
 		return updateError("replace_failed", fmt.Sprintf("could not install update, rolled back to original: %v", err))
+	}
+	if stagedOldBackup {
+		_ = os.Remove(oldBackup)
 	}
 	return nil
 }

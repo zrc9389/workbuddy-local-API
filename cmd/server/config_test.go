@@ -22,6 +22,47 @@ func TestDefault(t *testing.T) {
 	}
 }
 
+func TestUpdateDefaultsAndOverrides(t *testing.T) {
+	c := Default()
+	if c.Update.GitHubOwner != "zrc9389" || c.Update.GitHubRepo != "workbuddy-local-API" || c.Update.Channel != "stable" {
+		t.Fatalf("default update source = %+v", c.Update)
+	}
+
+	disabled, err := ParseConfig([]byte(`{"update":{"github_owner":"","github_repo":"","channel":""}}`))
+	if err != nil {
+		t.Fatalf("parse explicit empty update: %v", err)
+	}
+	if disabled.Update.GitHubOwner != "" || disabled.Update.GitHubRepo != "" || disabled.Update.Channel != "" {
+		t.Fatalf("explicit empty update not applied: %+v", disabled.Update)
+	}
+
+	t.Run("env overrides", func(t *testing.T) {
+		t.Setenv("WB2A_UPDATE_GITHUB_OWNER", "env-owner")
+		t.Setenv("WB2A_UPDATE_GITHUB_REPO", "env-repo")
+		t.Setenv("WB2A_UPDATE_CHANNEL", "stable")
+		got, err := Load("")
+		if err != nil {
+			t.Fatalf("load with update env: %v", err)
+		}
+		if got.Update.GitHubOwner != "env-owner" || got.Update.GitHubRepo != "env-repo" || got.Update.Channel != "stable" {
+			t.Fatalf("env update override = %+v", got.Update)
+		}
+	})
+
+	t.Run("env empty disables", func(t *testing.T) {
+		t.Setenv("WB2A_UPDATE_GITHUB_OWNER", "")
+		t.Setenv("WB2A_UPDATE_GITHUB_REPO", "")
+		t.Setenv("WB2A_UPDATE_CHANNEL", "")
+		got, err := Load("")
+		if err != nil {
+			t.Fatalf("load with empty update env: %v", err)
+		}
+		if got.Update.GitHubOwner != "" || got.Update.GitHubRepo != "" || got.Update.Channel != "" {
+			t.Fatalf("empty env update override = %+v", got.Update)
+		}
+	})
+}
+
 func TestPanelPackageDetailLimit(t *testing.T) {
 	c := Default()
 	if err := c.normalize(); err != nil {

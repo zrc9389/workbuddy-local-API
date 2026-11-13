@@ -120,8 +120,7 @@ func isAlready(msg string) bool {
 	s := strings.ToLower(msg)
 	return strings.Contains(s, "已签到") ||
 		strings.Contains(s, "already") ||
-		strings.Contains(s, "checkin") ||
-		strings.Contains(s, "code=400")
+		strings.Contains(s, "signed in")
 }
 
 func trunc(s string, n int) string {
