@@ -552,6 +552,8 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 	var state string
 	if isBlocked {
 		state = "BLOCKED"
+	} else if e.deletionPending {
+		state = "DELETING"
 	} else if e.paused {
 		state = "PAUSED"
 	} else if e.disabled || e.manualDisabled {
@@ -563,9 +565,10 @@ func (p *Pool) statusOf(uid string, e *entry) Status {
 	}
 
 	st := Status{
-		State:   state,
-		Blocked: isBlocked,
-		UID:     uid,
+		State:           state,
+		Blocked:         isBlocked,
+		DeletionPending: e.deletionPending,
+		UID:             uid,
 		// 限额台账：仅「带解析时间 6004 的模型级软冷却」仍在生效时非空，
 		// 每模型一行（modelCooldowns 内未到期的条目），多模型同时限流全部展示。
 		// 到期判据 = 该模型的独立冷却 until 未过；条件满足才输出，随到期自然消失，

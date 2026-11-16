@@ -176,9 +176,6 @@ func (p *Panel) MetaSubscriptions(w http.ResponseWriter, r *http.Request) {
 			metaError(w, err)
 			return
 		}
-		go func() {
-			_, _ = m.StartTests(context.Background())
-		}()
 		writeJSON(w, http.StatusOK, result)
 		return
 	case "delete":

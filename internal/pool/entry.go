@@ -65,15 +65,16 @@ type Status struct {
 	// State 账号当前业务状态：HEALTHY / COOLING / BLOCKED / PAUSED / DISABLED
 	State string `json:"state"`
 	// Blocked 是否属于隔离待授权（令牌失效 UNAUTHORIZED / TOKEN_EXPIRED）
-	Blocked        bool   `json:"blocked,omitempty"`
-	ManualDisabled bool   `json:"manual_disabled"`
-	BalanceKnown   bool   `json:"balance_known"`
-	BalanceBlocked bool   `json:"balance_blocked"`
-	SystemBlocked  bool   `json:"system_blocked"`
-	UID            string `json:"uid"`
-	Nickname       string `json:"nickname,omitempty"`
-	Credits        int64  `json:"credits"`
-	CreditsTotal   int64  `json:"credits_total,omitempty"` // 积分总额度（各套餐聚合）；0 = 未知（旧 state/查询失败）
+	Blocked         bool   `json:"blocked,omitempty"`
+	DeletionPending bool   `json:"deletion_pending,omitempty"`
+	ManualDisabled  bool   `json:"manual_disabled"`
+	BalanceKnown    bool   `json:"balance_known"`
+	BalanceBlocked  bool   `json:"balance_blocked"`
+	SystemBlocked   bool   `json:"system_blocked"`
+	UID             string `json:"uid"`
+	Nickname        string `json:"nickname,omitempty"`
+	Credits         int64  `json:"credits"`
+	CreditsTotal    int64  `json:"credits_total,omitempty"` // 积分总额度（各套餐聚合）；0 = 未知（旧 state/查询失败）
 	// CreditsExpiring / CreditsEarliestExpiry / CreditsEarliestRemaining 描述当前积分中
 	// 的到期压力。CreditsExpiring 是配置窗口内的剩余积分；后两者是全部未来到期批次中
 	// 最早的一批及其剩余量，供 WorkDaddy 同口径的“最早到期优先”路由使用。
@@ -189,13 +190,14 @@ type modelCostEntry struct {
 	Samples   int
 }
 type entry struct {
-	deleting       bool
-	manualDisabled bool
-	balanceKnown   bool
-	guardLow       int64
-	a              *auth.Auth
-	credits        int64
-	creditsTotal   int64 // 积分总额度（UserResource 聚合；0 = 未知）
+	deleting        bool
+	deletionPending bool
+	manualDisabled  bool
+	balanceKnown    bool
+	guardLow        int64
+	a               *auth.Auth
+	credits         int64
+	creditsTotal    int64 // 积分总额度（UserResource 聚合；0 = 未知）
 	// creditsExpiring 配置窗口内即将过期的可用积分子集，是 credits 的一部分。
 	// creditsEarliestExpiry / creditsEarliestRemaining 是全部未来到期批次中的最早一批；
 	// 两者均由签到/余额刷新更新，供 earliest-expiry 路由和状态观测使用。

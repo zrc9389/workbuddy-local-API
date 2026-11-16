@@ -1655,6 +1655,25 @@ export function expiryTone(days) {
                         }
                     }, 4000);
                 }
+                if (typeof safeApiFetch === 'function') {
+                    Promise.all([
+                        safeApiFetch('/panel/api/overview').catch(() => null),
+                        safeApiFetch('/panel/api/packages').catch(() => null)
+                    ]).then(([ov, pkgs]) => {
+                        let changed = false;
+                        if (ov && typeof syncOverviewData === 'function') {
+                            syncOverviewData(ov);
+                            changed = true;
+                        }
+                        if (pkgs && typeof syncPackagesData === 'function') {
+                            syncPackagesData(pkgs);
+                            changed = true;
+                        }
+                        if (changed && typeof renderEditorialStage === 'function') {
+                            renderEditorialStage(false);
+                        }
+                    }).catch(() => {});
+                }
             } else if (WBState.tasks.running) {
                 WBState.tasks.justFinishedState = 'none';
                 if (typeof ensureMaintenanceFastPolling === 'function') ensureMaintenanceFastPolling();

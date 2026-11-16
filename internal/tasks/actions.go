@@ -1020,6 +1020,7 @@ func runExpertBatch(p *Service, a *auth.Auth, expertType string, count int) (str
 // 再逐项执行行为链路。accept 不是进度产生的必要条件，但让后续状态流转规范。
 func (p *Service) runAutoAll(a *auth.Auth) []map[string]any {
 	var out []map[string]any
+	var anyCreditClaimed bool
 
 	// 阶段 0：批量接受尚未接受的任务（失败不阻塞——行为事件才是进度唯一判据）。
 	if tasks, err := p.cfg.Upstream.ListTasks(a); err == nil {
@@ -1133,6 +1134,9 @@ func (p *Service) runAutoAll(a *auth.Auth) []map[string]any {
 				item["energy"] = energy
 				if credit > 0 || energy > 0 {
 					item["message"] = msg + fmt.Sprintf("；已自动领奖 +%d 分 +%d 能", credit, energy)
+					if credit > 0 {
+						anyCreditClaimed = true
+					}
 				} else {
 					item["message"] = msg + "；奖励此前已领取"
 				}
@@ -1143,6 +1147,10 @@ func (p *Service) runAutoAll(a *auth.Auth) []map[string]any {
 		}
 		out = append(out, item)
 		time.Sleep(reportGap) // 项间节流
+	}
+	if anyCreditClaimed {
+		time.Sleep(500 * time.Millisecond)
+		p.RefreshAccountCredits(a)
 	}
 	return out
 }

@@ -118,11 +118,11 @@ type Panel struct {
 	loginMu sync.Mutex
 	logins  map[string]loginSession
 
-	modelPolicy    *modelpolicy.Store
-	deletionsMu    sync.Mutex
-	deletions      *deletionCoordinator
-	customMu       sync.RWMutex
-	customData     map[string]any
+	modelPolicy       *modelpolicy.Store
+	deletionsMu       sync.Mutex
+	deletions         *deletionCoordinator
+	customMu          sync.RWMutex
+	customData        map[string]any
 	updateMu          sync.Mutex
 	updateArtifact    *UpdateArtifact
 	quarantineWake    chan struct{}
@@ -280,15 +280,15 @@ func New(cfg Config) *Panel {
 		cfg.RedisMode = "noop"
 	}
 	p := &Panel{
-		cfg:         cfg,
-		mux:         http.NewServeMux(),
-		started:     time.Now(),
-		logs:        NewRing(500),
+		cfg:             cfg,
+		mux:             http.NewServeMux(),
+		started:         time.Now(),
+		logs:            NewRing(500),
 		modelsCache:     map[string]*panelModelsSnapshot{},
 		logins:          map[string]loginSession{},
 		bootstraps:      map[string]bootstrapSession{},
 		balanceInFlight: map[string]*inFlightBalanceCall{},
-		modelPolicy: cfg.ModelPolicy,
+		modelPolicy:     cfg.ModelPolicy,
 		customData: map[string]any{
 			"theme":      "dark",
 			"musicMode":  "manual",
@@ -824,7 +824,6 @@ func (p *Panel) TelemetrySnapshot() map[string]any {
 func (p *Panel) telemetryHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p.TelemetrySnapshot())
 }
-
 
 // logsHandler 返回日志环形缓冲快照（时间升序，含频道标记 chat/task/sys）。
 func (p *Panel) logsHandler(w http.ResponseWriter, r *http.Request) {
@@ -1386,6 +1385,10 @@ func (p *Panel) accountRemove(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "account not found")
 		return
 	}
+	if p.cfg.Meta != nil && p.cfg.Meta.Busy() {
+		writeErr(w, http.StatusConflict, "meta busy; retry deletion when idle")
+		return
+	}
 	a := p.cfg.Pool.AuthByUID(uid)
 	credential := ""
 	if a != nil {
@@ -1549,6 +1552,10 @@ func (p *Panel) accountDeletionRetry(w http.ResponseWriter, r *http.Request) {
 	record, ok := p.deletions.journal.get(uid)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "pending deletion not found")
+		return
+	}
+	if p.cfg.Meta != nil && p.cfg.Meta.Busy() {
+		writeErr(w, http.StatusConflict, "meta busy; retry deletion when idle")
 		return
 	}
 	p.cfg.Pool.BeginAccountDeletion(uid)

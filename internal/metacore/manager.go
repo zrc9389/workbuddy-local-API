@@ -499,6 +499,7 @@ func (m *Manager) StartSubscriptionRefresh(ctx context.Context, interval time.Du
 			m.mu.Lock()
 			interval := m.refreshInterval
 			m.mu.Unlock()
+			refreshedCount := 0
 			for _, sub := range m.Subscriptions() {
 				if ctx.Err() != nil {
 					return
@@ -513,14 +514,24 @@ func (m *Manager) StartSubscriptionRefresh(ctx context.Context, interval time.Du
 				_, err := m.RefreshSubscription(refreshCtx, sub.ID)
 				cancel()
 				if err != nil && !errors.Is(err, context.Canceled) {
-					retryAfter[sub.ID] = time.Now().Add(interval)
+					if errors.Is(err, ErrBusy) {
+						// 锁冲突等临时忙态，设置 15 秒短重试，绝对不记录整周期硬冷却
+						retryAfter[sub.ID] = time.Now().Add(15 * time.Second)
+					} else {
+						// 真实网络失败，使用最多 15 分钟的有界退避，避免被整周期(如 48h)阻断
+						retryAfter[sub.ID] = time.Now().Add(15 * time.Minute)
+					}
 					log.Printf("metacore: scheduled subscription refresh %s failed: %v", sub.ID, err)
-				} else {
+				} else if err == nil {
 					delete(retryAfter, sub.ID)
-					go func() {
-						_, _ = m.StartTests(context.Background())
-					}()
+					refreshedCount++
 				}
+			}
+			// 循环外部统一触发一次测速，避免在循环内部并发触发导致后续订阅遭遇 ErrBusy
+			if refreshedCount > 0 {
+				go func() {
+					_, _ = m.StartTests(context.Background())
+				}()
 			}
 		}
 		// Recover providers that were already stale when the process started.
@@ -1074,4 +1085,16 @@ func (m *Manager) awaitStartupNodes(ctx context.Context, s diskState) (map[strin
 		case <-t.C:
 		}
 	}
+}
+
+// Busy reports whether a live config mutation would interrupt an active account lease
+// or a running meta job. Deletion callers use this to avoid freezing an account when
+// the meta stage cannot run yet.
+func (m *Manager) Busy() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.leases > 0 || m.job.Running
 }

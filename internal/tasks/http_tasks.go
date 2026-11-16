@@ -189,5 +189,11 @@ func (p *Service) AccountTaskClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("panel: 领取任务奖励 uid=%s code=%s +%d分 +%d能", uid, body.TaskCode, credit, energy)
+	if credit > 0 {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			p.RefreshAccountCredits(a)
+		}()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "credit": credit, "energy": energy})
 }

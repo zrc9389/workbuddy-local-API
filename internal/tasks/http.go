@@ -101,6 +101,12 @@ func (p *Service) AccountTaskAuto(w http.ResponseWriter, r *http.Request) {
 			} else {
 				resp["message"] = msg + "；奖励此前已领取"
 			}
+			if credit > 0 {
+				go func() {
+					time.Sleep(500 * time.Millisecond)
+					p.RefreshAccountCredits(a)
+				}()
+			}
 		} else {
 			resp["claim_error"] = cerr.Error()
 			resp["message"] = msg + "；达标但领奖失败，可在任务列表手动点「领取」重试"

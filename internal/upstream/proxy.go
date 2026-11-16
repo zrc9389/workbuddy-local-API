@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"errors"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -52,6 +54,7 @@ func (p proxyFailure) RoundTrip(r *http.Request) (*http.Response, error) {
 
 type failClosedDirectTransport struct {
 	base http.RoundTripper
+	uid  string
 }
 
 func (f failClosedDirectTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -71,6 +74,7 @@ func (f failClosedDirectTransport) RoundTrip(r *http.Request) (*http.Response, e
 		}
 		return http.DefaultTransport.RoundTrip(r)
 	}
+	log.Printf("WARN: [upstream] egress fail-closed: account=%s host=%s blocked (no proxy configured)", logfmt.UID8(f.uid), host)
 	return nil, errors.New("no egress proxy configured: direct VPS connection to external upstream is strictly prohibited")
 }
 
@@ -151,7 +155,7 @@ func (c *Client) accountTransport(base *http.Client, a *auth.Auth) http.RoundTri
 			if base.Transport != nil {
 				baseTr = base.Transport
 			}
-			return failClosedDirectTransport{base: baseTr}
+			return failClosedDirectTransport{base: baseTr, uid: uid}
 		}
 	}
 	if auth.ValidateProxyURL(raw) != nil {
@@ -268,6 +272,11 @@ func (t accountLeaseTransport) RoundTrip(r *http.Request) (*http.Response, error
 	}
 	release, e := t.c.AccountLease(r.Context(), t.a)
 	if e != nil {
+		uid := ""
+		if t.a != nil {
+			uid = logfmt.UID8(t.a.UID)
+		}
+		log.Printf("WARN: [upstream] account lease acquire failed: account=%s err=%v", uid, e)
 		return nil, errors.New("managed account proxy unavailable")
 	}
 	if release == nil {
@@ -284,6 +293,15 @@ func (t accountLeaseTransport) RoundTrip(r *http.Request) (*http.Response, error
 	if next == nil {
 		release()
 		return nil, errors.New("underlying transport is not initialized")
+	}
+	if t.a != nil && r.URL != nil {
+		proxyURL := strings.TrimSpace(t.a.ProxyURLValue())
+		if proxyURL == "" && t.c != nil {
+			proxyURL = t.c.DefaultProxy()
+		}
+		if proxyURL != "" {
+			log.Printf("[upstream] leased egress: account=%s egress=%s target=%s", logfmt.UID8(t.a.UID), proxyURL, r.URL.Host)
+		}
 	}
 	resp, e := next.RoundTrip(r)
 	if e != nil {

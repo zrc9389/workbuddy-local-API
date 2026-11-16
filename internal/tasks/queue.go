@@ -309,6 +309,7 @@ func (p *Service) runQueueItems(accts []queueAccount, items []QueueItem, concurr
 				}
 				time.Sleep(reportGap) // 项间节流
 			}
+			p.RefreshAccountCredits(one.a)
 		}(one)
 	}
 	wg.Wait()

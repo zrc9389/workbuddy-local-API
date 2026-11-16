@@ -5,8 +5,11 @@ package tasks
 import (
 	"context"
 	"errors"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"log"
 	"sync"
 	"time"
 )
@@ -50,6 +53,21 @@ func (p *Service) ready() error {
 		return errors.New("task service unavailable")
 	}
 	return nil
+}
+
+// RefreshAccountCredits 回读账号最新余额并回写 pool，用于任务领奖后即时同步。
+func (p *Service) RefreshAccountCredits(a *auth.Auth) {
+	if p == nil || p.cfg.Pool == nil || p.cfg.Upstream == nil || a == nil {
+		return
+	}
+	rem, total, err := p.cfg.Upstream.UserResource(a)
+	if err != nil {
+		log.Printf("WARN: [tasks] refresh credits for account %s failed: %v", logfmt.UID8(a.UID), err)
+		return
+	}
+	p.cfg.Pool.SetCredits(a.UID, rem, total)
+	p.cfg.Pool.ReenableIfCredits(a.UID, rem, total)
+	log.Printf("[tasks] refreshed credits for account %s: rem=%d total=%d", logfmt.UID8(a.UID), rem, total)
 }
 func (p *Service) acquireScan(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {

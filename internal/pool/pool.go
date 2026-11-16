@@ -361,8 +361,13 @@ func (p *Pool) BeginAccountDeletion(uid string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
+		reason := e.reason
+		if reason == "" {
+			reason = "account deletion pending"
+		}
 		e.deleting = true
-		p.disableLocked(e, "account deletion pending")
+		e.deletionPending = true
+		p.disableLocked(e, reason)
 	}
 }
 

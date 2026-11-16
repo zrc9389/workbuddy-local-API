@@ -3,8 +3,11 @@ package maintenance
 import (
 	"context"
 	"fmt"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
+	"log"
+	"strings"
 	"time"
 )
 
@@ -16,6 +19,15 @@ func UpstreamAction(p *pool.Pool, up *upstream.Client) Action {
 		a := p.AuthByUID(uid)
 		if a == nil {
 			return "", fmt.Errorf("account not found")
+		}
+		proxyURL := strings.TrimSpace(a.ProxyURLValue())
+		if proxyURL == "" && up != nil {
+			proxyURL = up.DefaultProxy()
+		}
+		if proxyURL == "" {
+			log.Printf("WARN: [maintenance] account=%s step=%s egress unbound / fail-closed", logfmt.UID8(uid), kind)
+		} else {
+			log.Printf("[maintenance] account=%s step=%s dispatching via egress=%s", logfmt.UID8(uid), kind, proxyURL)
 		}
 		switch kind {
 		case "token":
@@ -86,6 +98,14 @@ func UpstreamAction(p *pool.Pool, up *upstream.Client) Action {
 			switch st.State {
 			case "arrived":
 				_, e = up.TravelClaim(a, st.RecordID)
+				if e == nil {
+					rem, total, rerr := up.UserResource(a)
+					if rerr == nil {
+						p.SetCredits(uid, rem, total)
+						p.ReenableIfCredits(uid, rem, total)
+						log.Printf("[maintenance] account=%s travel claimed: balance updated rem=%d total=%d", logfmt.UID8(uid), rem, total)
+					}
+				}
 				return "已领取旅行奖励", e
 			case "idle":
 				if st.DailyLimitReached {

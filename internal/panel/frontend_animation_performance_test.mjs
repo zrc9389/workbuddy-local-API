@@ -20,3 +20,18 @@ test('pointer disturbance shares the wave throttle and permits the first event',
   disturb(0,0); now=179; disturb(0,0); assert.equal(waves.length,1); now=180; disturb(0,0); assert.equal(waves.length,2);
   assert.match(source,/if \(now - lastHighlightWaveTime >= POINTER_WAVE_INTERVAL_MS\) \{\s*lastHighlightWaveTime = now;\s*spawnGridHighlightWave\(hoveredTile/);
 });
+
+test('animation clocks are frame-rate independent', () => {
+  assert.ok(source.includes('const rawDt = now - lastMainWorldNow;'));
+  assert.ok(source.includes('const dtMs = rawDt > 0 ? Math.min(48, rawDt) : 16.67;'));
+  assert.ok(source.includes('wavePhase = (wavePhase + dtMs * 0.0108) % (Math.PI * 2);'));
+  assert.ok(source.includes('rp.r += rp.speed * dtScale;'));
+  assert.ok(source.includes('rp.alpha *= Math.pow(0.978, dtScale);'));
+});
+
+test('error model is rebuilt from real request logs', () => {
+  assert.ok(source.includes('function rebuildErrorModelSeries()'));
+  assert.ok(source.includes("model: String(item.model || '—')"));
+  assert.ok(source.includes('em.rawCounts = counts;'));
+  assert.ok(source.includes('em.lambdaVals = lambdaVals;'));
+});

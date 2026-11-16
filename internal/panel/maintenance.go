@@ -82,6 +82,10 @@ func (p *Panel) toggleDisabled(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "disabled boolean required")
 		return
 	}
+	if st, ok := p.cfg.Pool.Status(r.PathValue("uid")); ok && st.DeletionPending {
+		writeErr(w, http.StatusConflict, "account deletion pending")
+		return
+	}
 	if st, ok := p.cfg.Pool.Status(r.PathValue("uid")); ok && st.Blocked && !*v.Disabled {
 		writeErr(w, http.StatusConflict, "account requires reauthorization")
 		return
