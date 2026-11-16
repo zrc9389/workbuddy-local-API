@@ -1441,11 +1441,13 @@ export function expiryTone(days) {
                         balance: typeof raw.credits === 'number' ? raw.credits : 0,
                         quota: typeof raw.credits_total === 'number' ? raw.credits_total : 0,
                         manualOn: !isManualOff,
+                        deletionPending: Boolean(raw.deletion_pending),
                         forceOverride: false,
                         coolSec: raw.cool_remaining_sec || 0,
                         state: raw.blocked ? 'BLOCKED' : (isCooling ? 'COOLING' : (raw.state || 'HEALTHY')),
                         blocked: Boolean(raw.blocked),
-                        egress: '—',
+                        egress: raw.egress || previous?.egress || '—',
+                        egressNodeId: raw.egress_node_id || previous?.egressNodeId || '',
                         unlimited: false,
                         packages: raw.blocked ? [] : (previous?.packages || [])
                     };
@@ -1516,9 +1518,11 @@ export function expiryTone(days) {
             if (Array.isArray(logs.entries)) {
                 WBState.logs = logs.entries.map((item, i) => {
                     let timeStr = '12:00:00';
+                    let timestamp = null;
                     if (item.time) {
                         const d = new Date(item.time);
                         if (!isNaN(d.getTime())) {
+                            timestamp = d.getTime();
                             const bd = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000);
                             timeStr = `${String(bd.getHours()).padStart(2, '0')}:${String(bd.getMinutes()).padStart(2, '0')}:${String(bd.getSeconds()).padStart(2, '0')}`;
                         } else {
@@ -1528,6 +1532,8 @@ export function expiryTone(days) {
                     return {
                         id: String(item.id || i),
                         time: timeStr,
+                        timestamp,
+                        model: String(item.model || '—'),
                         code: Number(item.status_code || item.status || 0),
                         uid: String(item.account_uid || ''),
                         egress: '',
@@ -1535,24 +1541,98 @@ export function expiryTone(days) {
                         raw: ''
                     };
                 });
+                rebuildErrorModelSeries();
             }
+        }
+
+        function rebuildErrorModelSeries() {
+            const em = WBState.errorModelSeries;
+            const now = Date.now();
+            const curH = getBeijingCurrentHour();
+            const bucketMs = 4 * 60 * 60 * 1000;
+            const labels = [];
+            for (let s = 6; s >= 0; s--) {
+                const h = (curH - s * 4 + 48) % 24;
+                labels.push(String(h).padStart(2, '0') + ':00');
+            }
+            const counts = Array(7).fill(0);
+            const events = (WBState.logs || [])
+                .map(item => item.timestamp)
+                .filter(ts => Number.isFinite(ts) && ts <= now && now - ts < 24 * 60 * 60 * 1000)
+                .sort((a, b) => a - b);
+            for (const ts of events) {
+                const idx = Math.max(0, Math.min(6, 6 - Math.floor((now - ts) / bucketMs)));
+                counts[idx]++;
+            }
+            const mu = 0.18, alpha = 0.92, beta = 0.64;
+            const lambdaVals = [];
+            for (let i = 0; i < 7; i++) {
+                const bucketEnd = now - (6 - i) * bucketMs;
+                let value = mu;
+                for (const ts of events) {
+                    if (ts > bucketEnd) break;
+                    value += alpha * Math.exp(-beta * ((bucketEnd - ts) / 3600000));
+                }
+                lambdaVals.push(Math.max(0, Math.min(4.2, value)));
+            }
+            em.labels = labels;
+            em.rawCounts = counts;
+            em.lambdaVals = lambdaVals;
+            em.warnLine = 2.5;
+        }
+
+        function formatTokenCompact(rawTokens) {
+            const n = Number(rawTokens) || 0;
+            if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+            if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+            return `${Math.round(n)}`;
         }
 
         function syncUsageData(data) {
             if (!data) return;
             WBState.usageCacheHitRate = data.totals?.cache_hit_rate ?? null;
+            WBState.usageTotals = {
+                prompt_tokens: data.totals?.prompt_tokens || 0,
+                completion_tokens: data.totals?.completion_tokens || 0,
+                total_tokens: data.totals?.total_tokens || 0
+            };
             WBState.usageByModel = (data.by_model || []).map(item => ({
                 name: item.key, reqs: String(item.requests || 0), prompt: String(item.prompt_tokens || 0),
                 comp: String(item.completion_tokens || 0), credits: formatCredits(item.credits)
             }));
-            const points = Array.isArray(data.series) ? data.series.slice(-24) : [];
-            if (points.length >= 2) {
-                const series = { labels: points.map(point => { if (!point.t) return ''; const d = new Date(point.t); if (isNaN(d.getTime())) return String(point.t).slice(11, 16); const bd = new Date(d.getTime() + (d.getTimezoneOffset() + 480) * 60000); return `${String(bd.getHours()).padStart(2, '0')}:${String(bd.getMinutes()).padStart(2, '0')}`; }),
-                    inVals: points.map(point => point.prompt_tokens || 0),
-                    outVals: points.map(point => point.completion_tokens || 0) };
-                WBState.usage24h = series;
-                WBState.usage6h = { labels: series.labels.slice(-6), inVals: series.inVals.slice(-6), outVals: series.outVals.slice(-6) };
+
+            // 按照最近 24 小时自然时间槽连续补零对齐
+            const now = Date.now();
+            const hourMs = 3600000;
+            const hourPoints = (data.series || []).filter(p => p.scope === 'hour' || (p.t && String(p.t).includes('T')));
+            const pointMap = new Map();
+            for (const p of hourPoints) {
+                if (!p.t) continue;
+                let ts = Date.parse(p.t);
+                if (isNaN(ts) && typeof p.t === 'string') {
+                    ts = Date.parse(p.t.length === 13 ? p.t + ':00:00Z' : p.t);
+                }
+                if (!isNaN(ts)) {
+                    const bd = new Date(ts + (new Date(ts).getTimezoneOffset() + 480) * 60000);
+                    const key = `${bd.getFullYear()}-${String(bd.getMonth()+1).padStart(2,'0')}-${String(bd.getDate()).padStart(2,'0')}-${String(bd.getHours()).padStart(2,'0')}`;
+                    pointMap.set(key, { in: p.prompt_tokens || 0, out: p.completion_tokens || 0 });
+                }
             }
+
+            const labels24 = [];
+            const in24 = [];
+            const out24 = [];
+            for (let i = 23; i >= 0; i--) {
+                const targetTime = now - i * hourMs;
+                const bd = new Date(targetTime + (new Date(targetTime).getTimezoneOffset() + 480) * 60000);
+                const key = `${bd.getFullYear()}-${String(bd.getMonth()+1).padStart(2,'0')}-${String(bd.getDate()).padStart(2,'0')}-${String(bd.getHours()).padStart(2,'0')}`;
+                labels24.push(`${String(bd.getHours()).padStart(2,'0')}:00`);
+                const val = pointMap.get(key) || { in: 0, out: 0 };
+                in24.push(val.in);
+                out24.push(val.out);
+            }
+            WBState.usage24h = { labels: labels24, inVals: in24, outVals: out24 };
+            WBState.usage6h = { labels: labels24.slice(-6), inVals: in24.slice(-6), outVals: out24.slice(-6) };
         }
 
         let maintenanceFingerprint = '';
@@ -1563,11 +1643,28 @@ export function expiryTone(days) {
             maintenanceFingerprint = fingerprint;
             const wasRunning = WBState.tasks.running;
             WBState.tasks.running = !!maintenance.running;
+            if (wasRunning && !WBState.tasks.running) {
+                const hasFailures = maintenance.steps.some(step => step.failed > 0 || step.state === 'failed');
+                WBState.tasks.justFinishedState = hasFailures ? 'error' : 'success';
+                if (typeof stopMaintenanceFastPolling === 'function') stopMaintenanceFastPolling();
+                if (typeof setTimeout === 'function') {
+                    setTimeout(() => {
+                        if (WBState?.tasks?.justFinishedState) {
+                            WBState.tasks.justFinishedState = 'none';
+                            if (typeof syncDynamicBottomButtons === 'function') syncDynamicBottomButtons();
+                        }
+                    }, 4000);
+                }
+            } else if (WBState.tasks.running) {
+                WBState.tasks.justFinishedState = 'none';
+                if (typeof ensureMaintenanceFastPolling === 'function') ensureMaintenanceFastPolling();
+            }
             if (WBState.currentChapter === 'tasks' || WBState.currentChapter === 'scheduler') {
                 if (maintenance.steps.some(step => step.failed > 0 || step.state === 'failed')) setPreviewFrameState('error', 800);
                 else if (WBState.tasks.running) if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
                 else if (wasRunning) setPreviewFrameState('success', 800);
             }
+            if (typeof syncDynamicBottomButtons === 'function') syncDynamicBottomButtons();
             WBState.tasks.pausedAll = !!maintenance.paused;
             WBState.tasks.activeStep = maintenance.steps.findIndex(step => step.state === 'running');
             WBState.tasks.steps = maintenance.steps.map((step, index) => ({
@@ -3974,7 +4071,8 @@ export function expiryTone(days) {
             }
             if (!now) now = performance.now();
             if (!lastMainWorldNow) lastMainWorldNow = now;
-            const dtMs = Math.min(48, Math.max(8, now - lastMainWorldNow));
+            const rawDt = now - lastMainWorldNow;
+            const dtMs = rawDt > 0 ? Math.min(48, rawDt) : 16.67;
             lastMainWorldNow = now;
             const dtScale = dtMs / 16.67;
 
@@ -4500,8 +4598,8 @@ export function expiryTone(days) {
                 const rc = blendedTheme.rippleColor;
                 for (let i = waterRipples.length - 1; i >= 0; i--) {
                     const rp = waterRipples[i];
-                    rp.r += rp.speed;
-                    rp.alpha *= 0.978;
+                    rp.r += rp.speed * dtScale;
+                    rp.alpha *= Math.pow(0.978, dtScale);
 
                     if (rp.y >= waterLineY - 4) {
                         wCtx.beginPath();
@@ -5352,9 +5450,13 @@ export function expiryTone(days) {
             if (state === "busy" || state === "yellow") {
                 WBState.ringState = "busy";
                 if (window.triggerModelSpinAcceleration) window.triggerModelSpinAcceleration(durationMs || 0);
+                // 持续忙态（durationMs <= 0 或 Infinity）不自动切回 idle，由调用者在测速/长任务结束时主动切走；设 5 分钟极端死锁防护
+                const autoResetMs = (durationMs === 0 || durationMs === Infinity || durationMs === null)
+                    ? 300000
+                    : (durationMs > 0 ? durationMs : 10000);
                 WBState._ringTimer = setTimeout(() => {
                     if (WBState.ringState === "busy") setPreviewFrameState("idle");
-                }, (durationMs > 0 ? durationMs : 10000));
+                }, autoResetMs);
             } else if (state === "error" || state === "red") {
                 WBState.ringState = "error";
                 if (canvasEl) {
@@ -5448,11 +5550,15 @@ export function expiryTone(days) {
             let t1 = CHAPTER_META[ch]?.btn1 || '[ ACTION 01 ]';
             let t2 = CHAPTER_META[ch]?.btn2 || '[ ACTION 02 ]';
 
-            // 重置基础类名，确保更新按钮的绿色仅在关于页面 (sphere) 且更新就绪时生效，绝不污染其他所有页面
+            // 重置基础类名：关于页面更新态以及任务执行页面的运行/完成状态变色反馈
             if (ch === 'sphere' && (WBState.sphereUpdateApplied || (WBState.sphereUpdateReady && !WBState.sphereUpdating))) {
                 btn1.className = 'editorial-action-btn border border-emerald-400 hover:border-emerald-300 text-emerald-300 bg-emerald-400/10 transition-colors';
             } else if (ch === 'sphere' && (WBState.sphereCheckingUpdate || WBState.sphereUpdating)) {
                 btn1.className = 'editorial-action-btn border border-amber-400 hover:border-amber-300 text-amber-300 bg-amber-400/10 animate-pulse transition-colors';
+            } else if ((ch === 'tasks' || ch === 'scheduler') && (maintenanceStarting || WBState.tasks.running)) {
+                btn1.className = 'editorial-action-btn border border-amber-400 hover:border-amber-300 text-amber-300 bg-amber-400/10 animate-pulse transition-colors';
+            } else if ((ch === 'tasks' || ch === 'scheduler') && !WBState.tasks.running && WBState.tasks.justFinishedState === 'success') {
+                btn1.className = 'editorial-action-btn border border-emerald-400 hover:border-emerald-300 text-emerald-300 bg-emerald-400/10 transition-colors';
             } else {
                 btn1.className = 'editorial-action-btn border border-white/25 hover:border-white bg-white/[0.04] text-white/80 hover:text-white transition-colors';
             }
@@ -5511,7 +5617,13 @@ export function expiryTone(days) {
                     t2 = '[ + IMPORT SUBSCRIPTION ]';
                 }
             } else if (ch === 'tasks' || ch === 'scheduler') {
-                t1 = '[ START ALL TASKS ]';
+                if (maintenanceStarting || WBState.tasks.running) {
+                    t1 = '[ RUNNING... ]';
+                } else if (WBState.tasks.justFinishedState === 'success') {
+                    t1 = '[ COMPLETED ]';
+                } else {
+                    t1 = '[ START ALL TASKS ]';
+                }
                 t2 = WBState.tasks.scheduleEnabled === false ? '[ ENABLE ALL TASKS ]' : '[ DISABLE ALL TASKS ]';
             } else if (ch === 'usage') {
                 const targetH = getBeijingUsageTargetHour();
@@ -5543,13 +5655,7 @@ export function expiryTone(days) {
                     t2 = WBState.packageListSort === "USAGE" ? "[ SORT: NAME ]" : "[ SORT: USAGE ]";
                 }
             } else if (ch === 'logs') {
-                const bjNowLogs = new Date(Date.now() + 8 * 3600000);
-                const curLogH = bjNowLogs.getUTCHours();
-                WBState.errorModelSeries.labels = [];
-                for (let s = 6; s >= 0; s--) {
-                    const h = (curLogH - s * 4 + 48) % 24;
-                    WBState.errorModelSeries.labels.push(String(h).padStart(2, '0') + ':00');
-                }
+                rebuildErrorModelSeries();
                 t1 = WBState.logView === 'LIST' ? '[ ERROR MODEL ]' : '[ LOG ARCHIVE ]';
             } else if (ch === 'encryption') {
                 t1 = '[ √ SAVE ]';
@@ -5648,8 +5754,8 @@ export function expiryTone(days) {
                 const sumOut = ds.outVals.reduce((a, b) => a + b, 0);
                 const sumIn  = ds.inVals.reduce((a, b) => a + b, 0);
                 l1.textContent = WBState.usageRange === '24H' ? '24H 输出总量' : '6H 输出总量';
-                v1.textContent = `${((sumOut) / 1000).toFixed(2)}M`;
-                l2.textContent = '输入总量'; v2.textContent = `${((sumIn) / 1000).toFixed(2)}M`;
+                v1.textContent = formatTokenCompact(sumOut);
+                l2.textContent = '输入总量'; v2.textContent = formatTokenCompact(sumIn);
                 l3.textContent = '缓存命中率'; v3.textContent = WBState.usageCacheHitRate == null ? '—' : WBState.usageCacheHitRate.toFixed(1) + '%';
             } else if (ch === 'packages') {
                 let totalPackCount = 0;
@@ -5696,7 +5802,7 @@ export function expiryTone(days) {
             const ds = WBState.usageRange === '24H' ? WBState.usage24h : WBState.usage6h;
             if (idx >= 0) {
                 WBState.usageHoverIdx = idx;
-                setVertexHover(idx * 3, `${ds.labels[idx]} // OUT ${ds.outVals[idx]}K`);
+                setVertexHover(idx * 3, `${ds.labels[idx]} // OUT ${formatTokenCompact(ds.outVals[idx] || 0)}`);
             } else {
                 setVertexHover(-1);
                 return; // 移开时不自动跳回默认时间！保持在最后悬停点
@@ -5710,7 +5816,7 @@ export function expiryTone(days) {
                 lineEl.setAttribute('x2', curX);
             }
             if (labelEl) {
-                labelEl.innerHTML = `时刻 <strong class="text-white font-normal">${ds.labels[hIdx]}</strong> &mdash; 输出 ${ds.outVals[hIdx]}K / 输入 ${ds.inVals[hIdx]}K`;
+                labelEl.innerHTML = `时刻 <strong class="text-white font-normal">${ds.labels[hIdx]}</strong> &mdash; 输出 ${formatTokenCompact(ds.outVals[hIdx] || 0)} / 输入 ${formatTokenCompact(ds.inVals[hIdx] || 0)}`;
             }
         };
 
@@ -6242,9 +6348,13 @@ export function expiryTone(days) {
                     // Comment 1: 出现令牌隔离这种严重报错的时候，无论是否停用或启用，均显示令牌隔离
                     const isTokenBlocked = (acc.state === 'BLOCKED' || acc.state === 'TOKEN_EXPIRED' || acc.state === 'UNAUTHORIZED');
                     if (isTokenBlocked) {
-                        statusText = '令牌隔离';
+                        statusText = acc.deletionPending ? '隔离·删除挂起' : '令牌隔离';
                         statusCls = 'tone-fault';
-                        actionLabel = '启用';
+                        actionLabel = acc.deletionPending ? '重试' : '启用';
+                    } else if (acc.deletionPending) {
+                        statusText = '删除挂起';
+                        statusCls = 'tone-fault';
+                        actionLabel = '重试';
                     } else if (!acc.manualOn) {
                         statusText = '停用';
                         statusCls = 'tone-paused';
@@ -6647,9 +6757,9 @@ export function expiryTone(days) {
                     <div class="space-y-3 pt-0.5">
                         <div class="flex items-center justify-between text-[10.5px] tracking-[0.14em] text-white/45 whitespace-nowrap overflow-hidden text-ellipsis w-full">
                             <div class="flex items-center space-x-3 tabular-nums-left whitespace-nowrap overflow-hidden text-ellipsis">
-                                <span id="usage-cursor-readout">时刻 <strong class="text-white font-normal">${ds.labels[hIdx] || ''}</strong> &mdash; 输出 ${ds.outVals[hIdx] || 0}K / 输入 ${ds.inVals[hIdx] || 0}K</span>
+                                <span id="usage-cursor-readout">时刻 <strong class="text-white font-normal">${ds.labels[hIdx] || ''}</strong> &mdash; 输出 ${formatTokenCompact(ds.outVals[hIdx] || 0)} / 输入 ${formatTokenCompact(ds.inVals[hIdx] || 0)}</span>
                                 <span class="text-white/28">|</span>
-                                <span class="text-white/60">${WBState.usageRange}区间累计: 输出 ${((ds.outVals.reduce((a,b)=>a+b,0))/1000).toFixed(2)}M / 输入 ${((ds.inVals.reduce((a,b)=>a+b,0))/1000).toFixed(2)}M</span>
+                                <span class="text-white/60">${WBState.usageRange}区间累计: 输出 ${formatTokenCompact(ds.outVals.reduce((a,b)=>a+b,0))} / 输入 ${formatTokenCompact(ds.inVals.reduce((a,b)=>a+b,0))}</span>
                             </div>
                         </div>
                         <div class="relative w-full h-[132px]">
@@ -6831,7 +6941,7 @@ export function expiryTone(days) {
                         const initPacks = getAccountActivePackages(initP.acc);
 
                         commitStageMarkup(container, `
-                            <div id="account-model-chart-wrap" class="flex flex-col justify-start space-y-4 pt-1">
+                            <div id="packages-chart-stage" class="flex flex-col justify-start space-y-4 pt-1">
                                 <div>
                                     <div class="flex justify-between items-center text-[10px] tracking-[0.15em] text-white/42 mb-3">
                                         <span id="pkg-model-readout">账号 ${initP.acc.name} — 积分 ${initP.bal.toLocaleString()} / 额度 ${initP.quota.toLocaleString()} / 独立包 ${initPacks.length}</span>
@@ -6847,8 +6957,13 @@ export function expiryTone(days) {
                                         </g>
                                         <line id="pkg-model-cursor" x1="${initP.x}" y1="0" x2="${initP.x}" y2="62" stroke="#f0c987" stroke-width="1.2" opacity="0.8" />
                                     </svg>
-                                    <div class="flex justify-between items-center text-[9px] tracking-[0.08em] text-white/40 mt-1.5 font-mono">
-                                        ${points.map(p => `<span class="w-[74px] truncate text-center" title="${p.acc.name}">${p.acc.name}</span>`).join('')}
+                                    <div class="relative w-full h-5 mt-1.5 font-mono">
+                                        ${points.map(p => `
+                                            <span class="absolute top-0 text-[9px] tracking-[0.08em] text-white/40 whitespace-nowrap truncate max-w-[76px] text-center"
+                                                  style="left: ${((p.x / 520) * 100).toFixed(2)}%; transform: translateX(-50%);" title="${p.acc.name}">
+                                                ${p.acc.name}
+                                            </span>
+                                        `).join('')}
                                     </div>
                                 </div>
                                 <div class="grid grid-cols-6 gap-2 pt-1 text-[10.5px]">
@@ -6877,10 +6992,10 @@ export function expiryTone(days) {
                     const initP = points[Math.max(0, Math.min(points.length - 1, WBState.packageModelHoverIdx))];
 
                     commitStageMarkup(container, `
-                        <div class="flex flex-col justify-start space-y-4 pt-1">
+                        <div id="packages-chart-stage" class="flex flex-col justify-start space-y-4 pt-1">
                             <div>
                                 <div class="flex justify-between items-center text-[10px] tracking-[0.15em] text-white/42 mb-3">
-                                    <span id="pkg-model-readout">时段 ${initP.day}天 — 存活积分 ${initP.survival.toFixed(1)}% / 预计到期 ${initP.expAcc} 账号 / 临期包 ${initP.packs}</span>
+                                    <span id="pkg-model-readout">时段 ${initP.day}天 — 存活积分 ${initP.survival.toFixed(1)}% (${(initP.survivingCredits || 0).toLocaleString()}) / 预计到期 ${initP.expAcc} 账号 / 仍存活 ${initP.remainingPacks} 包 / 临期 ${initP.expiringPacks} 包</span>
                                     <span class="text-white/60 font-mono">已知到期包剩余占比</span>
                                 </div>
                                 <svg viewBox="0 0 520 86" class="w-full h-[86px] overflow-visible">
@@ -6901,8 +7016,8 @@ export function expiryTone(days) {
                                     <div class="py-1 px-1.5 border border-white/10 hover:border-white/40 cursor-pointer transition-colors text-left"
                                          data-hover-model="package" data-hover-idx="${idx}" data-action="hover-package" data-idx="${idx}"
                                          >
-                                        <div class="text-[9px] text-white/40 mb-0.5">${p.day}天临界</div>
-                                        <div class="text-white font-medium">${p.expAcc}号 / ${p.packs}包</div>
+                                        <div class="text-[9px] text-white/40 mb-0.5">${p.day}天后存活</div>
+                                        <div class="text-white font-medium">${p.survival.toFixed(1)}% / ${p.remainingPacks}包</div>
                                     </div>
                                 `).join('')}
                             </div>
@@ -7094,7 +7209,7 @@ export function expiryTone(days) {
                         commitStageMarkup(container, `
                             <div class="space-y-3.5 text-left">
                                 <div class="flex justify-between items-center border-b border-white/10 pb-2.5">
-                                    <span class="text-xs text-white font-medium tabular-nums-left">${item.time} &bull; HTTP ${item.code} &bull; ${accName} &rarr; ${item.egress}</span>
+                                    <span class="text-xs text-white font-medium tabular-nums-left">${item.time} &bull; HTTP ${item.code} &bull; ${item.model || '—'} &bull; ${accName} &rarr; ${item.egress}</span>
                                     <button class="editorial-text-btn" data-action="clear-selected-log">&larr; 返回记录</button>
                                 </div>
                                 <div class="text-xs text-white/70 text-left">${item.summary}</div>
@@ -7201,6 +7316,7 @@ export function expiryTone(days) {
         window.toggleAccountManual = (uid) => {
             const acc = WBState.accounts.find(a => a.uid === uid);
             if (!acc) return;
+            if (acc.deletionPending) { notifyEditorialStatus('删除挂起，请先重试删除'); return; }
             const rawLow = isRawLowBalance(acc);
 
             if (!acc.manualOn) {
@@ -7938,30 +8054,23 @@ export function expiryTone(days) {
 
     function getWeibullModelPoints() {
         const daysArr = [1, 3, 5, 10, 20, 30];
-        const allPacks = WBState.accounts.flatMap(getAccountActivePackages).filter(p => p.days != null);
-        const total = allPacks.reduce((sum, p) => sum + (Number(p.remain) || 0), 0);
-        const packCounts = daysArr.map(day => {
-            let packs = 0;
-            WBState.accounts.forEach(acc => {
-                const activePacks = getAccountActivePackages(acc);
-                packs += activePacks.filter(p => p.days !== null && p.days <= day).length;
-            });
-            return packs;
-        });
-        const maxPacks = Math.max(1, ...packCounts);
+        const allActivePacks = WBState.accounts.flatMap(getAccountActivePackages);
+        const totalActiveCredits = allActivePacks.reduce((sum, p) => sum + (Number(p.remain) || 0), 0);
         return daysArr.map((day, i) => {
+            const survivingPackages = allActivePacks.filter(p => p.days == null || p.days > day);
+            const survivingCredits = survivingPackages.reduce((sum, p) => sum + (Number(p.remain) || 0), 0);
+            const survival = totalActiveCredits > 0 ? (100 * survivingCredits / totalActiveCredits) : 0;
+            const remainingPacks = survivingPackages.length;
+            const expiringPacks = allActivePacks.length - remainingPacks;
             let expAcc = 0;
-            let packs = packCounts[i];
             WBState.accounts.forEach(acc => {
                 const activePacks = getAccountActivePackages(acc);
                 if (activePacks.some(p => p.days !== null && p.days <= day)) expAcc++;
             });
-            const remaining = allPacks.filter(p => p.days > day).reduce((sum, p) => sum + (Number(p.remain) || 0), 0);
-            const survival = total > 0 ? 100 * remaining / total : 0;
             const x = [40, 110, 210, 310, 410, 500][i];
-            // 遵从要求：包越多则折线上点越高（SVG Y 越小）
-            const y = Math.round(64 - (packs / maxPacks) * 48);
-            return { day, survival, expAcc, packs, x, y };
+            // 存活百分比映射：存活率越高点位越高（SVG y 越小，范围 64 到 16）
+            const y = Math.round(64 - (survival / 100) * 48);
+            return { day, survival, survivingCredits, remainingPacks, expiringPacks, expAcc, packs: remainingPacks, x, y };
         });
     }
 
@@ -7973,7 +8082,7 @@ export function expiryTone(days) {
         WBState.packageModelHoverIdx = idx;
         const titleEl = document.getElementById('pkg-model-readout');
         if (titleEl) {
-            titleEl.textContent = `时段 ${p.day}天 — 存活积分 ${p.survival.toFixed(1)}% / 预计到期 ${p.expAcc} 账号 / 剩余包数 ${p.packs} 个`;
+            titleEl.textContent = `时段 ${p.day}天 — 存活积分 ${p.survival.toFixed(1)}% (${(p.survivingCredits || 0).toLocaleString()}) / 预计到期 ${p.expAcc} 账号 / 仍存活 ${p.remainingPacks} 包 / 临期 ${p.expiringPacks} 包`;
         }
         const curEl = document.getElementById('pkg-model-cursor');
         if (curEl) {
@@ -8038,10 +8147,49 @@ export function expiryTone(days) {
             pipelineTimers = [];
         }
 
+        let maintenanceFastPollTimer = null;
+        let maintenanceFastPollInFlight = false;
+
+        function ensureMaintenanceFastPolling() {
+            if (maintenanceFastPollTimer) return;
+            const poll = async () => {
+                if (maintenanceFastPollInFlight) return;
+                maintenanceFastPollInFlight = true;
+                try {
+                    const status = await safeApiFetch('/panel/api/maintenance/status', {}, 4000);
+                    if (status) {
+                        const changed = syncMaintenanceData(status);
+                        if (changed) {
+                            if (['tasks', 'scheduler'].includes(WBState.currentChapter)) {
+                                renderEditorialStage(false);
+                            }
+                        }
+                    }
+                    if (!WBState.tasks.running) {
+                        stopMaintenanceFastPolling();
+                    }
+                } catch (_) {}
+                finally {
+                    maintenanceFastPollInFlight = false;
+                }
+            };
+            maintenanceFastPollTimer = setInterval(poll, 750);
+        }
+
+        function stopMaintenanceFastPolling() {
+            if (maintenanceFastPollTimer) {
+                clearInterval(maintenanceFastPollTimer);
+                maintenanceFastPollTimer = null;
+            }
+            maintenanceFastPollInFlight = false;
+        }
+
         let maintenanceStarting = false;
         async function startMaintenance() {
             if (maintenanceStarting) return;
             maintenanceStarting = true;
+            if (typeof WBState !== 'undefined' && WBState?.tasks) WBState.tasks.justFinishedState = 'none';
+            if (typeof syncDynamicBottomButtons === 'function') syncDynamicBottomButtons();
             notifyEditorialStatus('正在启动任务…');
             try {
                 const token = csrfToken || window.csrfToken || '';
@@ -8053,6 +8201,7 @@ export function expiryTone(days) {
                 if (response.status === 409) {
                     const status = await safeApiFetch('/panel/api/maintenance/status', {}, 10000);
                     if (status && syncMaintenanceData(status)) renderEditorialStage(false);
+                    if (typeof ensureMaintenanceFastPolling === 'function') ensureMaintenanceFastPolling();
                     notifyEditorialStatus('任务正在运行，请等待完成');
                 } else if (response.status === 401 || response.status === 403) {
                     notifyEditorialStatus('登录已失效或验证失败，请重新登录');
@@ -8062,11 +8211,15 @@ export function expiryTone(days) {
                     const status = await response.json();
                     syncMaintenanceData(status);
                     renderEditorialStage(false);
+                    if (typeof ensureMaintenanceFastPolling === 'function') ensureMaintenanceFastPolling();
                     notifyEditorialStatus('任务已启动');
                 }
             } catch (_) {
                 notifyEditorialStatus('任务启动请求失败，请检查服务连接');
-            } finally { maintenanceStarting = false; }
+            } finally {
+                maintenanceStarting = false;
+                if (typeof syncDynamicBottomButtons === 'function') syncDynamicBottomButtons();
+            }
         }
 
         function runFourStepPipeline() {
@@ -10788,14 +10941,19 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
         const waveCanvas = document.getElementById('sound-wave-canvas');
         const waveCtx = waveCanvas ? waveCanvas.getContext('2d') : null;
         let wavePhase = 0;
+        let waveLastTimestamp = 0;
         let soundWaveRafId = null;
 
-        function animateSoundWaveIcon() {
+        function animateSoundWaveIcon(timestamp) {
             if (!waveCtx) return;
             if (soundWaveRafId) {
                 cancelAnimationFrame(soundWaveRafId);
                 soundWaveRafId = null;
             }
+            const now = Number.isFinite(timestamp) ? timestamp : performance.now();
+            if (!waveLastTimestamp) waveLastTimestamp = now;
+            const dtMs = Math.min(48, Math.max(0, now - waveLastTimestamp));
+            waveLastTimestamp = now;
             waveCtx.clearRect(0, 0, 22, 12);
             waveCtx.strokeStyle = '#ffffff';
             waveCtx.lineWidth = 1.4;
@@ -10807,7 +10965,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                 else waveCtx.lineTo(x, y);
             }
             waveCtx.stroke();
-            wavePhase += 0.18;
+            wavePhase = (wavePhase + dtMs * 0.0108) % (Math.PI * 2);
             soundWaveRafId = requestAnimationFrame(animateSoundWaveIcon);
         }
 
@@ -10936,7 +11094,10 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                     // 协同幂等优化：若该账号已被他人或另一端先行删除（404 / not found），视为已成功删除，平滑移除该行，绝不突兀报错
                     const isAlreadyGone = result?.status === 404 || String(result?.error || '').toLowerCase().includes('not found') || String(result?.message || '').toLowerCase().includes('not found');
                     if (!isAlreadyGone) {
-                        notifyEditorialStatus('ACCOUNT DELETE FAILED // 状态未改变');
+                        const detail = result?.stage ? ` // ${String(result.stage).toUpperCase()}` : '';
+                        notifyEditorialStatus(`ACCOUNT DELETE FAILED${detail} // 可重试`);
+                        if (typeof loadAuthenticatedPanelData === 'function') await loadAuthenticatedPanelData();
+                        if (typeof renderEditorialStage === 'function') renderEditorialStage(false);
                         return;
                     }
                 }
@@ -11023,9 +11184,9 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             WBState._egressRefreshing = true;
             // 大按钮始终保留原样；批量操作只驱动右侧圆环。
             const finishFeedback = !nodeID
-                ? Object.assign((state, ringState = state) => setPreviewFrameState(ringState, 800), { rebind: () => {} })
+                ? Object.assign((state, ringState = state) => setPreviewFrameState(ringState, 1500), { rebind: () => {} })
                 : beginActionFeedback();
-            if (!nodeID) if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
+            if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
             try {
                 if (!nodeID && WBState.egressTab === 'SUBS') {
                     const ids = WBState.subscriptions.map(item => item.id);
@@ -11047,6 +11208,9 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                         status = await safeApiFetch('/panel/api/meta/tests', {}, 10000);
                         if (!status || status.id !== job.id) { notifyEditorialStatus('节点测速状态读取失败'); finishFeedback('error'); return; }
                         syncEgressData(await safeApiFetch('/panel/api/meta/nodes', {}, 10000));
+                        if (WBState.ringState !== 'busy' && typeof setPreviewFrameState === 'function') {
+                            setPreviewFrameState('busy', 0);
+                        }
                         renderEditorialStage(false);
                         finishFeedback.rebind();
                     }
@@ -11077,10 +11241,16 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             window.toggleAccountManual = async (uid) => {
                 const account = WBState.accounts.find(item => item.uid === uid);
                 if (!account) return;
+                if (account.deletionPending) { return window.deleteAccountItem(uid); }
                 if (account.state === 'BLOCKED') { beginActionFeedback()('error'); notifyEditorialStatus('令牌已隔离，请重新授权'); return; }
                 const result = await safeApiFetch('/panel/api/accounts/' + encodeURIComponent(uid) + '/toggle_disabled', {method: 'POST', body: JSON.stringify({disabled: account.manualOn})}, 10000);
                 if (!result?.ok) { beginActionFeedback()('error'); notifyEditorialStatus(account.state === 'BLOCKED' ? '令牌已隔离，请重新授权' : '账号状态更新失败'); return; }
-                syncOverviewData(await safeApiFetch('/panel/api/overview', {}, 10000));
+                const [ov, eg] = await Promise.all([
+                    safeApiFetch('/panel/api/overview', {}, 10000),
+                    safeApiFetch('/panel/api/meta/nodes', {}, 10000)
+                ]);
+                if (ov) syncOverviewData(ov);
+                if (eg) syncEgressData(eg);
                 renderEditorialStage(false);
             };
             window.bindAccountEgress = async (uid, nodeName) => {
@@ -11230,6 +11400,46 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                 notifyEditorialStatus('节点不存在，请刷新列表');
             };
         }
+        // Packages 模型 1 与模型 2 手势滑动与滚轮快速切换
+        let lastPkgModelSwitchTime = 0;
+        function switchPackageModelMode() {
+            const now = Date.now();
+            if (now - lastPkgModelSwitchTime < 300) return;
+            lastPkgModelSwitchTime = now;
+            WBState.selectedPackageUid = null;
+            WBState.packageModelMode = (WBState.packageModelMode === 'ACCOUNT' ? 'EXPIRY' : 'ACCOUNT');
+            notifyEditorialStatus(WBState.packageModelMode === 'ACCOUNT' ? 'MODEL -> ACCOUNT QUOTA CURVE (1-9 TO A-Z)' : 'MODEL -> WEIBULL EXPIRY DECAY');
+            renderEditorialStage(true);
+        }
+
+        document.addEventListener('pointerdown', (e) => {
+            const el = e.target?.closest?.('#packages-chart-stage');
+            if (el) {
+                el._pkgStartX = e.clientX;
+                el._pkgStartY = e.clientY;
+            }
+        }, { passive: true });
+
+        document.addEventListener('pointerup', (e) => {
+            const el = e.target?.closest?.('#packages-chart-stage');
+            if (el && typeof el._pkgStartX === 'number') {
+                const dx = e.clientX - el._pkgStartX;
+                const dy = e.clientY - el._pkgStartY;
+                el._pkgStartX = null;
+                if (Math.abs(dx) >= 40 && Math.abs(dx) > Math.abs(dy)) {
+                    switchPackageModelMode();
+                }
+            }
+        }, { passive: true });
+
+        document.addEventListener('wheel', (e) => {
+            const el = e.target?.closest?.('#packages-chart-stage');
+            if (!el) return;
+            if (Math.abs(e.deltaX) >= 20 || (e.shiftKey && Math.abs(e.deltaY) >= 20)) {
+                switchPackageModelMode();
+            }
+        }, { passive: true });
+
         window.addEventListener('resize', handleViewportScaleSync);
         window.visualViewport?.addEventListener('resize', handleViewportScaleSync);
 
