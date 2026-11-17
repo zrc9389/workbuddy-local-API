@@ -36,7 +36,7 @@ test("BUG-FE-05: return animation does not supplement center highlight wave", ()
 
 test("BUG-FE-06: egress ring pulses yellow during probe and shakes red only on all timeout", () => {
     assert.match(js, /const\s+allTimeout\s*=\s*status\.total\s*>\s*0\s*&&\s*status\.failed\s*>=\s*status\.total/);
-    assert.match(js, /ringFailed\s*=\s*status\.cancelled\s*\|\|\s*boundFailure\s*\|\|\s*\(!nodeID\s*&&\s*allTimeout\)/);
+    assert.match(js, /const\s+isFailed\s*=\s*nodeID\s*\?\s*\(status\.cancelled\s*\|\|\s*nodeFailed\)\s*:\s*\(status\.cancelled\s*\|\|\s*allTimeout\)/);
 });
 
 test("BUG-FE-07: node failure and timeout unified to timeout, unavailable to end, no breaker text", () => {

@@ -365,16 +365,30 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	boundUID := stickyUID
+	isSpillover := false
 	for i := 0; i < h.cfg.MaxRotate; i++ {
 		// 选号：粘性号优先（PickByUIDForModel 已校验该模型可用性 + 在途未满），否则普通轮换。
 		var acct *auth.Auth
 		if stickyUID != "" {
-			acct = h.cfg.Pool.PickByUIDForModel(stickyUID, bareModel)
-			if acct == nil || (realm != "" && acct.Realm() != realm) {
-				// 粘性号在当前模型不可用（冷却/占满/该模型被 6004 限额）或 realm 不符 → 解绑，
-				// 本次回落普通轮换。
-				unbindSticky()
-				acct = nil
+			stickyInf, ok := h.cfg.Pool.InFlightOf(stickyUID)
+			minPoolInf := h.cfg.Pool.MinInFlightForRealm(realm, bareModel)
+			if ok && minPoolInf >= 0 && stickyInf > minPoolInf {
+				// 粘性并发溢出旁路（Sticky Busy Spillover）：
+				// 粘性号有在途并发且池中有更空闲的健康账号，本次并发请求旁路到更空闲账号，
+				// 不破坏原有 12h 粘性绑定。
+				isSpillover = true
+			} else {
+				acct = h.cfg.Pool.PickByUIDForModel(stickyUID, bareModel)
+				if acct == nil || (realm != "" && acct.Realm() != realm) {
+					// 仅在账号真不可用（冷却/熔断/触底/跨域）时才解绑；
+					// 若账号依然健康只是在途占满，则保留绑定转为旁路溢出。
+					if !h.cfg.Pool.HealthyForModelRealm(stickyUID, bareModel, realm) {
+						unbindSticky()
+					} else {
+						isSpillover = true
+					}
+					acct = nil
+				}
 			}
 		}
 		if acct == nil {
@@ -399,10 +413,10 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		// 占用在途名额：Pick 已跳过满额账号，此处 CAS 兜底并发抢名额的竞态。
 		if !h.cfg.Pool.Acquire(acct.UID) {
-			// 若被抢的正是粘性号，立即解绑并回落普通轮换，避免下一轮仍撞同一个
-			// 满载粘性号再浪费一次 PickByUID 往返（语义与 fail/PickByUID-nil 的解绑一致）。
 			if stickyUID != "" && acct.UID == stickyUID {
-				unbindSticky()
+				// 并发竞争被抢占：本轮请求降级为旁路轮换，不破坏原会话绑定
+				stickyUID = ""
+				isSpillover = true
 			}
 			if !rotateBackoff(i, r.Context()) {
 				// 客户端已断连：换号重试无意义，终止轮转走末端错误透传。
@@ -724,7 +738,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				st.outcome = telemetry.OutcomeInterrupted
 				h.cfg.Pool.NoteSuccess(acct.UID)
 				h.cfg.Pool.BlockModelClear(acct.UID, bareModel)
-				if sessKey != "" && h.cfg.Session != nil {
+				if sessKey != "" && h.cfg.Session != nil && !isSpillover {
 					h.cfg.Session.Bind(sessKey, acct.UID)
 				}
 			default:
@@ -736,7 +750,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				h.cfg.Pool.BlockModelClear(acct.UID, bareModel)
 				// 粘性跟随最终成功号：本轮成功的账号成为该会话的粘性绑定（覆盖旧绑定）。
 				// 若 sticky 号失败、轮换到别的号成功，这里把会话重绑到新号，多轮对话下一跳不再随机抽。
-				if sessKey != "" && h.cfg.Session != nil {
+				if sessKey != "" && h.cfg.Session != nil && !isSpillover {
 					h.cfg.Session.Bind(sessKey, acct.UID)
 				}
 			}
@@ -844,7 +858,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 非流式同理：聚合成功（无 error 帧、非空流）才算这一跳成功，事后才记成功/绑粘性。
 		h.cfg.Pool.NoteSuccess(acct.UID)
 		h.cfg.Pool.BlockModelClear(acct.UID, bareModel)
-		if sessKey != "" && h.cfg.Session != nil {
+		if sessKey != "" && h.cfg.Session != nil && !isSpillover {
 			h.cfg.Session.Bind(sessKey, acct.UID)
 		}
 		// 成本账本（非流式）：从聚合响应的 usage 取 credit 与 token 总数。

@@ -106,7 +106,7 @@ test('maintenance results escape markup and avoid repainting unchanged state', (
   assert.equal(sync.escapeDisplayText(state.tasks.steps[0].failures[0].reason), '&lt;img src=x onerror=alert(1)&gt;');
   sync.syncMaintenanceData({...payload, running: true});
   sync.syncMaintenanceData(payload);
-  assert.deepEqual(frames, ['error', 'error', 'error']);
+  assert.deepEqual(frames, ['busy', 'error']);
 });
 
 test('maintenance start reports conflict and authentication failures distinctly', async () => {
@@ -250,9 +250,16 @@ test('node batch keeps its large button unchanged and ring reflects actual bound
   });
   await refresh(); assert.deepEqual(frames,['busy','success']); assert.equal(feedback.length,0);
   nodes=[{id:'ok',status:'ok',binding_count:1},{id:'bad',status:'timeout',binding_count:1}];
-  await refresh(); assert.equal(frames.at(-1),'error'); assert.equal(feedback.length,0);
+  await refresh(); assert.equal(frames.at(-1),'success'); assert.equal(feedback.length,0);
   nodes=[{id:'ok',status:'ok',binding_count:0},{id:'bad',status:'error',binding_count:1}];
-  await refresh(); assert.equal(frames.at(-1),'error'); assert.equal(feedback.length,0);
+  await refresh(); assert.equal(frames.at(-1),'success'); assert.equal(feedback.length,0);
+  const refreshAllFail=runFunction(functionSource('        async function refreshEgressView(', '        function handleViewportScaleSync()'), 'refreshEgressView', {
+    WBState:state, setPreviewFrameState:x=>frames.push(x), beginActionFeedback:()=>{feedback.push('paint'); const f=(...v)=>feedback.push(v);f.rebind=()=>{};return f},
+    safeApiFetch:async url=>url.endsWith('/tests')?{id:'job',running:false,total:2,completed:0,failed:2}: {nodes},
+    syncEgressData:data=>{state.nodes=data.nodes.map(n=>({...n,timeout:n.status==='timeout',bindingCount:n.binding_count}))},
+    notifyEditorialStatus(){},renderEditorialStage(){},loadAuthenticatedPanelData:async()=>{},setTimeout,Promise
+  });
+  await refreshAllFail(); assert.equal(frames.at(-1),'error');
 });
 
 test('audio picker reports pending, selection and cancellation', () => {

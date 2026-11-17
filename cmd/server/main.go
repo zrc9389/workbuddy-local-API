@@ -199,6 +199,7 @@ func run() error {
 			// 裸名走 cn（现状零回归）。闭包内部 resolveModel 剥前缀，再按 realm 过滤。
 			AvailableForModel: realmAwareAvailableForModel(p),
 			PickBest:          realmAwarePickBestForModel(p),
+			HealthyForModel:   realmAwareHealthyForModel(p),
 		})
 		if err := sessRouter.LoadLocal(); err != nil {
 			log.Fatalf("session state: %v", err)

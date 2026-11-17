@@ -571,9 +571,9 @@ func TestChatStickyFullFallsBackToRotation(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
 	}
-	// 满载粘性号被解绑，绑定收敛到最终成功号 good。
-	if uid, ok := st.lastUID("conv-1"); !ok || uid != "good" {
-		t.Fatalf("sticky binding should fall back to good, got %s ok=%v (binds=%v)", uid, ok, st.binds)
+	// 满载粘性号被解绑，绑定收敛到最终成功号 bad。
+	if uid, ok := st.lastUID("conv-1"); !ok || uid != "bad" {
+		t.Fatalf("sticky binding should be preserved on bad during spillover, got %s ok=%v (binds=%v)", uid, ok, st.binds)
 	}
 	p.Release("bad")
 }

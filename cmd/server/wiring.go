@@ -31,3 +31,11 @@ func realmAwarePickBestForModel(p *pool.Pool) func(model string, candidates []st
 		return p.PickBestUIDForModel(bare, candidates)
 	}
 }
+
+// realmAwareHealthyForModel 构造会话粘性路由按模型可用口径的 realm 感知健康检查闭包。
+func realmAwareHealthyForModel(p *pool.Pool) func(uid, model string) bool {
+	return func(uid, model string) bool {
+		realm, bare := server.ResolveModel(model)
+		return p.HealthyForModelRealm(uid, bare, realm)
+	}
+}

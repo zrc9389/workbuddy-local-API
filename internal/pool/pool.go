@@ -389,6 +389,74 @@ func (p *Pool) Release(uid string) {
 	}
 }
 
+// InFlightOf 返回指定账号当前的在途请求数；账号不存在时返回 (0, false)。
+func (p *Pool) InFlightOf(uid string) (int, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return 0, false
+	}
+	return int(e.inFlight.Load()), true
+}
+
+// MinInFlightForRealm 计算指定域和模型下所有健康且未占满在途候选账号的最小在途数。
+// 若无任何可用候选账号，返回 -1。
+func (p *Pool) MinInFlightForRealm(realm, reqModel string) int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	now := time.Now()
+	realmOK := func(e *entry) bool { return realm == "" || (e.a != nil && e.a.Realm() == realm) }
+	healthyOf := func(e *entry) bool { return realmOK(e) && e.healthy(now) }
+	if reqModel != "" {
+		healthyOf = func(e *entry) bool { return realmOK(e) && e.healthyForModel(now, reqModel) }
+	}
+	minInf := -1
+	for _, e := range p.byUID {
+		if !healthyOf(e) {
+			continue
+		}
+		if p.floorBlockedForRealmModel(e, reqModel, realm, now) {
+			continue
+		}
+		if p.inFlightFull(e) {
+			continue
+		}
+		inf := int(e.inFlight.Load())
+		if minInf == -1 || inf < minInf {
+			minInf = inf
+		}
+	}
+	return minInf
+}
+
+// HealthyForModelRealm 判断指定 uid 账号在当前时刻对指定域和模型是否健康且未触底。
+// 用于调用方区分账号是真不可用（需解绑）还是仅并发占满（走旁路保留绑定）。
+func (p *Pool) HealthyForModelRealm(uid, model, realm string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return false
+	}
+	if realm != "" && (e.a == nil || e.a.Realm() != realm) {
+		return false
+	}
+	now := time.Now()
+	if !e.healthyForModel(now, model) {
+		return false
+	}
+	if p.floorBlockedForRealmModel(e, model, realm, now) {
+		return false
+	}
+	return true
+}
+
+// HealthyForModel 判断指定 uid 账号在当前时刻对指定模型是否健康且未触底（不限 realm）。
+func (p *Pool) HealthyForModel(uid, model string) bool {
+	return p.HealthyForModelRealm(uid, model, "")
+}
+
 // SetRandomSource 仅供测试注入确定性随机源；生产代码不应调用。
 // 注入源取 n∈[0,n) 后，pickWeighted 的抽签结果完全可预测。
 func (p *Pool) SetRandomSource(fn func(n int64) int64) {

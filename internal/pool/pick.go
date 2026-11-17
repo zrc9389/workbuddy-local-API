@@ -79,6 +79,27 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 		// （熔断/冷却共用 expiry 口径，取较早截止者）。禁用的账号永不参与兜底。
 		return p.pickEarliestExpiryLocked(tried, now, realm, reqModel)
 	}
+
+	// 水位均衡填平（Water-Filling）：找出当前候选中的最小在途并发数 minInFlight，
+	// 仅把 inFlight == minInFlight 的账号送入后续的成本分层与 SWRR 调度。
+	// 确保多个账号的在途并发阶梯式平摊（如 1:0 -> 1:1 -> 2:1 -> 2:2 -> 3:2 -> 3:3），
+	// 杜绝单一账号在途打满才轮到下一账号。
+	if len(cands) > 1 {
+		minInf := int(cands[0].inFlight.Load())
+		for _, e := range cands[1:] {
+			if inf := int(e.inFlight.Load()); inf < minInf {
+				minInf = inf
+			}
+		}
+		var waterCands []*entry
+		for _, e := range cands {
+			if int(e.inFlight.Load()) == minInf {
+				waterCands = append(waterCands, e)
+			}
+		}
+		cands = waterCands
+	}
+
 	// top5 短名单按权重降序截断（而非 credits 单纯降序）：否则闲置补偿根本进不了
 	// 短名单决策，低 credits 但久置的账号会永远排不进 top5。
 	// maxCredits 统一用**全集口径**（tier 过滤前的全部 healthy 候选）：截断排序与
@@ -464,6 +485,21 @@ func (p *Pool) PickBestUIDForModel(model string, candidates []string) string {
 	}
 	if len(entries) == 0 {
 		return candidates[0]
+	}
+	if len(entries) > 1 {
+		minInf := int(entries[0].inFlight.Load())
+		for _, e := range entries[1:] {
+			if inf := int(e.inFlight.Load()); inf < minInf {
+				minInf = inf
+			}
+		}
+		var waterEntries []*entry
+		for _, e := range entries {
+			if int(e.inFlight.Load()) == minInf {
+				waterEntries = append(waterEntries, e)
+			}
+		}
+		entries = waterEntries
 	}
 	var best *entry
 	var totalW float64

@@ -1561,6 +1561,7 @@ export function expiryTone(days) {
             const curH = getBeijingCurrentHour();
             const targetH = (curH + 1) % 24;
             const bucketMs = 4 * 60 * 60 * 1000;
+            const windowEndMs = getBeijingFloorHourMs(now) + 3600000;
             const labels = [];
             for (let s = 6; s >= 0; s--) {
                 const h = (targetH - s * 4 + 48) % 24;
@@ -1569,10 +1570,10 @@ export function expiryTone(days) {
             const counts = Array(7).fill(0);
             const events = (WBState.logs || [])
                 .map(item => item.timestamp)
-                .filter(ts => Number.isFinite(ts) && ts <= now && now - ts < 24 * 60 * 60 * 1000)
+                .filter(ts => Number.isFinite(ts) && ts <= now && windowEndMs - ts <= 24 * 60 * 60 * 1000 && ts <= windowEndMs)
                 .sort((a, b) => a - b);
             for (const ts of events) {
-                const idx = Math.max(0, Math.min(6, 6 - Math.floor((now - ts) / bucketMs)));
+                const idx = Math.max(0, Math.min(6, 6 - Math.floor((windowEndMs - ts) / bucketMs)));
                 counts[idx]++;
             }
             const mu = 0.18, alpha = 0.92, beta = 0.64;
@@ -1581,7 +1582,7 @@ export function expiryTone(days) {
                 for (let i = 0; i < 7; i++) lambdaVals.push(0);
             } else {
                 for (let i = 0; i < 7; i++) {
-                    const bucketEnd = now - (6 - i) * bucketMs;
+                    const bucketEnd = windowEndMs - (6 - i) * bucketMs;
                     let hawkes = 0;
                     for (const ts of events) {
                         if (ts > bucketEnd) break;
@@ -1599,10 +1600,12 @@ export function expiryTone(days) {
         }
 
         function formatTokenCompact(rawTokens) {
-            const n = Number(rawTokens) || 0;
+            const n = Math.max(0, Number(rawTokens) || 0);
+            if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
             if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-            if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-            return `${Math.round(n)}`;
+            if (n === 0) return '0K';
+            const k = n / 1_000;
+            return `${k.toFixed(1)}K`;
         }
 
         function syncUsageData(data) {
@@ -1738,9 +1741,14 @@ export function expiryTone(days) {
                 if (typeof ensureMaintenanceFastPolling === 'function') ensureMaintenanceFastPolling();
             }
             if (WBState.currentChapter === 'tasks' || WBState.currentChapter === 'scheduler') {
-                if (maintenance.steps.some(step => step.failed > 0 || step.state === 'failed')) setPreviewFrameState('error', 800);
-                else if (WBState.tasks.running) if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
-                else if (wasRunning) setPreviewFrameState('success', 800);
+                if (WBState.tasks.running) {
+                    if (typeof setPreviewFrameState === 'function' && WBState.ringState !== 'busy') {
+                        setPreviewFrameState('busy', 0);
+                    }
+                } else if (wasRunning) {
+                    const hasFailed = maintenance.steps.some(step => step.failed > 0 || step.state === 'failed');
+                    setPreviewFrameState(hasFailed ? 'error' : 'success', hasFailed ? 800 : 1200);
+                }
             }
             if (typeof syncDynamicBottomButtons === 'function') syncDynamicBottomButtons();
             WBState.tasks.pausedAll = !!maintenance.paused;
@@ -1806,14 +1814,14 @@ export function expiryTone(days) {
         }
 
         let taskActionPending = false;
-        async function setDailyTasksEnabled(enabled) {
+        async function setDailyTasksEnabled(enabled, silent = false) {
             if (!IS_PROD_ENV) {
                 updateTaskScheduleVisual(enabled);
                 setPreviewFrameState(enabled ? 'success' : 'busy', enabled ? 800 : 600);
                 notifyEditorialStatus(enabled ? 'ALL DAILY TASKS ENABLED' : 'ALL DAILY TASKS DISABLED');
                 return true;
             }
-            setPreviewFrameState(enabled ? 'busy' : 'idle', 0);
+            if (!silent) setPreviewFrameState(enabled ? 'busy' : 'idle', 0);
             notifyEditorialStatus(enabled ? 'ENABLING ALL DAILY TASKS…' : 'DISABLING ALL DAILY TASKS…');
             const data = await safeApiFetch('/panel/api/tasks/schedule', {
                 method: 'POST', body: JSON.stringify({enabled: !!enabled})
@@ -1824,7 +1832,7 @@ export function expiryTone(days) {
                 return false;
             }
             updateTaskScheduleVisual(data.enabled);
-            setPreviewFrameState(data.enabled === !!enabled ? 'success' : 'error', 800);
+            if (!silent) setPreviewFrameState(data.enabled === !!enabled ? 'success' : 'error', 800);
             if (WBState.tasks.running) if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
             notifyEditorialStatus(data.enabled ? 'ALL DAILY TASKS ENABLED' : 'ALL DAILY TASKS DISABLED');
             return data.enabled === !!enabled;
@@ -1834,7 +1842,7 @@ export function expiryTone(days) {
             if (taskActionPending) return;
             taskActionPending = true;
             try {
-                if (!await setDailyTasksEnabled(true)) return;
+                if (!await setDailyTasksEnabled(true, true)) return;
                 if (WBState.tasks.running) {
                     if (WBState.tasks.pausedAll) {
                         const status = await safeApiFetch('/panel/api/maintenance/pause', {method:'POST', body:JSON.stringify({paused:false})}, 10000);
@@ -5867,7 +5875,7 @@ export function expiryTone(days) {
                 return; // 移开时不自动跳回默认时间！保持在最后悬停点
             }
             const hIdx = WBState.usageHoverIdx >= 0 ? WBState.usageHoverIdx : ds.labels.length - 1;
-            const curX = ((hIdx / (ds.labels.length - 1)) * 520).toFixed(1);
+            const curX = (((hIdx + 0.5) / ds.labels.length) * 520).toFixed(1);
             const lineEl = document.getElementById('usage-cursor-line');
             const labelEl = document.getElementById('usage-cursor-readout');
             if (lineEl) {
@@ -6796,11 +6804,11 @@ export function expiryTone(days) {
                 const ds = WBState.usageRange === '24H' ? WBState.usage24h : WBState.usage6h;
                 const maxV = Math.max(1, ...ds.outVals, ...ds.inVals) * 1.15;
                 const w = 520, h = 128;
-                const outPts = ds.outVals.map((v, i) => `${((i / (ds.outVals.length - 1)) * w).toFixed(1)},${(h - 18 - (v / maxV) * (h - 32)).toFixed(1)}`).join(' ');
-                const inPts  = ds.inVals.map((v, i) => `${((i / (ds.inVals.length - 1)) * w).toFixed(1)},${(h - 18 - (v / maxV) * (h - 32)).toFixed(1)}`).join(' ');
+                const outPts = ds.outVals.map((v, i) => `${(((i + 0.5) / ds.outVals.length) * w).toFixed(1)},${(h - 18 - (v / maxV) * (h - 32)).toFixed(1)}`).join(' ');
+                const inPts  = ds.inVals.map((v, i) => `${(((i + 0.5) / ds.inVals.length) * w).toFixed(1)},${(h - 18 - (v / maxV) * (h - 32)).toFixed(1)}`).join(' ');
 
                 const hIdx = WBState.usageHoverIdx >= 0 ? WBState.usageHoverIdx : ds.labels.length - 1;
-                const curX = ((hIdx / (ds.labels.length - 1)) * w).toFixed(1);
+                const curX = (((hIdx + 0.5) / ds.labels.length) * w).toFixed(1);
 
                 const hitCols = ds.labels.map((lb, i) => `
                     <div class="flex-1 h-full cursor-crosshair"
@@ -8251,6 +8259,7 @@ export function expiryTone(days) {
             maintenanceStarting = true;
             if (typeof WBState !== 'undefined' && WBState?.tasks) WBState.tasks.justFinishedState = 'none';
             if (typeof syncDynamicBottomButtons === 'function') syncDynamicBottomButtons();
+            if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
             notifyEditorialStatus('正在启动任务…');
             try {
                 const token = csrfToken || window.csrfToken || '';
@@ -8265,8 +8274,10 @@ export function expiryTone(days) {
                     if (typeof ensureMaintenanceFastPolling === 'function') ensureMaintenanceFastPolling();
                     notifyEditorialStatus('任务正在运行，请等待完成');
                 } else if (response.status === 401 || response.status === 403) {
+                    if (typeof setPreviewFrameState === 'function') setPreviewFrameState('error', 800);
                     notifyEditorialStatus('登录已失效或验证失败，请重新登录');
                 } else if (!response.ok) {
+                    if (typeof setPreviewFrameState === 'function') setPreviewFrameState('error', 800);
                     notifyEditorialStatus('任务启动失败，服务返回 HTTP ' + response.status);
                 } else {
                     const status = await response.json();
@@ -8276,6 +8287,7 @@ export function expiryTone(days) {
                     notifyEditorialStatus('任务已启动');
                 }
             } catch (_) {
+                if (typeof setPreviewFrameState === 'function') setPreviewFrameState('error', 800);
                 notifyEditorialStatus('任务启动请求失败，请检查服务连接');
             } finally {
                 maintenanceStarting = false;
@@ -11282,11 +11294,18 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                     syncEgressData(finalNodes);
                     notifyEditorialStatus('节点测速完成：' + status.completed + '，失败 ' + status.failed);
                     const selected = nodeID ? WBState.nodes.find(n => n.id === nodeID) : null;
-                    const boundFailure = WBState.nodes.some(n => n.bindingCount > 0 && (n.timeout || n.status === 'error'));
+                    const boundFailureCount = WBState.nodes.filter(n => n.bindingCount > 0 && (n.timeout || n.status === 'error')).length;
                     const allTimeout = status.total > 0 && status.failed >= status.total;
-                    const ringFailed = status.cancelled || boundFailure || (!nodeID && allTimeout);
-                    const nodeFailed = nodeID && (!selected || selected.timeout || selected.status === 'error');
-                    finishFeedback(status.cancelled || nodeFailed || (!nodeID && allTimeout) ? 'error' : 'success', ringFailed ? 'error' : 'success');
+                    const nodeFailed = !!(nodeID && (!selected || selected.timeout || selected.status === 'error'));
+                    const isFailed = nodeID ? (status.cancelled || nodeFailed) : (status.cancelled || allTimeout);
+                    const ringFailed = isFailed;
+
+                    let statusMsg = '节点测速完成：' + status.completed + '，失败 ' + status.failed;
+                    if (!nodeID && boundFailureCount > 0 && !allTimeout) {
+                        statusMsg += `（含 ${boundFailureCount} 个账号绑定节点失效）`;
+                    }
+                    notifyEditorialStatus(statusMsg);
+                    finishFeedback(isFailed ? 'error' : 'success', ringFailed ? 'error' : 'success');
                 }
                 renderEditorialStage(false);
                 finishFeedback.rebind();

@@ -53,6 +53,10 @@ type Config struct {
 	AvailableForModel func(model string) []string
 	// PickBest 按请求模型使用 SWRR 从候选账号集合中挑选当前最优健康账号（取代静态哈希取模）。
 	PickBest func(model string, candidates []string) string
+	// HealthyForModel 判断账号在指定模型上是否健康且未触底。
+	// 若注入，ResolveForModel 在账号仅因并发占满（inFlightFull）时仍保留绑定，
+	// 避免并发峰值打断 12h 粘性路由。
+	HealthyForModel func(uid, model string) bool
 }
 
 // Router 会话粘性路由器。
@@ -77,20 +81,18 @@ func New(cfg Config) *Router {
 		cfg.Store = redisstore.Noop{}
 	}
 	if cfg.TTL <= 0 {
-		cfg.TTL = 30 * time.Minute
+		cfg.TTL = 12 * time.Hour
 	}
 	if cfg.DerivedTTL <= 0 || cfg.DerivedTTL > cfg.TTL {
-		if cfg.TTL < 5*time.Minute {
+		if cfg.TTL < 10*time.Minute {
 			cfg.DerivedTTL = cfg.TTL
 		} else {
-			cfg.DerivedTTL = 5 * time.Minute
+			cfg.DerivedTTL = 10 * time.Minute
 		}
 	}
-	if cfg.MaxTurns <= 0 {
-		cfg.MaxTurns = 10
-	}
+	// MaxTurns <= 0 表示显式会话不设硬轮数上限（0 = 不限轮）
 	if cfg.MaxDerivedTurns <= 0 {
-		cfg.MaxDerivedTurns = 5
+		cfg.MaxDerivedTurns = 10
 	}
 	if cfg.GCInterval <= 0 {
 		cfg.GCInterval = 5 * time.Minute
@@ -187,12 +189,16 @@ func (r *Router) maxTurnsFor(key string) int {
 		if r.cfg.MaxDerivedTurns > 0 {
 			return r.cfg.MaxDerivedTurns
 		}
-		return 5
+		return 10
 	}
-	if r.cfg.MaxTurns > 0 {
-		return r.cfg.MaxTurns
+	return r.cfg.MaxTurns
+}
+
+func (r *Router) isHealthy(uid, model string, available map[string]bool) bool {
+	if r.cfg.HealthyForModel != nil {
+		return r.cfg.HealthyForModel(uid, model)
 	}
-	return 10
+	return available[uid]
 }
 
 func (r *Router) isEntryValid(key string, e entry, now time.Time) bool {
@@ -228,11 +234,11 @@ func (r *Router) ResolveForModel(key, model string) (string, bool) {
 	e, found := r.entries[key]
 	r.mu.RUnlock()
 	if found && r.isEntryValid(key, e, now) {
-		if available[e.uid] {
+		if r.isHealthy(e.uid, model, available) {
 			r.touch(key, e.uid, now)
 			return e.uid, true
 		}
-		// 绑定号已冷却/占满 → 失效，落入慢路径重分配。
+		// 绑定号已冷却/不可用 → 失效，落入慢路径重分配。
 	}
 
 	// ── Slow path: 写锁 re-check 后分配 ────────────────────
@@ -242,7 +248,7 @@ func (r *Router) ResolveForModel(key, model string) (string, bool) {
 	// re-check：并发同 key 可能已被其他 goroutine 分配好。
 	var prevUID string
 	if e2, found2 := r.entries[key]; found2 {
-		if r.isEntryValid(key, e2, now) && available[e2.uid] {
+		if r.isEntryValid(key, e2, now) && r.isHealthy(e2.uid, model, available) {
 			e2.turns++
 			e2.lastActive = now
 			r.entries[key] = e2
