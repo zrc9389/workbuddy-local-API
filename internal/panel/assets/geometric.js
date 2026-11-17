@@ -1545,14 +1545,25 @@ export function expiryTone(days) {
             }
         }
 
+        function getBeijingFloorHourMs(ms = Date.now()) {
+            const d = new Date(ms + 8 * 3600000);
+            return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), 0, 0, 0) - 8 * 3600000;
+        }
+
+        function getBeijingHourKey(ms) {
+            const d = new Date(ms + 8 * 3600000);
+            return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}-${String(d.getUTCHours()).padStart(2,'0')}`;
+        }
+
         function rebuildErrorModelSeries() {
             const em = WBState.errorModelSeries;
             const now = Date.now();
             const curH = getBeijingCurrentHour();
+            const targetH = (curH + 1) % 24;
             const bucketMs = 4 * 60 * 60 * 1000;
             const labels = [];
             for (let s = 6; s >= 0; s--) {
-                const h = (curH - s * 4 + 48) % 24;
+                const h = (targetH - s * 4 + 48) % 24;
                 labels.push(String(h).padStart(2, '0') + ':00');
             }
             const counts = Array(7).fill(0);
@@ -1566,14 +1577,20 @@ export function expiryTone(days) {
             }
             const mu = 0.18, alpha = 0.92, beta = 0.64;
             const lambdaVals = [];
-            for (let i = 0; i < 7; i++) {
-                const bucketEnd = now - (6 - i) * bucketMs;
-                let value = mu;
-                for (const ts of events) {
-                    if (ts > bucketEnd) break;
-                    value += alpha * Math.exp(-beta * ((bucketEnd - ts) / 3600000));
+            if (events.length === 0) {
+                for (let i = 0; i < 7; i++) lambdaVals.push(0);
+            } else {
+                for (let i = 0; i < 7; i++) {
+                    const bucketEnd = now - (6 - i) * bucketMs;
+                    let hawkes = 0;
+                    for (const ts of events) {
+                        if (ts > bucketEnd) break;
+                        hawkes += alpha * Math.exp(-beta * ((bucketEnd - ts) / 3600000));
+                    }
+                    let value = hawkes > 0 ? (mu + hawkes) : 0;
+                    if (value < 0.01) value = 0;
+                    lambdaVals.push(Math.max(0, Math.min(4.2, value)));
                 }
-                lambdaVals.push(Math.max(0, Math.min(4.2, value)));
             }
             em.labels = labels;
             em.rawCounts = counts;
@@ -1601,38 +1618,80 @@ export function expiryTone(days) {
                 comp: String(item.completion_tokens || 0), credits: formatCredits(item.credits)
             }));
 
-            // 按照最近 24 小时自然时间槽连续补零对齐
             const now = Date.now();
             const hourMs = 3600000;
             const hourPoints = (data.series || []).filter(p => p.scope === 'hour' || (p.t && String(p.t).includes('T')));
             const pointMap = new Map();
+
             for (const p of hourPoints) {
-                if (!p.t) continue;
-                let ts = Date.parse(p.t);
-                if (isNaN(ts) && typeof p.t === 'string') {
-                    ts = Date.parse(p.t.length === 13 ? p.t + ':00:00Z' : p.t);
+                let bucketStartMs = null;
+                if (typeof p.ts_ms === 'number' && p.ts_ms > 0) {
+                    bucketStartMs = getBeijingFloorHourMs(p.ts_ms);
+                } else if (p.t) {
+                    let ts = Date.parse(p.t);
+                    if (isNaN(ts) && typeof p.t === 'string') {
+                        ts = Date.parse(p.t.length === 13 ? p.t + ':00:00' : p.t);
+                    }
+                    if (!isNaN(ts)) {
+                        bucketStartMs = getBeijingFloorHourMs(ts);
+                    }
                 }
-                if (!isNaN(ts)) {
-                    const bd = new Date(ts + (new Date(ts).getTimezoneOffset() + 480) * 60000);
-                    const key = `${bd.getFullYear()}-${String(bd.getMonth()+1).padStart(2,'0')}-${String(bd.getDate()).padStart(2,'0')}-${String(bd.getHours()).padStart(2,'0')}`;
-                    pointMap.set(key, { in: p.prompt_tokens || 0, out: p.completion_tokens || 0 });
+                if (bucketStartMs !== null) {
+                    const key = getBeijingHourKey(bucketStartMs);
+                    const existing = pointMap.get(key) || { in: 0, out: 0 };
+                    existing.in += (p.prompt_tokens || 0);
+                    existing.out += (p.completion_tokens || 0);
+                    pointMap.set(key, existing);
                 }
             }
+
+            const curStartMs = getBeijingFloorHourMs(now);
+            const targetH = (getBeijingCurrentHour() + 1) % 24;
 
             const labels24 = [];
             const in24 = [];
             const out24 = [];
             for (let i = 23; i >= 0; i--) {
-                const targetTime = now - i * hourMs;
-                const bd = new Date(targetTime + (new Date(targetTime).getTimezoneOffset() + 480) * 60000);
-                const key = `${bd.getFullYear()}-${String(bd.getMonth()+1).padStart(2,'0')}-${String(bd.getDate()).padStart(2,'0')}-${String(bd.getHours()).padStart(2,'0')}`;
-                labels24.push(`${String(bd.getHours()).padStart(2,'0')}:00`);
+                const bStart = curStartMs - i * hourMs;
+                const bEnd = bStart + hourMs;
+                const key = getBeijingHourKey(bStart);
+                const dStart = new Date(bStart + 8 * hourMs);
+                const dEnd = new Date(bEnd + 8 * hourMs);
+                const sh = String(dStart.getUTCHours()).padStart(2, '0');
+                const eh = String(dEnd.getUTCHours()).padStart(2, '0');
+                labels24.push(`${sh}:00–${eh}:00`);
                 const val = pointMap.get(key) || { in: 0, out: 0 };
                 in24.push(val.in);
                 out24.push(val.out);
             }
-            WBState.usage24h = { labels: labels24, inVals: in24, outVals: out24 };
-            WBState.usage6h = { labels: labels24.slice(-6), inVals: in24.slice(-6), outVals: out24.slice(-6) };
+
+            const ticks24 = [];
+            for (let s = 6; s >= 0; s--) {
+                const h = (targetH - s * 4 + 48) % 24;
+                ticks24.push(String(h).padStart(2, '0') + ':00');
+            }
+
+            const labels6 = labels24.slice(-6);
+            const in6 = in24.slice(-6);
+            const out6 = out24.slice(-6);
+            const ticks6 = [];
+            for (let s = 6; s >= 0; s--) {
+                const h = (targetH - s + 48) % 24;
+                ticks6.push(String(h).padStart(2, '0') + ':00');
+            }
+
+            WBState.usage24h = {
+                labels: labels24,
+                axisTicks: ticks24,
+                inVals: in24,
+                outVals: out24
+            };
+            WBState.usage6h = {
+                labels: labels6,
+                axisTicks: ticks6,
+                inVals: in6,
+                outVals: out6
+            };
         }
 
         let maintenanceFingerprint = '';
@@ -1754,18 +1813,18 @@ export function expiryTone(days) {
                 notifyEditorialStatus(enabled ? 'ALL DAILY TASKS ENABLED' : 'ALL DAILY TASKS DISABLED');
                 return true;
             }
-            const finishFeedback = beginActionFeedback();
+            setPreviewFrameState(enabled ? 'busy' : 'idle', 0);
             notifyEditorialStatus(enabled ? 'ENABLING ALL DAILY TASKS…' : 'DISABLING ALL DAILY TASKS…');
             const data = await safeApiFetch('/panel/api/tasks/schedule', {
                 method: 'POST', body: JSON.stringify({enabled: !!enabled})
             }, 10000);
             if (!data || typeof data.enabled !== 'boolean') {
-                finishFeedback('error');
+                setPreviewFrameState('error', 800);
                 notifyEditorialStatus('每日排程更新失败，任务未启动');
                 return false;
             }
             updateTaskScheduleVisual(data.enabled);
-            finishFeedback(data.enabled === !!enabled ? 'success' : 'error');
+            setPreviewFrameState(data.enabled === !!enabled ? 'success' : 'error', 800);
             if (WBState.tasks.running) if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
             notifyEditorialStatus(data.enabled ? 'ALL DAILY TASKS ENABLED' : 'ALL DAILY TASKS DISABLED');
             return data.enabled === !!enabled;
@@ -4868,7 +4927,7 @@ export function expiryTone(days) {
 
     // 积分用量时间轴截止位：按照用户明确规范，严格锚定真实北京时间“后一位”（当前小时 + 1）作为时段结算截止点
     function getBeijingUsageTargetHour() {
-        return getBeijingCurrentHour();
+        return (getBeijingCurrentHour() + 1) % 24;
     }
 
         const WBState = {
@@ -5469,13 +5528,13 @@ export function expiryTone(days) {
             if (state === "busy" || state === "yellow") {
                 WBState.ringState = "busy";
                 if (window.triggerModelSpinAcceleration) window.triggerModelSpinAcceleration(durationMs || 0);
-                // 持续忙态（durationMs <= 0 或 Infinity）不自动切回 idle，由调用者在测速/长任务结束时主动切走；设 5 分钟极端死锁防护
-                const autoResetMs = (durationMs === 0 || durationMs === Infinity || durationMs === null)
-                    ? 300000
-                    : (durationMs > 0 ? durationMs : 10000);
-                WBState._ringTimer = setTimeout(() => {
-                    if (WBState.ringState === "busy") setPreviewFrameState("idle");
-                }, autoResetMs);
+                // 持续忙态（durationMs === 0 或 Infinity 或 null）不设自动复位定时器，由调用方在任务结束时主动切回；仅正数毫秒设置自动复位
+                if (durationMs !== 0 && durationMs !== Infinity && durationMs !== null) {
+                    const autoResetMs = durationMs > 0 ? durationMs : 10000;
+                    WBState._ringTimer = setTimeout(() => {
+                        if (WBState.ringState === "busy") setPreviewFrameState("idle");
+                    }, autoResetMs);
+                }
             } else if (state === "error" || state === "red") {
                 WBState.ringState = "error";
                 if (canvasEl) {
@@ -5569,15 +5628,11 @@ export function expiryTone(days) {
             let t1 = CHAPTER_META[ch]?.btn1 || '[ ACTION 01 ]';
             let t2 = CHAPTER_META[ch]?.btn2 || '[ ACTION 02 ]';
 
-            // 重置基础类名：关于页面更新态以及任务执行页面的运行/完成状态变色反馈
+            // 重置基础类名：严格仅关于（sphere）页面更新态支持变色，其余页面（含 tasks）始终保持默认白框
             if (ch === 'sphere' && (WBState.sphereUpdateApplied || (WBState.sphereUpdateReady && !WBState.sphereUpdating))) {
                 btn1.className = 'editorial-action-btn border border-emerald-400 hover:border-emerald-300 text-emerald-300 bg-emerald-400/10 transition-colors';
             } else if (ch === 'sphere' && (WBState.sphereCheckingUpdate || WBState.sphereUpdating)) {
                 btn1.className = 'editorial-action-btn border border-amber-400 hover:border-amber-300 text-amber-300 bg-amber-400/10 animate-pulse transition-colors';
-            } else if ((ch === 'tasks' || ch === 'scheduler') && (maintenanceStarting || WBState.tasks.running)) {
-                btn1.className = 'editorial-action-btn border border-amber-400 hover:border-amber-300 text-amber-300 bg-amber-400/10 animate-pulse transition-colors';
-            } else if ((ch === 'tasks' || ch === 'scheduler') && !WBState.tasks.running && WBState.tasks.justFinishedState === 'success') {
-                btn1.className = 'editorial-action-btn border border-emerald-400 hover:border-emerald-300 text-emerald-300 bg-emerald-400/10 transition-colors';
             } else {
                 btn1.className = 'editorial-action-btn border border-white/25 hover:border-white bg-white/[0.04] text-white/80 hover:text-white transition-colors';
             }
@@ -5636,30 +5691,9 @@ export function expiryTone(days) {
                     t2 = '[ + IMPORT SUBSCRIPTION ]';
                 }
             } else if (ch === 'tasks' || ch === 'scheduler') {
-                if (maintenanceStarting || WBState.tasks.running) {
-                    t1 = '[ RUNNING... ]';
-                } else if (WBState.tasks.justFinishedState === 'success') {
-                    t1 = '[ COMPLETED ]';
-                } else {
-                    t1 = '[ START ALL TASKS ]';
-                }
+                t1 = '[ START ALL TASKS ]';
                 t2 = WBState.tasks.scheduleEnabled === false ? '[ ENABLE ALL TASKS ]' : '[ DISABLE ALL TASKS ]';
             } else if (ch === 'usage') {
-                const targetH = getBeijingUsageTargetHour();
-                WBState.usage24h.labels = [];
-                for (let s = 6; s >= 0; s--) {
-                    const h = (targetH - s * 4 + 48) % 24;
-                    WBState.usage24h.labels.push(String(h).padStart(2, '0') + ':00');
-                }
-                WBState.usage6h.labels = [];
-                for (let s = 5; s >= 0; s--) {
-                    const h = (targetH - s + 48) % 24;
-                    WBState.usage6h.labels.push(String(h).padStart(2, '0') + ':00');
-                }
-                if (WBState.usage24h.outVals && WBState.usage24h.outVals.length >= 6) {
-                    WBState.usage6h.outVals = WBState.usage24h.outVals.slice(-6);
-                    WBState.usage6h.inVals = WBState.usage24h.inVals.slice(-6);
-                }
                 t1 = WBState.usageView === 'CURVE' ? '[ MODEL RANK ]' : '[ TIME CURVE ]';
                 t2 = WBState.usageRange === '6H' ? '[ TIME: 6H ]' : '[ TIME: 24H ]';
             } else if (ch === "packages") {
@@ -5769,9 +5803,15 @@ export function expiryTone(days) {
                 l2.textContent = '运行状态'; v2.textContent = (WBState.tasks.scheduleEnabled === false || WBState.tasks.pausedAll) ? '排程停用' : (WBState.tasks.running ? '执行锁定' : '空闲就绪');
                 l3.textContent = '异常工序'; v3.textContent = WBState.tasks.scheduleEnabled === false ? '每日调度已暂停' : (faultSteps > 0 ? `${faultSteps} 项含报错` : '全部正常');
             } else if (ch === 'usage') {
-                const ds = WBState.usageRange === '24H' ? WBState.usage24h : WBState.usage6h;
-                const sumOut = ds.outVals.reduce((a, b) => a + b, 0);
-                const sumIn  = ds.inVals.reduce((a, b) => a + b, 0);
+                let sumOut = 0, sumIn = 0;
+                if (WBState.usageRange === '24H' && WBState.usageTotals) {
+                    sumOut = WBState.usageTotals.completion_tokens || 0;
+                    sumIn  = WBState.usageTotals.prompt_tokens || 0;
+                } else {
+                    const ds = WBState.usageRange === '24H' ? WBState.usage24h : WBState.usage6h;
+                    sumOut = (ds.outVals || []).reduce((a, b) => a + b, 0);
+                    sumIn  = (ds.inVals || []).reduce((a, b) => a + b, 0);
+                }
                 l1.textContent = WBState.usageRange === '24H' ? '24H 输出总量' : '6H 输出总量';
                 v1.textContent = formatTokenCompact(sumOut);
                 l2.textContent = '输入总量'; v2.textContent = formatTokenCompact(sumIn);
@@ -6736,7 +6776,7 @@ export function expiryTone(days) {
                              >
                             <span class="text-white font-medium truncate">${r.name}</span>
                             <span class="text-white/55 tabular-nums-left">请求 <strong class="text-white/90 font-normal font-['Space_Grotesk']">${r.reqs}</strong></span>
-                            <span class="text-white/55 tabular-nums-left">I/O <strong class="text-white/90 font-normal font-['Space_Grotesk']">${r.prompt} / ${r.comp}</strong></span>
+                            <span class="text-white/55 tabular-nums-left">I/O <strong class="text-white/90 font-normal font-['Space_Grotesk']">${formatTokenCompact(r.prompt)} / ${formatTokenCompact(r.comp)}</strong></span>
                             <span class="text-white/85 font-['Space_Grotesk'] tabular-nums-left">${formatCredits(r.credits)} 积分</span>
                         </div>
                     `).join('');
@@ -6794,8 +6834,9 @@ export function expiryTone(days) {
                             <div class="absolute inset-0 flex">${hitCols}</div>
                         </div>
                         <div class="relative w-full h-4 mt-1 text-[9.5px] tracking-[0.14em] text-white/40 font-mono">
-                            ${ds.labels.map((l, i) => {
-                                const pct = (i / (ds.labels.length - 1)) * 100;
+                            ${(ds.axisTicks || ds.labels).map((l, i) => {
+                                const ticks = ds.axisTicks || ds.labels;
+                                const pct = (i / (ticks.length - 1)) * 100;
                                 return `<span class="absolute whitespace-nowrap" style="left:${pct.toFixed(2)}%; transform:translateX(-50%);">${l}</span>`;
                             }).join('')}
                         </div>
@@ -6966,7 +7007,7 @@ export function expiryTone(days) {
                                         <span id="pkg-model-readout">账号 ${initP.acc.name} — 积分 ${initP.bal.toLocaleString()} / 额度 ${initP.quota.toLocaleString()} / 独立包 ${initPacks.length}</span>
                                         <span class="text-white/60 font-mono">BALANCE / QUOTA // 账号额度统计</span>
                                     </div>
-                                    <svg viewBox="0 0 520 70" class="w-full h-[70px] overflow-visible">
+                                    <svg data-pkg-chart="account" viewBox="0 0 520 70" class="w-full h-[70px] overflow-visible cursor-crosshair">
                                         ${clipDef}
                                         <line x1="0" y1="62" x2="520" y2="62" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
                                         <line x1="0" y1="16" x2="520" y2="16" stroke="rgba(255,255,255,0.04)" stroke-dasharray="2 3" stroke-width="1" />
@@ -7017,7 +7058,7 @@ export function expiryTone(days) {
                                     <span id="pkg-model-readout">时段 ${initP.day}天 — 存活积分 ${initP.survival.toFixed(1)}% (${(initP.survivingCredits || 0).toLocaleString()}) / 预计到期 ${initP.expAcc} 账号 / 仍存活 ${initP.remainingPacks} 包 / 临期 ${initP.expiringPacks} 包</span>
                                     <span class="text-white/60 font-mono">已知到期包剩余占比</span>
                                 </div>
-                                <svg viewBox="0 0 520 86" class="w-full h-[86px] overflow-visible">
+                                <svg data-pkg-chart="expiry" viewBox="0 0 520 86" class="w-full h-[86px] overflow-visible cursor-crosshair">
                                     ${clipDef}
                                     <line x1="40" y1="0" x2="40" y2="70" stroke="#ff5c74" stroke-width="1" stroke-dasharray="2 3" opacity="0.65" />
                                     <line x1="210" y1="0" x2="210" y2="70" stroke="rgba(255,255,255,0.22)" stroke-width="1" stroke-dasharray="2 3" />
@@ -7176,6 +7217,7 @@ export function expiryTone(days) {
 
                     // 离散观测脉冲柱
                     const impulseBars = em.rawCounts.map((cnt, i) => {
+                        if (cnt <= 0) return '';
                         const bx = ((i / (em.rawCounts.length - 1)) * w).toFixed(1);
                         const bh = Math.max(2, (cnt / maxL) * (h - 30));
                         const by = (h - 18 - bh).toFixed(1);
@@ -11445,8 +11487,51 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                 const dx = e.clientX - el._pkgStartX;
                 const dy = e.clientY - el._pkgStartY;
                 el._pkgStartX = null;
-                if (Math.abs(dx) >= 40 && Math.abs(dx) > Math.abs(dy)) {
+                if (Math.abs(dx) >= 60 && Math.abs(dx) > Math.abs(dy)) {
                     switchPackageModelMode();
+                }
+            }
+        }, { passive: true });
+
+        document.addEventListener('mousemove', (e) => {
+            const svgEl = e.target?.closest?.('svg[data-pkg-chart]');
+            if (!svgEl) return;
+            const mode = svgEl.getAttribute('data-pkg-chart');
+            const rect = svgEl.getBoundingClientRect();
+            if (rect.width <= 0) return;
+            const svgX = ((e.clientX - rect.left) / rect.width) * 520;
+            if (mode === 'account') {
+                const xCoords = [40, 120, 200, 280, 360, 440];
+                const sortedAccs = sortAccountsAlphanumeric(WBState.accounts.filter(a => !a.blocked && a.state !== 'BLOCKED'));
+                const pageSize = 6;
+                const slice = sortedAccs.slice((WBState.packageModelAccountPage || 0) * pageSize, ((WBState.packageModelAccountPage || 0) + 1) * pageSize);
+                const count = Math.min(slice.length, xCoords.length);
+                if (count <= 0) return;
+                let nearestIdx = 0;
+                let minDiff = Infinity;
+                for (let i = 0; i < count; i++) {
+                    const diff = Math.abs(xCoords[i] - svgX);
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        nearestIdx = i;
+                    }
+                }
+                if (typeof hoverAccountModelPoint === 'function') {
+                    hoverAccountModelPoint(nearestIdx);
+                }
+            } else if (mode === 'expiry') {
+                const xCoords = [40, 110, 210, 310, 410, 500];
+                let nearestIdx = 0;
+                let minDiff = Infinity;
+                for (let i = 0; i < xCoords.length; i++) {
+                    const diff = Math.abs(xCoords[i] - svgX);
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        nearestIdx = i;
+                    }
+                }
+                if (typeof hoverPackageModelPoint === 'function') {
+                    hoverPackageModelPoint(nearestIdx);
                 }
             }
         }, { passive: true });

@@ -510,6 +510,7 @@ type KeyedAgg struct {
 type Point struct {
 	T     string `json:"t"`
 	Scope string `json:"scope"` // "hour" | "day"
+	TSMs  int64  `json:"ts_ms,omitempty"`
 	Agg
 }
 
@@ -813,7 +814,11 @@ func (r *Recorder) SnapshotWindow(w Window, nicks map[string]string, currentRate
 	}
 	sort.Strings(dayKeys)
 	for _, k := range dayKeys {
-		snap.Series = append(snap.Series, Point{T: k, Scope: "day", Agg: daySeries[k].finish()})
+		var tsMs int64
+		if t, ok := bucketTime("d:" + k); ok {
+			tsMs = t.UnixMilli()
+		}
+		snap.Series = append(snap.Series, Point{T: k, Scope: "day", TSMs: tsMs, Agg: daySeries[k].finish()})
 	}
 	hourKeys := make([]string, 0, len(hourSeries))
 	for k := range hourSeries {
@@ -821,7 +826,11 @@ func (r *Recorder) SnapshotWindow(w Window, nicks map[string]string, currentRate
 	}
 	sort.Strings(hourKeys)
 	for _, k := range hourKeys {
-		snap.Series = append(snap.Series, Point{T: k, Scope: "hour", Agg: hourSeries[k].finish()})
+		var tsMs int64
+		if t, ok := bucketTime("h:" + k); ok {
+			tsMs = t.UnixMilli()
+		}
+		snap.Series = append(snap.Series, Point{T: k, Scope: "hour", TSMs: tsMs, Agg: hourSeries[k].finish()})
 	}
 
 	if r.path != "" {
