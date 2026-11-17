@@ -168,6 +168,8 @@ type Config struct {
 		DeviceTokenFile string `json:"device_token_file"`
 		// PassthroughIP 是否透传客户端 IP 给上游（默认 false，反代安全边界）。
 		PassthroughIP bool `json:"passthrough_ip"`
+		// TLSProfile 出站 TLS 指纹档位："chrome_auto"（默认，Chrome uTLS 自动指纹）或 "go_h1"（标准 Go HTTP/1.1 回退）。
+		TLSProfile string `json:"tls_profile"`
 	} `json:"upstream"`
 
 	Features struct {
@@ -299,6 +301,7 @@ func Default() *Config {
 	// HeaderTimeoutSeconds/IdleTimeoutSeconds 默认 0（未设置态），回落见 normalize。
 	c.Upstream.HeaderTimeoutSeconds = 0
 	c.Upstream.IdleTimeoutSeconds = 0
+	c.Upstream.TLSProfile = "chrome_auto"
 	// Global.Enabled 缺省 true（纯 CN 行为不变：CN 账号恒判 cn，global base 不被使用）；
 	// ChatBase/BillingBase 缺省空（回落内置默认）。
 	c.Global.Enabled = true
@@ -471,6 +474,9 @@ func applyEnv(c *Config) {
 			c.Upstream.PassthroughIP = b
 		}
 	}
+	if v := os.Getenv("WB2A_TLS_PROFILE"); v != "" {
+		c.Upstream.TLSProfile = v
+	}
 	if v := os.Getenv("WB2A_SANITIZE_FINGERPRINTS"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			c.Features.SanitizeBlacklistFingerprints = b
@@ -630,6 +636,14 @@ func (c *Config) normalize() error {
 	}
 	if c.Upstream.IdleTimeoutSeconds <= 0 {
 		c.Upstream.IdleTimeoutSeconds = 300
+	}
+	switch p := strings.ToLower(strings.TrimSpace(c.Upstream.TLSProfile)); p {
+	case "", "chrome_auto":
+		c.Upstream.TLSProfile = "chrome_auto"
+	case "go_h1":
+		c.Upstream.TLSProfile = "go_h1"
+	default:
+		return fmt.Errorf("upstream.tls_profile: %q 不是合法值（chrome_auto / go_h1）", c.Upstream.TLSProfile)
 	}
 	if !strings.HasPrefix(c.Listen, ":") && !strings.Contains(c.Listen, ":") {
 		c.Listen = ":" + c.Listen

@@ -897,3 +897,161 @@ func TestServerReadTimeout(t *testing.T) {
 		t.Error("unparsable read_timeout should fail fast")
 	}
 }
+
+// TestUpstreamTLSProfileDefault 默认值为 chrome_auto，旧配置缺省与空串/纯空白均回落 chrome_auto。
+func TestUpstreamTLSProfileDefault(t *testing.T) {
+	c := Default()
+	if c.Upstream.TLSProfile != "chrome_auto" {
+		t.Fatalf("Default().Upstream.TLSProfile=%q want chrome_auto", c.Upstream.TLSProfile)
+	}
+	if err := c.normalize(); err != nil {
+		t.Fatalf("normalize default: %v", err)
+	}
+	if c.Upstream.TLSProfile != "chrome_auto" {
+		t.Fatalf("normalized default=%q want chrome_auto", c.Upstream.TLSProfile)
+	}
+
+	c2, err := Load("")
+	if err != nil {
+		t.Fatalf("Load empty: %v", err)
+	}
+	if c2.Upstream.TLSProfile != "chrome_auto" {
+		t.Errorf("Load(\"\").Upstream.TLSProfile=%q want chrome_auto", c2.Upstream.TLSProfile)
+	}
+
+	// 旧配置（无 tls_profile 键）、显式空串、纯空白均回落 chrome_auto。
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"legacy_missing", `{"upstream":{"timeout_seconds":90}}`},
+		{"explicit_empty", `{"upstream":{"tls_profile":""}}`},
+		{"whitespace_only", `{"upstream":{"tls_profile":"  \t \n "}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fp := filepath.Join(dir, "c.json")
+			if err := os.WriteFile(fp, []byte(tc.raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := Load(fp)
+			if err != nil {
+				t.Fatalf("Load(%s): %v", tc.name, err)
+			}
+			if got.Upstream.TLSProfile != "chrome_auto" {
+				t.Errorf("tls_profile=%q want chrome_auto", got.Upstream.TLSProfile)
+			}
+		})
+	}
+}
+
+// TestUpstreamTLSProfileJSON JSON 显式配置 go_h1 与 chrome_auto 正确解析。
+func TestUpstreamTLSProfileJSON(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{`{"upstream":{"tls_profile":"go_h1"}}`, "go_h1"},
+		{`{"upstream":{"tls_profile":"chrome_auto"}}`, "chrome_auto"},
+	}
+	for _, tc := range cases {
+		dir := t.TempDir()
+		fp := filepath.Join(dir, "c.json")
+		if err := os.WriteFile(fp, []byte(tc.raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := Load(fp)
+		if err != nil {
+			t.Fatalf("Load(%s): %v", tc.raw, err)
+		}
+		if c.Upstream.TLSProfile != tc.want {
+			t.Errorf("raw=%s got=%q want=%q", tc.raw, c.Upstream.TLSProfile, tc.want)
+		}
+	}
+}
+
+// TestUpstreamTLSProfileEnvOverride WB2A_TLS_PROFILE 覆盖默认与 JSON 配置。
+func TestUpstreamTLSProfileEnvOverride(t *testing.T) {
+	t.Run("override_default", func(t *testing.T) {
+		t.Setenv("WB2A_TLS_PROFILE", "go_h1")
+		c, err := Load("")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if c.Upstream.TLSProfile != "go_h1" {
+			t.Errorf("tls_profile=%q want go_h1", c.Upstream.TLSProfile)
+		}
+	})
+
+	t.Run("override_json_with_case_and_space", func(t *testing.T) {
+		dir := t.TempDir()
+		fp := filepath.Join(dir, "c.json")
+		if err := os.WriteFile(fp, []byte(`{"upstream":{"tls_profile":"chrome_auto"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("WB2A_TLS_PROFILE", "  GO_H1 \t")
+		c, err := Load(fp)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if c.Upstream.TLSProfile != "go_h1" {
+			t.Errorf("tls_profile=%q want go_h1", c.Upstream.TLSProfile)
+		}
+	})
+
+	t.Run("env_invalid_rejected", func(t *testing.T) {
+		t.Setenv("WB2A_TLS_PROFILE", "safari_auto")
+		_, err := Load("")
+		if err == nil {
+			t.Fatal("want error for invalid WB2A_TLS_PROFILE")
+		}
+		if !strings.Contains(err.Error(), "upstream.tls_profile") {
+			t.Errorf("error should mention upstream.tls_profile: %v", err)
+		}
+	})
+}
+
+// TestUpstreamTLSProfileNormalizeAndInvalid 验证大小写/空白归一化与非法值快速失败。
+func TestUpstreamTLSProfileNormalizeAndInvalid(t *testing.T) {
+	validCases := []struct {
+		in   string
+		want string
+	}{
+		{"  Chrome_Auto  ", "chrome_auto"},
+		{"\tCHROME_AUTO\n", "chrome_auto"},
+		{"  GO_H1 ", "go_h1"},
+		{"Go_H1", "go_h1"},
+		{"   ", "chrome_auto"},
+	}
+	for _, tc := range validCases {
+		c, err := ParseConfig([]byte(`{"upstream":{"tls_profile":` + mustJSON(t, tc.in) + `}}`))
+		if err != nil {
+			t.Fatalf("ParseConfig(%q): %v", tc.in, err)
+		}
+		if c.Upstream.TLSProfile != tc.want {
+			t.Errorf("input=%q got=%q want=%q", tc.in, c.Upstream.TLSProfile, tc.want)
+		}
+	}
+
+	invalidCases := []string{"firefox", "chrome", "h1", "go_h2", "auto"}
+	for _, bad := range invalidCases {
+		_, err := ParseConfig([]byte(`{"upstream":{"tls_profile":` + mustJSON(t, bad) + `}}`))
+		if err == nil {
+			t.Errorf("ParseConfig(%q): want error, got nil", bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), "upstream.tls_profile") {
+			t.Errorf("ParseConfig(%q): error %q should mention upstream.tls_profile", bad, err.Error())
+		}
+	}
+}
+
+func mustJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}

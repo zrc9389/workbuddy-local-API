@@ -68,7 +68,8 @@
     "client_name": "",
     "device_token": "",
     "device_token_file": "",
-    "passthrough_ip": false
+    "passthrough_ip": false,
+    "tls_profile": "chrome_auto"
   },
   "features": {
     "sanitize_blacklist_fingerprints": true,

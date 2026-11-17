@@ -35,7 +35,7 @@ type proxyTransportKey struct {
 }
 type proxyTransportEntry struct {
 	hash [32]byte
-	tr   *http.Transport
+	rt   http.RoundTripper
 	used time.Time
 }
 type proxyFailure struct {
@@ -84,13 +84,27 @@ func (f failClosedDirectTransport) CloseIdleConnections() {
 	}
 }
 
-type safeProxyTransport struct{ tr *http.Transport }
+type safeProxyTransport struct {
+	tr *http.Transport
+	rt http.RoundTripper
+}
+
+func (s safeProxyTransport) target() http.RoundTripper {
+	if s.rt != nil {
+		return s.rt
+	}
+	if s.tr != nil {
+		return s.tr
+	}
+	return nil
+}
 
 func (s safeProxyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if s.tr == nil {
+	rt := s.target()
+	if rt == nil {
 		return nil, errors.New("account proxy transport is not initialized")
 	}
-	resp, err := s.tr.RoundTrip(r)
+	resp, err := rt.RoundTrip(r)
 	if err != nil {
 		if e := r.Context().Err(); e != nil {
 			return nil, e
@@ -105,9 +119,7 @@ func (s safeProxyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 // CloseIdleConnections 确保账号级代理 Transport 的空闲连接在传输失败时能被主动回收
 func (s safeProxyTransport) CloseIdleConnections() {
-	if s.tr != nil {
-		s.tr.CloseIdleConnections()
-	}
+	roundTripCloseIdle(s.target())
 }
 func ValidateProxyURL(raw string) error { return auth.ValidateProxyURL(raw) }
 func (c *Client) ForgetTransport(uid string) {
@@ -118,7 +130,7 @@ func (c *Client) ForgetTransport(uid string) {
 	defer proxyTransports.Unlock()
 	for k, v := range proxyTransports.entries {
 		if k.client == c && k.uid == uid {
-			v.tr.CloseIdleConnections()
+			roundTripCloseIdle(v.rt)
 			delete(proxyTransports.entries, k)
 		}
 	}
@@ -170,14 +182,19 @@ func (c *Client) accountTransport(base *http.Client, a *auth.Auth) http.RoundTri
 			return proxyFailure{}
 		}
 	}
+	// Custom TLS dial hooks can bypass proxy machinery. Reject on base tr before building any proxy transport.
+	if tr.DialTLS != nil || tr.DialTLSContext != nil {
+		return proxyFailure{}
+	}
+	profile := c.effectiveTLSProfile()
 	key := proxyTransportKey{c, tr, uid}
-	hash := sha256.Sum256([]byte(raw))
+	hash := sha256.Sum256([]byte(profile + "\x00" + raw))
 	now := time.Now()
 	proxyTransports.Lock()
 	defer proxyTransports.Unlock()
 	for k, v := range proxyTransports.entries {
 		if now.Sub(v.used) > proxyCacheTTL {
-			v.tr.CloseIdleConnections()
+			roundTripCloseIdle(v.rt)
 			delete(proxyTransports.entries, k)
 		}
 	}
@@ -185,9 +202,9 @@ func (c *Client) accountTransport(base *http.Client, a *auth.Auth) http.RoundTri
 		if v.hash == hash {
 			v.used = now
 			proxyTransports.entries[key] = v
-			return safeProxyTransport{v.tr}
+			return safeProxyTransport{rt: v.rt}
 		}
-		v.tr.CloseIdleConnections()
+		roundTripCloseIdle(v.rt)
 		delete(proxyTransports.entries, key)
 	}
 	if len(proxyTransports.entries) >= proxyCacheLimit {
@@ -199,23 +216,29 @@ func (c *Client) accountTransport(base *http.Client, a *auth.Auth) http.RoundTri
 				at = v.used
 			}
 		}
-		proxyTransports.entries[oldest].tr.CloseIdleConnections()
+		roundTripCloseIdle(proxyTransports.entries[oldest].rt)
 		delete(proxyTransports.entries, oldest)
 	}
 	u, _ := url.Parse(raw)
-	clone := tr.Clone()
-	clone.Proxy = http.ProxyURL(u)
-	// 温和收拢空闲连接池：避免单机私有部署闲置时持有过多死连接与缓冲
-	clone.MaxIdleConns = 4
-	clone.MaxIdleConnsPerHost = 2
-	clone.MaxConnsPerHost = 4
-	clone.IdleConnTimeout = 30 * time.Second
-	// Custom TLS dial hooks can bypass net/http's proxy machinery. Reject rather than leak direct.
-	if clone.DialTLS != nil || clone.DialTLSContext != nil {
-		return proxyFailure{}
+	var rt http.RoundTripper
+	if profile == TLSProfileGoH1 {
+		clone := tr.Clone()
+		clone.Proxy = http.ProxyURL(u)
+		// 温和收拢空闲连接池：避免单机私有部署闲置时持有过多死连接与缓冲
+		clone.MaxIdleConns = 4
+		clone.MaxIdleConnsPerHost = 2
+		clone.MaxConnsPerHost = 4
+		clone.IdleConnTimeout = idleConnTimeout
+		rt = clone
+	} else {
+		ut, err := newUTLSProxyTransport(tr, u)
+		if err != nil {
+			return proxyFailure{}
+		}
+		rt = ut
 	}
-	proxyTransports.entries[key] = proxyTransportEntry{hash, clone, now}
-	return safeProxyTransport{clone}
+	proxyTransports.entries[key] = proxyTransportEntry{hash, rt, now}
+	return safeProxyTransport{rt: rt}
 }
 func (c *Client) jsonDo(req *http.Request, a *auth.Auth) (*http.Response, error) {
 	if c == nil || c.HTTP == nil {

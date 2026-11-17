@@ -845,6 +845,19 @@ type Client struct {
 	// false 时即便用户 auth 写了 realm=global 也**不**路由到 global base——
 	// chatBase/billingBase 返回 CN base，路径也走 CN（双保险，与 auth.Realm 的开关闸呼应）。
 	GlobalEnabled bool
+
+	// TLSProfile 出站代理传输层 TLS 与 HTTP 协议拟态策略：
+	//   - "" 或 "chrome_auto"（默认）：经账号代理使用 uTLS HelloChrome_Auto + ALPN 自动协商 HTTP/2 / HTTP/1.1
+	//   - "go_h1"：回退至 Go 标准库 http.Transport + HTTP/1.1
+	TLSProfile string
+}
+
+// effectiveTLSProfile 返回当前客户端生效的规范化 TLSProfile。
+func (c *Client) effectiveTLSProfile() string {
+	if c == nil {
+		return TLSProfileChromeAuto
+	}
+	return NormalizeTLSProfile(c.TLSProfile)
 }
 
 // New 生产默认值。Transport 由 newTransport 集中构造（连接层加固：真正禁 h2 /

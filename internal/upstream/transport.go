@@ -9,8 +9,30 @@ import (
 	"crypto/tls"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
+
+// TLSProfile 出站代理传输层的 TLS 指纹与 HTTP 协议协商策略常量。
+const (
+	// TLSProfileChromeAuto 默认拟态档位：经账号代理使用 uTLS HelloChrome_Auto + ALPN 自动协商 HTTP/2 或 HTTP/1.1。
+	TLSProfileChromeAuto = "chrome_auto"
+	// TLSProfileGoH1 回退档位：使用 Go 标准库 http.Transport + HTTP/1.1。
+	TLSProfileGoH1 = "go_h1"
+)
+
+// NormalizeTLSProfile 规范化 TLSProfile 配置值：空串或 "chrome_auto" 归为 chrome_auto，
+// "go_h1" 归为 go_h1，其他未知值安全回落为 chrome_auto。
+func NormalizeTLSProfile(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", TLSProfileChromeAuto:
+		return TLSProfileChromeAuto
+	case TLSProfileGoH1:
+		return TLSProfileGoH1
+	default:
+		return TLSProfileChromeAuto
+	}
+}
 
 // 连接层参数集中定义（与 server/backoff.go 同风格：一处定义，测试可回读断言）。
 const (
@@ -46,6 +68,10 @@ const (
 	// 「Config 未接线/测试裸用」时的安全网——与 config.example.json 的取值
 	// 对齐避免三处口径漂移（transport 60 / config 回落 120 / example 60）。
 	responseHeaderTimeout = 60 * time.Second
+	// h2ReadIdleTimeout HTTP/2 空闲读健康探测间隔（发送 PING 帧识别半死连接）。
+	h2ReadIdleTimeout = 15 * time.Second
+	// h2PingTimeout HTTP/2 PING 探测等待 PONG 的超时上限。
+	h2PingTimeout = 10 * time.Second
 )
 
 // maxIdleConns / maxIdleConnsPerHost 连接池容量：
