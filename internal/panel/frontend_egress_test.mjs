@@ -96,3 +96,81 @@ test('subscription import switches view 500ms after success without waiting for 
   assert.equal(state.importingSub,false); assert.equal(state.egressTab,'SUBS');
   assert.deepEqual(renders,['SUBS']);
 });
+
+test('egress 409 conflict prompts confirm and retries with force, and renders egress warnings', async () => {
+  const state = globalThis.WBState;
+  state.nodes = [
+    {id:'n1', name:'HK-01', subId:'p1', bindingCount: 1, ping: 42, status: 'ok', timeout: false, trend: [40, 42]},
+  ];
+  state.accounts = [
+    {uid:'acct-a', name:'Account A', egress:'HK-01', egressNodeId:'n1'},
+    {uid:'acct-b', name:'Account B', egress:'—', egressNodeId:''},
+  ];
+  state.activeSubId = 'p1';
+  const bindPayloads = [];
+  const confirmMessages = [];
+  let allowConfirm = false;
+  globalThis.confirm = (msg) => {
+    confirmMessages.push(msg);
+    return allowConfirm;
+  };
+  globalThis.fetch = async (url, options = {}) => {
+    if (url.endsWith('/meta/accounts/acct-b/bind')) {
+      const payload = JSON.parse(options.body);
+      bindPayloads.push(payload);
+      if (!payload.force) {
+        return {
+          status: 409,
+          ok: false,
+          json: async () => ({
+            error: 'node already bound to another account',
+            code: 'node_already_bound',
+            node: 'n1',
+            conflict_uids: ['acct-a'],
+          }),
+        };
+      }
+      return {status: 200, ok: true, json: async () => ({ok: true})};
+    }
+    if (url.endsWith('/meta/nodes')) {
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({
+          nodes: [{id:'n1', name:'p1/HK-01', display_name:'HK-01', provider:'p1', binding_count: 2, status:'ok', delay_ms: 42}],
+          bindings: [{uid:'acct-a', node:'n1'}, {uid:'acct-b', node:'n1'}],
+        }),
+      };
+    }
+    if (url.endsWith('/panel/api/egress')) {
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({
+          accounts: [],
+          groups: [],
+          subnet_groups: [{subnet:'203.0.113.0/24', count: 2, uids:['acct-a','acct-b'], ips:['203.0.113.7','203.0.113.8']}],
+          warnings: [{type:'same_subnet', key:'203.0.113.0/24', count: 2, uids:['acct-a','acct-b'], message:'2 个账号位于同一网段 203.0.113.0/24'}],
+        }),
+      };
+    }
+    return {status: 200, ok: true, json: async () => ({ok: true})};
+  };
+
+  // User cancels confirm -> no second force request
+  allowConfirm = false;
+  await globalThis.bindAccountEgress('acct-b', 'n1');
+  assert.equal(bindPayloads.length, 1);
+  assert.deepEqual(bindPayloads[0], {node: 'n1'});
+  assert.equal(confirmMessages.length, 1);
+  assert.match(confirmMessages[0], /acct-a/);
+
+  // User confirms -> retries with force: true and syncs warnings
+  allowConfirm = true;
+  await globalThis.bindAccountEgress('acct-b', 'n1');
+  assert.equal(bindPayloads.length, 3);
+  assert.deepEqual(bindPayloads[2], {node: 'n1', force: true});
+  assert.equal(state.accounts[1].egressNodeId, 'n1');
+  assert.equal(state.egressWarnings.length, 1);
+  assert.equal(state.egressWarnings[0].type, 'same_subnet');
+});

@@ -1485,6 +1485,22 @@ export function expiryTone(days) {
             }
         }
 
+        function syncEgressMatrixData(matrix) {
+            if (!matrix || typeof matrix !== 'object') return;
+            WBState.egressWarnings = Array.isArray(matrix.warnings) ? matrix.warnings : [];
+            WBState.egressSubnetGroups = Array.isArray(matrix.subnet_groups) ? matrix.subnet_groups : [];
+            if (Array.isArray(matrix.accounts)) {
+                for (const item of matrix.accounts) {
+                    const account = WBState.accounts.find(a => a.uid === String(item.uid));
+                    if (account) {
+                        account.exitIp = item.status === 'ok' && item.ip ? String(item.ip) : '';
+                        account.exitSubnet = item.status === 'ok' && item.subnet ? String(item.subnet) : '';
+                    }
+                }
+            }
+        }
+        window.syncEgressMatrixData = syncEgressMatrixData;
+
         function syncPackagesData(pkg) {
             if (!Array.isArray(pkg?.accounts)) return;
             for (const row of pkg.accounts) {
@@ -1938,9 +1954,10 @@ export function expiryTone(days) {
                     csrfToken = sessionRes.csrf_token;
                     serverSession = sessionRes;
                 }
-                const [ovRes, egressRes, pkgRes, logsRes, usageRes, customRes, modelsRes, defEgressRes] = await Promise.all([
+                const [ovRes, egressRes, egressMatrixRes, pkgRes, logsRes, usageRes, customRes, modelsRes, defEgressRes] = await Promise.all([
                     safeApiFetch('/panel/api/overview', {}, 3500),
                     safeApiFetch('/panel/api/meta/nodes', {}, 3500),
+                    safeApiFetch('/panel/api/egress', {}, 3500),
                     safeApiFetch('/panel/api/packages', {}, 3500),
                     safeApiFetch('/panel/api/request_logs?summary=1&limit=50', {}, 3500),
                     safeApiFetch('/panel/api/usage?hours=24', {}, 3500),
@@ -1955,6 +1972,7 @@ export function expiryTone(days) {
                 if (Number.isInteger(preferences?.credit_guard_low)) WBState.configThreshold = preferences.credit_guard_low;
                 if (Number.isInteger(preferences?.subscription_refresh_hours)) WBState.configCacheHours = preferences.subscription_refresh_hours;
                 if (egressRes) syncEgressData(egressRes);
+                if (egressMatrixRes) syncEgressMatrixData(egressMatrixRes);
                 if (pkgRes) syncPackagesData(pkgRes);
                 if (defEgressRes?.ok && typeof defEgressRes.node_id === 'string') { WBState.systemDefaultNode = defEgressRes.node_id; WBState.systemDefaultNodeName = defEgressRes.node_name || ''; }
                 if (logsRes) syncLogsData(logsRes);
@@ -4976,6 +4994,8 @@ export function expiryTone(days) {
             egressTab: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_egress_tab')) || 'NODES',
             egressPage: 0,
             egressSubPage: (typeof localStorage !== 'undefined' && parseInt(localStorage.getItem('wb_egress_sub_page') || '0', 10)) || 0,
+            egressWarnings: [],
+            egressSubnetGroups: [],
             activeSubId: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_sub_id')) || 'SUB-01', // Comment 5: 当前启用展示节点的订阅源
             importingSub: false,
             downMbps: 26.4,
@@ -6560,7 +6580,7 @@ export function expiryTone(days) {
                     innerListHtml = slice.map((n, idx) => {
                         const boundAccounts = WBState.accounts.filter(a => IS_PROD_ENV ? a.egressNodeId === n.id : a.egress === n.name);
                         const boundCount = IS_PROD_ENV ? (n.bindingCount ?? boundAccounts.length) : boundAccounts.length;
-                        const accLabel = boundCount > 1 ? `${boundCount} 个账号` : (boundAccounts[0]?.name || (boundCount ? '1 个账号' : '未绑定'));
+                        const accLabel = boundCount > 1 ? `${boundCount} 个账号 · 共享风险` : (boundAccounts[0]?.name || (boundCount ? '1 个账号' : '未绑定'));
                         const accCls = boundCount === 0 ? 'text-white/30' : (n.timeout || n.status === 'error' ? 'tone-fault' : boundCount > 1 ? 'tone-guard' : 'tone-forced');
                         const pingTxt = n.status === 'testing' ? '测速中' : n.timeout ? '超时' : n.status === 'error' ? '失败' : IS_PROD_ENV && n.status === 'untested' ? '未测速' : `${n.ping} ms`;
                         const pingCls = n.timeout || n.status === 'error' ? 'tone-fault' : n.status === 'testing' || n.status === 'untested' ? 'tone-guard' : (n.ping < 800 ? 'tone-forced' : 'tone-guard');
@@ -6626,12 +6646,33 @@ export function expiryTone(days) {
                     renderPagerControls(WBState.egressSubPage, totalPages, 'changeEgressSubPage', true);
                 }
 
+                const egressWarnItems = [];
+                if (Array.isArray(WBState.egressWarnings)) {
+                    for (const w of WBState.egressWarnings) {
+                        if (!w || !w.message) continue;
+                        const tone = w.type === 'same_ip' ? 'tone-fault' : 'tone-guard';
+                        const uidList = Array.isArray(w.uids) && w.uids.length ? ` (${w.uids.join(', ')})` : '';
+                        egressWarnItems.push(`<div class="${tone} text-[11px] leading-snug">⚠ ${escapeDisplayText(w.message + uidList)}</div>`);
+                    }
+                }
+                const sharedNodesCount = subNodes.filter(n => {
+                    const cnt = IS_PROD_ENV ? (n.bindingCount ?? WBState.accounts.filter(a => a.egressNodeId === n.id).length) : WBState.accounts.filter(a => a.egress === n.name).length;
+                    return cnt > 1;
+                }).length;
+                if (sharedNodesCount > 0) {
+                    egressWarnItems.push(`<div class="tone-guard text-[11px] leading-snug">⚠ ${sharedNodesCount} 个节点绑定了多个账号，存在关联风控风险</div>`);
+                }
+                const egressWarnBannerHtml = WBState.egressTab === 'NODES' && egressWarnItems.length > 0
+                    ? `<div data-egress-warnings="true" class="mb-2 py-1.5 px-2.5 border-l-2 border-amber-400/60 bg-white/[0.03] space-y-1 text-left">${egressWarnItems.join('')}</div>`
+                    : '';
+
                 commitStageMarkup(container, `
                     <div>
                         <div class="flex items-center space-x-6 mb-2 text-left">
                             <button class="editorial-tab ${WBState.egressTab==='NODES'?'active':''}" data-action="set-egress-tab" data-tab="NODES">节点列表</button>
                             <button class="editorial-tab ${WBState.egressTab==='SUBS'?'active':''}" data-action="set-egress-tab" data-tab="SUBS">订阅来源</button>
                         </div>
+                        ${egressWarnBannerHtml}
                         <div>${innerListHtml}</div>
                     </div>
                 `, animate);
@@ -11337,9 +11378,36 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                 const node = WBState.nodes.find(item => item.id === nodeName);
                 if (!node) return;
                 if (node.timeout) { beginActionFeedback()('error'); notifyEditorialStatus('节点超时，请重新测速'); return; }
-                const result = await safeApiFetch('/panel/api/meta/accounts/' + encodeURIComponent(uid) + '/bind', {method: 'POST', body: JSON.stringify({node: node.id})}, 40000);
-                if (!result?.ok) { notifyEditorialStatus('出口绑定失败'); return; }
-                syncEgressData(await safeApiFetch('/panel/api/meta/nodes', {}, 10000));
+                const doBind = (force) => safeApiFetch(
+                    '/panel/api/meta/accounts/' + encodeURIComponent(uid) + '/bind',
+                    {method: 'POST', body: JSON.stringify(force ? {node: node.id, force: true} : {node: node.id})},
+                    40000,
+                    true
+                );
+                let result = await doBind(false);
+                if (!result?.ok && result?.code === 'node_already_bound') {
+                    const conflictUids = Array.isArray(result.conflict_uids) ? result.conflict_uids : [];
+                    const conflictLabels = conflictUids.map(cuid => {
+                        const acct = WBState.accounts.find(a => a.uid === cuid);
+                        return acct && acct.name && acct.name !== cuid ? `${acct.name} (${cuid})` : cuid;
+                    });
+                    const conflictText = conflictLabels.length ? conflictLabels.join('、') : '其他账号';
+                    const confirmed = typeof window.confirm === 'function'
+                        ? window.confirm(`节点「${node.name || node.id}」已被账号 ${conflictText} 绑定。\n多账号共享同一出口节点存在关联风控风险，确认仍要强制绑定吗？`)
+                        : false;
+                    if (!confirmed) {
+                        notifyEditorialStatus('已取消强制绑定，保留原出口配置');
+                        return;
+                    }
+                    result = await doBind(true);
+                }
+                if (!result?.ok) { notifyEditorialStatus(result?.error || '出口绑定失败'); return; }
+                const [nodesRes, matrixRes] = await Promise.all([
+                    safeApiFetch('/panel/api/meta/nodes', {}, 10000),
+                    safeApiFetch('/panel/api/egress', {}, 3500)
+                ]);
+                if (nodesRes) syncEgressData(nodesRes);
+                if (matrixRes) syncEgressMatrixData(matrixRes);
                 renderEditorialStage(false);
             };
             window.switchLoginRealm = (realm) => {

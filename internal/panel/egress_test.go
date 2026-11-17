@@ -98,3 +98,31 @@ func TestAccountProxyMutationBlockedWhileMetaBound(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
+
+func TestCachedExitIPContract(t *testing.T) {
+	p := ioTestPanel(t)
+	a := &auth.Auth{UID: "cached-ip-acct"}
+	p.cfg.Pool.Add(a)
+	if got := CachedExitIP(a); got != "" {
+		t.Fatalf("expected empty cached IP before probe, got %q", got)
+	}
+	c := upstream.New()
+	c.HTTP.Transport = egressRoundTrip(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"ip":"198.51.100.25"}`))}, nil
+	})
+	p.cfg.Upstream = c
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/", nil)
+	r.SetPathValue("uid", a.UID)
+	p.AccountEgress(w, r)
+	if w.Code != 200 {
+		t.Fatalf("probe failed: %d %s", w.Code, w.Body.String())
+	}
+	if got := CachedExitIP(a); got != "198.51.100.25" {
+		t.Fatalf("CachedExitIP=%q want 198.51.100.25", got)
+	}
+	a.ProxyURL = "http://127.0.0.1:18081"
+	if got := CachedExitIP(a); got != "" {
+		t.Fatalf("CachedExitIP after proxy change=%q want empty", got)
+	}
+}

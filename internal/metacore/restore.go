@@ -109,7 +109,7 @@ func (m *Manager) RestoreAccountBinding(ctx context.Context, uid, rawURL, nodeNa
 			return errors.New("subscription node already bound")
 		}
 	}
-	if _, err := m.bindLocked(ctx, uid, matches[0], saveProxy); err != nil {
+	if _, err := m.bindLocked(ctx, uid, matches[0], false, saveProxy); err != nil {
 		if errors.Is(err, ErrRollback) {
 			return err
 		}

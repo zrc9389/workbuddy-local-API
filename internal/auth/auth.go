@@ -45,6 +45,9 @@ type Auth struct {
 	// 顶层 device_token 也会被解析（与桌面端共用状态文件的部署方式）。
 	DeviceToken string
 	ProxyURL    string // Persisted outbound proxy; read via ProxyURLValue.
+	// DeviceProfile 每账号独立持久化的设备指纹画像（落盘于顶层 device_profile）；
+	// 读写一律经 EnsureDeviceProfile / DeviceProfileValue 或持 a.mu。
+	DeviceProfile *DeviceProfile
 }
 
 // Lock 供同进程内其他包（upstream.RefreshToken）在改写 Auth 字段期间加锁。
@@ -314,6 +317,15 @@ func Parse(raw []byte) (*Auth, error) {
 		return nil, err
 	}
 	a.ProxyURL = strings.TrimSpace(proxy)
+	if value, ok := probe["device_profile"]; ok && strings.TrimSpace(string(value)) != "null" {
+		var dp DeviceProfile
+		if err := json.Unmarshal(value, &dp); err == nil {
+			dp.normalize()
+			if !dp.isEmpty() {
+				a.DeviceProfile = &dp
+			}
+		}
+	}
 	if strings.TrimSpace(a.AccessToken) == "" {
 		return nil, fmt.Errorf("parse_error: missing accessToken")
 	}
@@ -391,13 +403,24 @@ func LoadDir(dir string) ([]*Auth, error) {
 				logfmt.Label(a.UID, a.Nickname), prev, f)
 		}
 		seenUID[a.UID] = f
+		needSave := false
+		var backfilledRealm string
 		if a.RealmStored() == "" {
 			if changed, r := a.BackfillRealm(); changed {
-				if err := a.SaveAtomic(); err != nil {
-					log.Printf("WARN: auth %s realm backfill save: %v", logfmt.Label(a.UID, a.Nickname), err)
-				} else if r == "global" {
-					log.Printf("auth %s 存量迁移: 补 realm=global（domain=%s）", logfmt.Label(a.UID, a.Nickname), a.Domain)
-				}
+				needSave = true
+				backfilledRealm = r
+			}
+		}
+		a.mu.Lock()
+		if a.ensureDeviceProfileLocked() {
+			needSave = true
+		}
+		a.mu.Unlock()
+		if needSave {
+			if err := a.SaveAtomic(); err != nil {
+				log.Printf("WARN: auth %s backfill save: %v", logfmt.Label(a.UID, a.Nickname), err)
+			} else if backfilledRealm == "global" {
+				log.Printf("auth %s 存量迁移: 补 realm=global（domain=%s）", logfmt.Label(a.UID, a.Nickname), a.Domain)
 			}
 		}
 		out = append(out, a)

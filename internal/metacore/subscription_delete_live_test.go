@@ -68,7 +68,7 @@ func TestDeleteSubscriptionSwitchesAccountsAndRollsBack(t *testing.T) {
 	}
 	proxies := map[string]string{}
 	for _, uid := range []string{"a", "b"} {
-		_, err := m.Bind(context.Background(), uid, node, func(p string) error { proxies[uid] = p; return nil })
+		_, err := m.BindWithForce(context.Background(), uid, node, true, func(p string) error { proxies[uid] = p; return nil })
 		if err != nil {
 			t.Fatal(err)
 		}

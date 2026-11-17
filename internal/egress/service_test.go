@@ -95,3 +95,99 @@ func TestProbeConcurrencyLimit(t *testing.T) {
 	close(release)
 	<-done
 }
+
+func TestSubnetGroupingWarningsAndCachedIP(t *testing.T) {
+	s := New(Options{Timeout: time.Second, TTL: 50 * time.Millisecond})
+	a := &auth.Auth{UID: "a", ProxyURL: "http://127.0.0.1:10001"}
+	b := &auth.Auth{UID: "b", ProxyURL: "http://127.0.0.1:10002"}
+	c := &auth.Auth{UID: "c", ProxyURL: "http://127.0.0.1:10003"}
+	d := &auth.Auth{UID: "d", ProxyURL: "http://127.0.0.1:10004"}
+	e := &auth.Auth{UID: "e", ProxyURL: "http://127.0.0.1:10005"}
+
+	ipByUID := map[string]string{
+		"a": "203.0.113.7",
+		"b": "203.0.113.7",
+		"c": "203.0.113.42",
+		"d": "2001:db8:1:2::9",
+		"e": "2001:db8:1:2::42",
+	}
+	var calls atomic.Int32
+	do := doerFunc(func(r *http.Request, acct *auth.Auth) (*http.Response, error) {
+		calls.Add(1)
+		return &http.Response{
+			StatusCode: 200,
+			Body:       io.NopCloser(strings.NewReader(`{"ip":"` + ipByUID[acct.UID] + `"}`)),
+		}, nil
+	})
+
+	for _, acct := range []*auth.Auth{a, b, c, d, e} {
+		res, err := s.Probe(context.Background(), do, acct)
+		if err != nil {
+			t.Fatalf("probe %s failed: %v", acct.UID, err)
+		}
+		if res.Subnet == "" {
+			t.Fatalf("probe %s missing subnet", acct.UID)
+		}
+	}
+	if calls.Load() != 5 {
+		t.Fatalf("unexpected probe calls=%d", calls.Load())
+	}
+
+	// Matrix & CachedIP must perform 0 external network calls.
+	matrix := s.Matrix([]*auth.Auth{a, b, c, d, e})
+	if calls.Load() != 5 {
+		t.Fatal("Matrix performed unexpected network call")
+	}
+	if len(matrix.SubnetGroups) != 2 {
+		t.Fatalf("expected 2 subnet groups (/24 and /64), got %+v", matrix.SubnetGroups)
+	}
+	subnetByKey := map[string]SubnetGroup{}
+	for _, sg := range matrix.SubnetGroups {
+		subnetByKey[sg.Subnet] = sg
+	}
+	v4g, ok := subnetByKey["203.0.113.0/24"]
+	if !ok || v4g.Count != 3 || len(v4g.IPs) != 2 {
+		t.Fatalf("unexpected IPv4 /24 group: %+v", v4g)
+	}
+	v6g, ok := subnetByKey["2001:db8:1:2::/64"]
+	if !ok || v6g.Count != 2 || len(v6g.IPs) != 2 {
+		t.Fatalf("unexpected IPv6 /64 group: %+v", v6g)
+	}
+
+	var hasSameIP, hasV4Subnet, hasV6Subnet bool
+	for _, w := range matrix.Warnings {
+		if w.Type == "same_ip" && w.Key == "203.0.113.7" && w.Count == 2 {
+			hasSameIP = true
+		}
+		if w.Type == "same_subnet" && w.Key == "203.0.113.0/24" && w.Count == 3 {
+			hasV4Subnet = true
+		}
+		if w.Type == "same_subnet" && w.Key == "2001:db8:1:2::/64" && w.Count == 2 {
+			hasV6Subnet = true
+		}
+	}
+	if !hasSameIP || !hasV4Subnet || !hasV6Subnet {
+		t.Fatalf("missing expected warnings: %+v", matrix.Warnings)
+	}
+
+	// CachedIP hit
+	if got := s.CachedIP(a); got != "203.0.113.7" {
+		t.Fatalf("CachedIP(a)=%q want 203.0.113.7", got)
+	}
+	if got := s.CachedIP(nil); got != "" {
+		t.Fatalf("CachedIP(nil)=%q want empty", got)
+	}
+	// Proxy change invalidates CachedIP immediately
+	a.ProxyURL = "http://127.0.0.1:19999"
+	if got := s.CachedIP(a); got != "" {
+		t.Fatalf("CachedIP after proxy change=%q want empty", got)
+	}
+	// TTL expiry invalidates CachedIP
+	time.Sleep(65 * time.Millisecond)
+	if got := s.CachedIP(b); got != "" {
+		t.Fatalf("CachedIP after TTL expiry=%q want empty", got)
+	}
+	if calls.Load() != 5 {
+		t.Fatal("CachedIP performed unexpected network call")
+	}
+}

@@ -32,7 +32,23 @@ var (
 	ErrSubscriptionInUse    = errors.New("subscription has bound accounts; unbind them first")
 	ErrSubscriptionNotFound = errors.New("subscription not found")
 	ErrSubscriptionNoURL    = errors.New("subscription has no stored URL")
+	ErrNodeAlreadyBound     = errors.New("node already bound to another account")
 )
+
+// NodeConflictError reports that a node is already bound to one or more other accounts.
+type NodeConflictError struct {
+	NodeID       string
+	ConflictUIDs []string
+}
+
+func (e *NodeConflictError) Error() string {
+	if e == nil || len(e.ConflictUIDs) == 0 {
+		return ErrNodeAlreadyBound.Error()
+	}
+	return fmt.Sprintf("%s (%s)", ErrNodeAlreadyBound.Error(), strings.Join(e.ConflictUIDs, ", "))
+}
+
+func (e *NodeConflictError) Unwrap() error { return ErrNodeAlreadyBound }
 
 const (
 	maxProviders         = 16
@@ -606,6 +622,13 @@ func (m *Manager) ensure(ctx context.Context) error {
 // saveProxy. saveProxy must be atomic on error (auth.SetProxyAndSave is suitable).
 // No caller credentials or controller secret are returned in Binding.
 func (m *Manager) Bind(ctx context.Context, uid, nodeID string, saveProxy func(string) error) (Binding, error) {
+	return m.BindWithForce(ctx, uid, nodeID, false, saveProxy)
+}
+
+// BindWithForce applies a validated per-account route. When force is false,
+// binding a node already owned by another account returns *NodeConflictError
+// purely from in-memory state without any external network call.
+func (m *Manager) BindWithForce(ctx context.Context, uid, nodeID string, force bool, saveProxy func(string) error) (Binding, error) {
 	if !safeID(uid) || saveProxy == nil {
 		return Binding{}, ErrInvalid
 	}
@@ -613,10 +636,10 @@ func (m *Manager) Bind(ctx context.Context, uid, nodeID string, saveProxy func(s
 		return Binding{}, err
 	}
 	defer m.unlock()
-	return m.bindLocked(ctx, uid, nodeID, saveProxy)
+	return m.bindLocked(ctx, uid, nodeID, force, saveProxy)
 }
 
-func (m *Manager) bindLocked(ctx context.Context, uid, nodeID string, saveProxy func(string) error) (Binding, error) {
+func (m *Manager) bindLocked(ctx context.Context, uid, nodeID string, force bool, saveProxy func(string) error) (Binding, error) {
 	if err := m.ensure(ctx); err != nil {
 		return Binding{}, err
 	}
@@ -635,6 +658,22 @@ func (m *Manager) bindLocked(ctx context.Context, uid, nodeID string, saveProxy 
 	}
 	old := m.snapshot()
 	next := m.snapshot()
+	if !force {
+		seen := make(map[string]struct{})
+		var conflictUIDs []string
+		for _, existing := range next.Bindings {
+			if existing.Node == n.ID && existing.UID != uid {
+				if _, dup := seen[existing.UID]; !dup {
+					seen[existing.UID] = struct{}{}
+					conflictUIDs = append(conflictUIDs, existing.UID)
+				}
+			}
+		}
+		if len(conflictUIDs) > 0 {
+			sort.Strings(conflictUIDs)
+			return Binding{}, &NodeConflictError{NodeID: n.ID, ConflictUIDs: conflictUIDs}
+		}
+	}
 	index := -1
 	for i, b := range next.Bindings {
 		if b.UID == uid {

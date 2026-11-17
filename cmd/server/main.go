@@ -345,6 +345,10 @@ func run() error {
 		}
 		return metaManager.AcquireAccount(ctx, a.UID)
 	}
+	up.ExitIPResolver = panel.CachedExitIP
+	if up.EgressGuard == nil {
+		up.EgressGuard = upstream.NewEgressGuard(upstream.DefaultEgressGuardOptions())
+	}
 	defer func() {
 		maint.Close()
 		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

@@ -89,6 +89,10 @@ func (a *Auth) documentLocked() map[string]any {
 	if a.ProxyURL != "" {
 		doc["proxy"] = a.ProxyURL
 	}
+	if a.DeviceProfile != nil && !a.DeviceProfile.isEmpty() {
+		cp := *a.DeviceProfile
+		doc["device_profile"] = cp
+	}
 	return doc
 }
 

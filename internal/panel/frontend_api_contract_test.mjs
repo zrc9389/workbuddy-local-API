@@ -56,7 +56,7 @@ test('runtime inline page uses the documented API paths and methods', () => {
     ['POST','/auth/logout'], ['POST','/auth/password'], ['GET','/panel/api/overview'],
     ['GET','/panel/api/meta/nodes'], ['GET','/panel/api/meta/stats'], ['GET','/panel/api/preferences'], ['GET','/panel/api/packages'], ['GET','/panel/api/request_logs?summary=1&limit=50'], ['GET','/panel/api/customization'],
     ['GET','/panel/api/login/poll?state={state}'], ['POST','/panel/api/meta/subscriptions'],
-    ['POST','/panel/api/customization'], ['GET','/panel/api/egress/default'], ['POST','/panel/api/egress/default'], ['POST','/panel/api/update/check'], ['POST','/panel/api/update/apply'],
+    ['POST','/panel/api/customization'], ['GET','/panel/api/egress'], ['GET','/panel/api/egress/default'], ['POST','/panel/api/egress/default'], ['POST','/panel/api/update/check'], ['POST','/panel/api/update/apply'],
     ['GET','/panel/api/models'], ['GET','/panel/api/music'], ['POST','/panel/api/music/upload'], ['POST','/panel/api/music/action'], ['POST','/panel/api/refresh'], ['POST','/panel/api/accounts/'],
     ['GET','/panel/api/accounts/'], ['GET','/panel/api/accounts/export'], ['GET','/panel/api/meta/accounts/'],
     ['GET','/panel/api/meta/subscriptions'], ['GET','/panel/api/usage?hours=24'],

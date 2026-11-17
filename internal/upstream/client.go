@@ -762,7 +762,13 @@ type Client struct {
 	defaultProxy   string
 
 	AccountLease func(context.Context, *auth.Auth) (func(), error)
-	HTTP         *http.Client
+	// EgressGuard 跨账号同出口 fail-closed 并发门禁（默认由 New() 构造）。
+	// 同出口同账号允许并发（保留单账号 max_in_flight 水位），跨账号严格串行并保留最小错峰间隔。
+	EgressGuard *EgressGuard
+	// ExitIPResolver 可选的账号已探测出口 IP 解析回调（如 panel.CachedExitIP）。
+	// 非空且返回非空 IP 时优先以 "ip:<exit_ip>" 作为门禁键，识别多代理共享同一出口 IP。
+	ExitIPResolver func(*auth.Auth) string
+	HTTP           *http.Client
 
 	// ChatHTTP 聊天 SSE 专用 client：无总时长上限（Timeout=0），首字节由
 	// Transport.ResponseHeaderTimeout 约束，流中空闲由 IdleTimeout 约束。
@@ -847,6 +853,7 @@ type Client struct {
 func New() *Client {
 	tr := newTransport()
 	c := &Client{
+		EgressGuard:   NewEgressGuard(DefaultEgressGuardOptions()),
 		HTTP:          &http.Client{Timeout: 120 * time.Second, Transport: tr},
 		ChatHTTP:      &http.Client{Timeout: 0, Transport: tr}, // 无总时长；首字节由 ResponseHeaderTimeout 管
 		ChatBaseCN:    "https://copilot.tencent.com",

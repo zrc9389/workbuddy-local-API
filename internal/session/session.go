@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -498,7 +499,8 @@ func isDerivedKey(key string) bool {
 	return strings.HasPrefix(key, derivedKeyPrefix)
 }
 
-// deriveKey 从消息内容派生稳定会话键：SHA-256(system 文本 + 首条 user 文本) 前 16 字节。
+// deriveKey 从消息内容派生稳定会话键：SHA-256(清洗后的 system 文本 + 首条 user 文本) 前 16 字节。
+// 在哈希前剥离 system 中的日期/时间、工作目录、Git 状态/分支/提交等动态变化上下文，防止粘性键漂移。
 func deriveKey(obj map[string]any) string {
 	msgs, ok := obj["messages"].([]any)
 	if !ok || len(msgs) == 0 {
@@ -528,8 +530,242 @@ func deriveKey(obj map[string]any) string {
 	if firstUserText == "" {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(systemText + "\x00" + firstUserText))
+	cleanSystem := sanitizeSystemForDeriveKey(systemText)
+	sum := sha256.Sum256([]byte(cleanSystem + "\x00" + firstUserText))
 	return derivedKeyPrefix + hex.EncodeToString(sum[:16])
+}
+
+var (
+	reGitStatusXML     = regexp.MustCompile(`(?is)<git[-_]?status\b[^>]*>.*?</git[-_]?status>`)
+	reISO8601Timestamp = regexp.MustCompile(`\b\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:\s*(?:UTC|GMT|CST|PST|EST)|Z|[+-]\d{2}:?\d{2})?\b`)
+	reInlineDatePhrase = regexp.MustCompile(`(?i)\b(?:today'?s\s+date|current\s+date(?:\s+and\s+time)?|current\s+time)\s*(?:is|:)\s*[^\n.;,]+`)
+	reGitPorcelainLine = regexp.MustCompile(`^(?:[-*•]\s+)?(?:(?:[MARCUD?!][ MARCUD?!]| [MARCUD?!])\s+\S+|(?:modified|new file|deleted|renamed|copied|both modified):\s+\S+)`)
+	reGitCommitLine    = regexp.MustCompile(`^(?:[-*•]\s+)?[0-9a-fA-F]{7,40}\s+\S`)
+)
+
+var (
+	dynamicTimeAndCWDPrefixes = []string{
+		"current date and time",
+		"current datetime",
+		"current date",
+		"today's date",
+		"todays date",
+		"current time",
+		"local time",
+		"utc time",
+		"server time",
+		"timestamp",
+		"date",
+		"time",
+		"now",
+		"current working directory",
+		"primary working directory",
+		"working directory",
+		"working dir",
+		"current directory",
+		"cwd",
+		"workspace directory",
+		"workspace root",
+		"workspace path",
+		"current workspace",
+		"workspace",
+		"project directory",
+		"project root",
+	}
+	dynamicTimeAndCWDCNPrefixes = []string{
+		"当前时间",
+		"当前日期",
+		"今天日期",
+		"今天是",
+		"系统时间",
+		"本地时间",
+		"当前工作目录",
+		"当前目录",
+		"工作目录",
+		"项目目录",
+		"工作区路径",
+		"工作区目录",
+		"工作区",
+	}
+	dynamicGitPrefixes = []string{
+		"gitstatus",
+		"git status",
+		"current branch",
+		"git branch",
+		"main branch",
+		"branch",
+		"git head",
+		"head",
+		"current commit",
+		"latest commit",
+		"git commit",
+		"commit",
+		"recent commits",
+		"modified files",
+		"untracked files",
+		"staged files",
+		"changed files",
+		"status",
+		"is directory a git repo",
+		"git repository",
+		"git repo",
+		"git diff",
+		"git log",
+	}
+	dynamicGitCNPrefixes = []string{
+		"git状态",
+		"git 状态",
+		"当前分支",
+		"git分支",
+		"git 分支",
+		"主分支",
+		"最近提交",
+		"修改文件",
+		"变更文件",
+	}
+)
+
+// sanitizeSystemForDeriveKey 清洗 system 文本中按请求/按日变化的动态上下文行与时间戳，
+// 保留静态核心指令以保证粘性派生键稳定且仍能区分不同系统提示词。
+func sanitizeSystemForDeriveKey(systemText string) string {
+	if systemText == "" {
+		return ""
+	}
+	cleaned := reGitStatusXML.ReplaceAllString(systemText, "\n")
+	lines := strings.Split(cleaned, "\n")
+	kept := make([]string, 0, len(lines))
+	inGitBlock := false
+	for _, rawLine := range lines {
+		trimmed := strings.TrimSpace(rawLine)
+		if trimmed == "" {
+			inGitBlock = false
+			continue
+		}
+		isDyn, startsBlock := classifyDynamicSystemLine(trimmed)
+		if isDyn {
+			if startsBlock {
+				inGitBlock = true
+			}
+			continue
+		}
+		if inGitBlock {
+			if isGitBlockContinuation(rawLine, trimmed) {
+				continue
+			}
+			inGitBlock = false
+		}
+		line := reInlineDatePhrase.ReplaceAllString(rawLine, "")
+		line = reISO8601Timestamp.ReplaceAllString(line, "")
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+func classifyDynamicSystemLine(trimmed string) (isDynamic bool, startsGitBlock bool) {
+	norm := strings.ToLower(stripLineDecorators(trimmed))
+	if norm == "" {
+		return false, false
+	}
+	if hasKeyPrefix(norm, dynamicGitPrefixes) || hasCNKeyPrefix(norm, dynamicGitCNPrefixes) {
+		return true, true
+	}
+	if hasKeyPrefix(norm, dynamicTimeAndCWDPrefixes) || hasCNKeyPrefix(norm, dynamicTimeAndCWDCNPrefixes) {
+		return true, false
+	}
+	return false, false
+}
+
+func stripLineDecorators(s string) string {
+	for {
+		orig := s
+		s = strings.TrimSpace(s)
+		switch {
+		case strings.HasPrefix(s, "- "), strings.HasPrefix(s, "* "), strings.HasPrefix(s, "> "):
+			s = s[2:]
+		case strings.HasPrefix(s, "• "):
+			s = strings.TrimPrefix(s, "• ")
+		case strings.HasPrefix(s, "#"):
+			s = strings.TrimLeft(s, "#")
+		case strings.HasPrefix(s, "**"):
+			s = strings.TrimPrefix(s, "**")
+		case strings.HasPrefix(s, "__"):
+			s = strings.TrimPrefix(s, "__")
+		case strings.HasPrefix(s, "`"):
+			s = strings.TrimPrefix(s, "`")
+		}
+		if s == orig {
+			break
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
+func hasKeyPrefix(lower string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if !strings.HasPrefix(lower, p) {
+			continue
+		}
+		rest := strings.TrimLeft(lower[len(p):], "*_` ")
+		if rest == "" {
+			continue
+		}
+		if strings.HasPrefix(rest, ":") ||
+			strings.HasPrefix(rest, "：") ||
+			strings.HasPrefix(rest, "=") ||
+			strings.HasPrefix(rest, "(") ||
+			strings.HasPrefix(rest, "is ") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasCNKeyPrefix(lower string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if !strings.HasPrefix(lower, p) {
+			continue
+		}
+		rest := strings.TrimLeft(lower[len(p):], "*_` ")
+		if rest == "" {
+			continue
+		}
+		if strings.HasPrefix(rest, ":") ||
+			strings.HasPrefix(rest, "：") ||
+			strings.HasPrefix(rest, "=") ||
+			strings.HasPrefix(rest, "是") ||
+			strings.HasPrefix(rest, "为") ||
+			(rest[0] >= '0' && rest[0] <= '9') ||
+			strings.HasPrefix(rest, "/") ||
+			strings.HasPrefix(rest, "\\") {
+			return true
+		}
+	}
+	return false
+}
+
+func isGitBlockContinuation(rawLine, trimmed string) bool {
+	if reGitPorcelainLine.MatchString(rawLine) || reGitPorcelainLine.MatchString(trimmed) {
+		return true
+	}
+	if reGitCommitLine.MatchString(trimmed) {
+		return true
+	}
+	low := strings.ToLower(trimmed)
+	switch low {
+	case "(clean)", "(empty)", "clean", "none", "nothing to commit", "nothing to commit, working tree clean":
+		return true
+	}
+	return strings.HasPrefix(low, "on branch ") ||
+		strings.HasPrefix(low, "your branch is ") ||
+		strings.HasPrefix(low, "changes not staged for commit") ||
+		strings.HasPrefix(low, "changes to be committed") ||
+		strings.HasPrefix(low, "untracked files:") ||
+		strings.HasPrefix(low, "nothing added to commit") ||
+		strings.HasPrefix(low, "no changes added to commit")
 }
 
 func userContentSignature(content any) string {

@@ -143,7 +143,7 @@ func TestAccountDeletionIsolatesStores(t *testing.T) {
 	defer meta.Close(context.Background())
 	nodes := meta.Nodes().Nodes
 	for _, id := range []string{"account-a", "account-b"} {
-		if _, err := meta.Bind(context.Background(), id, nodes[0].ID, func(string) error { return nil }); err != nil {
+		if _, err := meta.BindWithForce(context.Background(), id, nodes[0].ID, true, func(string) error { return nil }); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 	"io"
 	"net"
@@ -36,6 +37,7 @@ type Result struct {
 	Proxy     string    `json:"proxy,omitempty"`
 	ConfigKey string    `json:"config_key"`
 	IP        string    `json:"ip,omitempty"`
+	Subnet    string    `json:"subnet,omitempty"`
 	Status    string    `json:"status"`
 	Error     string    `json:"error,omitempty"`
 	CheckedAt time.Time `json:"checked_at,omitempty"`
@@ -46,10 +48,25 @@ type Group struct {
 	Count int      `json:"count"`
 	UIDs  []string `json:"uids"`
 }
+type SubnetGroup struct {
+	Subnet string   `json:"subnet"`
+	Count  int      `json:"count"`
+	UIDs   []string `json:"uids"`
+	IPs    []string `json:"ips"`
+}
+type EgressWarning struct {
+	Type    string   `json:"type"`
+	Key     string   `json:"key"`
+	Count   int      `json:"count"`
+	UIDs    []string `json:"uids"`
+	Message string   `json:"message"`
+}
 type Matrix struct {
-	Accounts  []Result `json:"accounts"`
-	Groups    []Group  `json:"groups"`
-	Truncated bool     `json:"truncated"`
+	Accounts     []Result        `json:"accounts"`
+	Groups       []Group         `json:"groups"`
+	SubnetGroups []SubnetGroup   `json:"subnet_groups,omitempty"`
+	Warnings     []EgressWarning `json:"warnings,omitempty"`
+	Truncated    bool            `json:"truncated"`
 }
 type cachedResult struct {
 	result    Result
@@ -178,6 +195,7 @@ func (s *Service) Probe(ctx context.Context, d Doer, a *auth.Auth) (Result, erro
 						probeErr = errors.New("probe returned no public IP")
 					} else {
 						r.IP = ip.String()
+						r.Subnet = ipSubnet(r.IP)
 					}
 				}
 			}
@@ -220,8 +238,47 @@ func (s *Service) Probe(ctx context.Context, d Doer, a *auth.Auth) (Result, erro
 }
 func (s *Service) Forget(a *auth.Auth) { s.mu.Lock(); delete(s.results, a); s.mu.Unlock() }
 
+func ipSubnet(rawIP string) string {
+	ip := net.ParseIP(strings.TrimSpace(rawIP))
+	if ip == nil {
+		return ""
+	}
+	if v4 := ip.To4(); v4 != nil {
+		mask := net.CIDRMask(24, 32)
+		return (&net.IPNet{IP: v4.Mask(mask), Mask: mask}).String()
+	}
+	if v6 := ip.To16(); v6 != nil {
+		mask := net.CIDRMask(64, 128)
+		return (&net.IPNet{IP: v6.Mask(mask), Mask: mask}).String()
+	}
+	return ""
+}
+
+// CachedIP returns the cached public exit IP for account a purely from memory (zero network I/O).
+func (s *Service) CachedIP(a *auth.Auth) string {
+	if s == nil || a == nil {
+		return ""
+	}
+	raw := a.ProxyURLValue()
+	sum := sha256.Sum256([]byte(raw))
+	s.mu.Lock()
+	v, ok := s.results[a]
+	s.mu.Unlock()
+	if !ok || v.proxyHash != sum {
+		return ""
+	}
+	if time.Since(v.result.CheckedAt) > s.opts.TTL {
+		return ""
+	}
+	if v.result.Status != "ok" || v.result.IP == "" {
+		return ""
+	}
+	return v.result.IP
+}
+
 // Matrix never performs network I/O. Unknown/stale routes group by configuration;
-// fresh successful probes group by observed public IP (not a claim of permanent identity).
+// fresh successful probes group by observed public IP (not a claim of permanent identity)
+// and locally compute IPv4 /24 and IPv6 /64 subnet groupings and collision warnings.
 func (s *Service) Matrix(accounts []*auth.Auth) Matrix {
 	out := Matrix{Accounts: []Result{}, Groups: []Group{}}
 	if len(accounts) > s.opts.MaxAccounts {
@@ -229,6 +286,8 @@ func (s *Service) Matrix(accounts []*auth.Auth) Matrix {
 		out.Truncated = true
 	}
 	groups := make(map[string]*Group)
+	subnetGroups := make(map[string]*SubnetGroup)
+	subnetIPSet := make(map[string]map[string]struct{})
 	now := time.Now()
 	for _, a := range accounts {
 		if a == nil {
@@ -242,10 +301,27 @@ func (s *Service) Matrix(accounts []*auth.Auth) Matrix {
 		if ok && v.proxyHash == sha256.Sum256([]byte(raw)) && now.Sub(v.result.CheckedAt) <= s.opts.TTL {
 			r = v.result
 		}
+		if r.Status == "ok" && r.IP != "" && r.Subnet == "" {
+			r.Subnet = ipSubnet(r.IP)
+		}
 		out.Accounts = append(out.Accounts, r)
 		key := r.ConfigKey
 		if r.Status == "ok" && r.IP != "" {
 			key = "ip-" + r.IP
+			if r.Subnet != "" {
+				sg := subnetGroups[r.Subnet]
+				if sg == nil {
+					sg = &SubnetGroup{Subnet: r.Subnet, UIDs: []string{}, IPs: []string{}}
+					subnetGroups[r.Subnet] = sg
+					subnetIPSet[r.Subnet] = make(map[string]struct{})
+				}
+				sg.Count++
+				sg.UIDs = append(sg.UIDs, r.UID)
+				if _, exists := subnetIPSet[r.Subnet][r.IP]; !exists {
+					subnetIPSet[r.Subnet][r.IP] = struct{}{}
+					sg.IPs = append(sg.IPs, r.IP)
+				}
+			}
 		}
 		g := groups[key]
 		if g == nil {
@@ -261,5 +337,33 @@ func (s *Service) Matrix(accounts []*auth.Auth) Matrix {
 		out.Groups = append(out.Groups, *g)
 	}
 	sort.Slice(out.Groups, func(i, j int) bool { return out.Groups[i].Key < out.Groups[j].Key })
+	for _, sg := range subnetGroups {
+		sort.Strings(sg.UIDs)
+		sort.Strings(sg.IPs)
+		out.SubnetGroups = append(out.SubnetGroups, *sg)
+	}
+	sort.Slice(out.SubnetGroups, func(i, j int) bool { return out.SubnetGroups[i].Subnet < out.SubnetGroups[j].Subnet })
+	for _, g := range out.Groups {
+		if g.IP != "" && g.Count > 1 {
+			out.Warnings = append(out.Warnings, EgressWarning{
+				Type:    "same_ip",
+				Key:     g.IP,
+				Count:   g.Count,
+				UIDs:    append([]string(nil), g.UIDs...),
+				Message: fmt.Sprintf("%d 个账号共享同一出口 IP %s", g.Count, g.IP),
+			})
+		}
+	}
+	for _, sg := range out.SubnetGroups {
+		if sg.Count > 1 && len(sg.IPs) > 1 {
+			out.Warnings = append(out.Warnings, EgressWarning{
+				Type:    "same_subnet",
+				Key:     sg.Subnet,
+				Count:   sg.Count,
+				UIDs:    append([]string(nil), sg.UIDs...),
+				Message: fmt.Sprintf("%d 个账号位于同一网段 %s", sg.Count, sg.Subnet),
+			})
+		}
+	}
 	return out
 }

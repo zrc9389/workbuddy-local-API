@@ -264,54 +264,85 @@ type accountLeaseTransport struct {
 }
 
 func (t accountLeaseTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if t.c == nil || t.c.AccountLease == nil {
+	if t.c == nil || (t.c.AccountLease == nil && t.c.EgressGuard == nil) {
 		if t.next == nil {
 			return nil, errors.New("underlying transport is not initialized")
 		}
 		return t.next.RoundTrip(r)
 	}
-	release, e := t.c.AccountLease(r.Context(), t.a)
-	if e != nil {
-		uid := ""
-		if t.a != nil {
-			uid = logfmt.UID8(t.a.UID)
+
+	leaseRelease := func() {}
+	if t.c.AccountLease != nil {
+		release, e := t.c.AccountLease(r.Context(), t.a)
+		if e != nil {
+			uid := ""
+			if t.a != nil {
+				uid = logfmt.UID8(t.a.UID)
+			}
+			log.Printf("WARN: [upstream] account lease acquire failed: account=%s err=%v", uid, e)
+			return nil, errors.New("managed account proxy unavailable")
 		}
-		log.Printf("WARN: [upstream] account lease acquire failed: account=%s err=%v", uid, e)
-		return nil, errors.New("managed account proxy unavailable")
+		if release != nil {
+			leaseRelease = release
+		}
 	}
-	if release == nil {
-		release = func() {}
-	}
+
 	next := t.next
 	// Choose the transport only after acquiring the account lease. A Meta bind
 	// can complete between client construction and RoundTrip; re-reading the
 	// account proxy here prevents that request from escaping via stale direct
 	// transport or another account's route.
-	if t.base != nil && t.c != nil {
+	if t.c.AccountLease != nil && t.base != nil {
 		next = t.c.accountTransport(t.base, t.a)
 	}
 	if next == nil {
-		release()
+		leaseRelease()
 		return nil, errors.New("underlying transport is not initialized")
 	}
-	if t.a != nil && r.URL != nil {
+
+	egressRelease := func() {}
+	if t.c.EgressGuard != nil {
+		if key := t.c.egressKeyFor(t.a); key != "" {
+			uid := ""
+			if t.a != nil {
+				uid = t.a.UID
+			}
+			rel, e := t.c.EgressGuard.Acquire(r.Context(), key, uid)
+			if e != nil {
+				leaseRelease()
+				log.Printf("WARN: [upstream] egress guard blocked: account=%s key=%s err=%v", logfmt.UID8(uid), key, e)
+				return nil, e
+			}
+			if rel != nil {
+				egressRelease = rel
+			}
+		}
+	}
+
+	releaseAll := func() {
+		egressRelease()
+		leaseRelease()
+	}
+
+	if t.c.AccountLease != nil && t.a != nil && r.URL != nil {
 		proxyURL := strings.TrimSpace(t.a.ProxyURLValue())
-		if proxyURL == "" && t.c != nil {
+		if proxyURL == "" {
 			proxyURL = t.c.DefaultProxy()
 		}
 		if proxyURL != "" {
 			log.Printf("[upstream] leased egress: account=%s egress=%s target=%s", logfmt.UID8(t.a.UID), proxyURL, r.URL.Host)
 		}
 	}
+
 	resp, e := next.RoundTrip(r)
 	if e != nil {
-		release()
+		releaseAll()
 		return nil, e
 	}
 	if resp.Body == nil {
-		release()
+		releaseAll()
 	} else {
-		resp.Body = &leasedBody{ReadCloser: resp.Body, release: release}
+		resp.Body = &leasedBody{ReadCloser: resp.Body, release: releaseAll}
 	}
 	return resp, nil
 }
@@ -324,7 +355,7 @@ func (t accountLeaseTransport) CloseIdleConnections() {
 }
 
 func (c *Client) withAccountLease(base *http.Client, next http.RoundTripper, a *auth.Auth) http.RoundTripper {
-	if c == nil || c.AccountLease == nil {
+	if c == nil || (c.AccountLease == nil && c.EgressGuard == nil) {
 		return next
 	}
 	return accountLeaseTransport{base: base, next: next, c: c, a: a}

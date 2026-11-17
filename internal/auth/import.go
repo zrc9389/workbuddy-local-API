@@ -21,6 +21,10 @@ func (a *Auth) ImportCredentialsAndSave(in *Auth, preserveProxy bool) error {
 	if preserveProxy {
 		in.ProxyURL = a.ProxyURL
 	}
+	if in.DeviceProfile == nil && a.DeviceProfile != nil {
+		cp := *a.DeviceProfile
+		in.DeviceProfile = &cp
+	}
 	in.FilePath = a.FilePath
 	if err := in.SaveAtomic(); err != nil {
 		return errors.New("could not persist credentials")

@@ -24,6 +24,20 @@ func (p *Panel) metaManager(w http.ResponseWriter) *metacore.Manager {
 	return p.cfg.Meta
 }
 func metaError(w http.ResponseWriter, err error) {
+	var conflictErr *metacore.NodeConflictError
+	if errors.As(err, &conflictErr) {
+		uids := conflictErr.ConflictUIDs
+		if uids == nil {
+			uids = []string{}
+		}
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":         metacore.ErrNodeAlreadyBound.Error(),
+			"code":          "node_already_bound",
+			"node":          conflictErr.NodeID,
+			"conflict_uids": uids,
+		})
+		return
+	}
 	status := http.StatusBadRequest
 	switch {
 	case errors.Is(err, metacore.ErrSubscriptionNotFound):
@@ -310,7 +324,8 @@ func (p *Panel) MetaBind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var v struct {
-		Node string `json:"node"`
+		Node  string `json:"node"`
+		Force bool   `json:"force"`
 	}
 	if decodeSingleJSON(w, r, 1024, &v) != nil || v.Node == "" {
 		writeErr(w, 400, "expected node id")
@@ -325,7 +340,7 @@ func (p *Panel) MetaBind(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 35*time.Second)
 	defer cancel()
-	b, err := m.Bind(ctx, a.UID, v.Node, func(proxy string) error {
+	b, err := m.BindWithForce(ctx, a.UID, v.Node, v.Force, func(proxy string) error {
 		if m.Status().Demo {
 			return nil
 		}

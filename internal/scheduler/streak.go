@@ -7,6 +7,7 @@
 package scheduler
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"time"
@@ -18,6 +19,11 @@ import (
 // RunStreakBonusNow 对所有可用账号执行连登兑换 + 抽奖（幂等：locked/无次数自动跳过）。
 // 由签到排程（RunCheckinNow）末尾调用；也可面板手动触发。
 func (s *Scheduler) RunStreakBonusNow() {
+	s.runStreakBonus(context.Background(), false)
+}
+
+func (s *Scheduler) runStreakBonus(ctx context.Context, auto bool) {
+	first := true
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled {
 			continue
@@ -32,6 +38,16 @@ func (s *Scheduler) RunStreakBonusNow() {
 		if a.IsEnterprise() {
 			continue // 企业版门控：无成长体系（/activity/growth/streak 上游一律 403）
 		}
+		if auto {
+			if !first {
+				if !s.waitAccountStagger(ctx) {
+					return
+				}
+			} else if ctx.Err() != nil {
+				return
+			}
+		}
+		first = false
 		s.streakBonusAccount(a)
 	}
 }

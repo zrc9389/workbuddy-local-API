@@ -15,6 +15,11 @@ import (
 var accountEgressService = egress.New(egress.Options{})
 var accountMutationSlots = make(chan struct{}, 1)
 
+// CachedExitIP returns the cached public exit IP for account a purely from memory.
+func CachedExitIP(a *auth.Auth) string {
+	return accountEgressService.CachedIP(a)
+}
+
 func (p *Panel) egressAccount(w http.ResponseWriter, r *http.Request) *auth.Auth {
 	if p.cfg.Pool == nil {
 		writeErr(w, 503, "account pool unavailable")

@@ -3,6 +3,7 @@
 package scheduler
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -46,6 +47,10 @@ func travelDay(t time.Time) string {
 // 401/查询失败只跳过该账号本轮（不强刷 token，交 22:00 keepalive）；
 // 账号间限速 travelAccountDelay。
 func (s *Scheduler) RunTravelNow() {
+	s.runTravel(context.Background(), false)
+}
+
+func (s *Scheduler) runTravel(ctx context.Context, auto bool) {
 	first := true
 	for _, st := range s.cfg.Pool.List() {
 		a := s.cfg.Pool.AuthByUID(st.UID)
@@ -59,22 +64,30 @@ func (s *Scheduler) RunTravelNow() {
 			continue // 企业版门控：无成长体系（/activity/growth/* 上游一律 403），不发起任何上游调用
 		}
 		if !first {
-			time.Sleep(travelAccountDelay)
+			if auto {
+				if !s.waitAccountStagger(ctx) {
+					return
+				}
+			} else if !s.sleep(ctx, travelAccountDelay) {
+				return
+			}
+		} else if auto && ctx.Err() != nil {
+			return
 		}
 		first = false
-		s.travelOne(a)
+		s.travelOne(ctx, a)
 	}
 }
 
 // travelOne 单账号单趟状态机：查有无猫 + 查状态 + 最多一个动作，不轮询不等待。
-func (s *Scheduler) travelOne(a *auth.Auth) {
+func (s *Scheduler) travelOne(ctx context.Context, a *auth.Auth) {
 	buddy, err := s.cfg.Upstream.BuddyInfo(a)
 	if err != nil {
 		log.Printf("travel %s: buddy-info: %v", logfmt.Label(a.UID, a.Nickname), err)
 		return
 	}
 	if buddy == nil {
-		s.travelAdopt(a)
+		s.travelAdopt(ctx, a)
 		return
 	}
 	ts, err := s.cfg.Upstream.TravelStatus(a)
@@ -128,15 +141,15 @@ func (s *Scheduler) travelClaim(a *auth.Auth, ts *upstream.TravelState) {
 // 400 "first_buddy task not completed yet"——该门槛的真实来源是"当日无活跃上报"，
 // 不是账号问题（report.go 注释亦明确「解锁 first_buddy 任务（领养前置）」）。
 // conversation 门槛未达标仍属预期行为，记一次当日已试后静默跳过，不再重试。
-func (s *Scheduler) travelAdopt(a *auth.Auth) {
+func (s *Scheduler) travelAdopt(ctx context.Context, a *auth.Auth) {
 	if s.adoptTriedToday(a.UID) {
 		return
 	}
 	// 前置：解锁 first_buddy 任务（幂等；失败不阻塞，让 buddy/first 按既有错误路径暴露）。
 	if err := s.cfg.Upstream.ReportChatActivity(a, fmt.Sprintf("wb2api-adopt-%d", time.Now().UnixMilli()), ""); err != nil {
 		log.Printf("travel %s: adopt preflight report: %v", logfmt.Label(a.UID, a.Nickname), err)
-	} else {
-		time.Sleep(adoptReportGap) // 给上游事件处理留时间（对齐脚本实测的 1.05s 间隔口径）
+	} else if !s.sleep(ctx, adoptReportGap) { // 给上游事件处理留时间（对齐脚本实测的 1.05s 间隔口径）
+		return
 	}
 	if err := s.cfg.Upstream.BuddyAgreement(a); err != nil {
 		log.Printf("travel %s: agreement: %v", logfmt.Label(a.UID, a.Nickname), err)

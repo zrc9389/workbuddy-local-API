@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,6 +60,20 @@ type Config struct {
 	// 待办并执行，与面板「执行全部待办」按钮同管线）。调度器只管时点不管实现——
 	// panel 在 scheduler 之后构造，用 SetGrowthHook 事后挂载；nil 时到点跳过。
 	GrowthHook func()
+
+	// AutoJitterMax 后台定时任务唤醒后的随机抖动上限：
+	//   - 0：使用默认 3 分钟（defaultAutoJitterMax）
+	//   - >0：随机等待 (0, AutoJitterMax]
+	//   - <0：显式关闭后台唤醒抖动
+	// 仅作用于后台自动排程（Run / StartBalanceRefresh），不影响面板手动 Run*Now。
+	AutoJitterMax time.Duration
+
+	// AccountStaggerMin / AccountStaggerMax 后台自动排程遍历账号时的账号间随机错峰间隔：
+	//   - 两者均为 0：使用默认 2s~8s
+	//   - 任一 <0：显式关闭账号间自动错峰
+	// 仅作用于后台自动排程，不影响面板手动 Run*Now。
+	AccountStaggerMin time.Duration
+	AccountStaggerMax time.Duration
 }
 
 // Scheduler 调度器。
@@ -85,6 +100,10 @@ type Scheduler struct {
 	// of upstream requests and keeps memory/connection pressure predictable.
 	balanceSlots chan struct{}
 	balanceMu    sync.Mutex
+
+	// 测试注入钩子（nil 时走生产默认 sleepCtx / rand.Int63n）。
+	sleepFn    func(ctx context.Context, d time.Duration) bool
+	randInt63n func(n int64) int64
 }
 
 type BalanceRefreshResult struct {
@@ -415,32 +434,132 @@ func (s *Scheduler) Run(ctx context.Context) {
 	}
 }
 
-// runBatch 并行派发一批任务（同一唤醒时刻的多类任务），等全部完成返回。
-// ctx 取消时由各任务内部的可取消等待快速收尾。
+const (
+	// defaultAutoJitterMax 后台定时任务唤醒后的默认最大随机抖动（3 分钟），
+	// 打散所有实例在整点 00:00 瞬间齐发的机器波峰。
+	defaultAutoJitterMax = 3 * time.Minute
+
+	// defaultAccountStaggerMin / defaultAccountStaggerMax 后台自动排程遍历账号时的
+	// 默认账号间随机错峰间隔（2s~8s），打散多账号齐步走波峰。
+	defaultAccountStaggerMin = 2 * time.Second
+	defaultAccountStaggerMax = 8 * time.Second
+)
+
+func (s *Scheduler) sleep(ctx context.Context, d time.Duration) bool {
+	if s != nil && s.sleepFn != nil {
+		return s.sleepFn(ctx, d)
+	}
+	return sleepCtx(ctx, d)
+}
+
+func (s *Scheduler) randN(n int64) int64 {
+	if n <= 1 {
+		return 0
+	}
+	if s != nil && s.randInt63n != nil {
+		v := s.randInt63n(n)
+		if v < 0 {
+			v = -v
+		}
+		return v % n
+	}
+	return rand.Int63n(n)
+}
+
+// autoWakeupJitter 计算后台自动排程唤醒后的随机抖动时长；capDuration>0 时作为上限裁剪。
+func (s *Scheduler) autoWakeupJitter(capDuration time.Duration) time.Duration {
+	s.schedMu.Lock()
+	maxD := s.cfg.AutoJitterMax
+	s.schedMu.Unlock()
+	if maxD < 0 {
+		return 0
+	}
+	if maxD == 0 {
+		maxD = defaultAutoJitterMax
+	}
+	if capDuration > 0 && maxD > capDuration {
+		maxD = capDuration
+	}
+	if maxD <= 0 {
+		return 0
+	}
+	return time.Duration(s.randN(int64(maxD))) + 1
+}
+
+// waitAutoWakeupJitter 执行后台定时任务唤醒抖动等待；ctx 取消立即返回 false。
+func (s *Scheduler) waitAutoWakeupJitter(ctx context.Context, capDuration time.Duration) bool {
+	d := s.autoWakeupJitter(capDuration)
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	return s.sleep(ctx, d)
+}
+
+// accountStaggerDelay 计算后台自动排程的账号间随机错峰间隔。
+func (s *Scheduler) accountStaggerDelay() time.Duration {
+	s.schedMu.Lock()
+	minD, maxD := s.cfg.AccountStaggerMin, s.cfg.AccountStaggerMax
+	s.schedMu.Unlock()
+	if minD < 0 || maxD < 0 {
+		return 0
+	}
+	if minD == 0 && maxD == 0 {
+		minD = defaultAccountStaggerMin
+		maxD = defaultAccountStaggerMax
+	}
+	if maxD < minD {
+		maxD = minD
+	}
+	if maxD <= 0 {
+		return 0
+	}
+	if maxD == minD {
+		return minD
+	}
+	span := int64(maxD - minD)
+	return minD + time.Duration(s.randN(span+1))
+}
+
+// waitAccountStagger 执行后台自动排程的账号间随机错峰等待；ctx 取消立即返回 false。
+func (s *Scheduler) waitAccountStagger(ctx context.Context) bool {
+	d := s.accountStaggerDelay()
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	return s.sleep(ctx, d)
+}
+
+// runBatch 并行派发一批后台定时任务（同一唤醒时刻的多类任务），等全部完成返回。
+// 每类任务启动前均施加独立唤醒抖动，且内部账号遍历采用自动错峰；ctx 取消时快速收尾。
 func (s *Scheduler) runBatch(ctx context.Context, kinds []taskKind) {
 	var wg sync.WaitGroup
 	for _, k := range kinds {
 		wg.Add(1)
 		go func(k taskKind) {
 			defer wg.Done()
+			if !s.waitAutoWakeupJitter(ctx, 0) {
+				return
+			}
 			switch k {
 			case taskCheckin:
-				s.RunCheckinNow()
+				s.runCheckin(ctx, true)
 			case taskTravel:
-				s.RunTravelNow()
-				s.RunBalanceRefreshNow()
+				s.runTravel(ctx, true)
+				if ctx.Err() == nil {
+					s.runBalanceRefresh(ctx, true)
+				}
 			case taskActivity:
-				s.runActivity(ctx)
+				s.runActivity(ctx, true)
 			case taskKeepalive:
-				s.RunKeepaliveNow()
+				s.runKeepalive(ctx, true)
 			case taskBlackcat:
-				s.RunBlackcatNow()
+				s.runBlackcat(ctx, true)
 			case taskGrowth:
 				// 成长任务队列：回调在 panel 侧异步启动（返回不等执行完），nil 未挂载则跳过。
 				s.schedMu.Lock()
 				hook := s.cfg.GrowthHook
 				s.schedMu.Unlock()
-				if hook != nil {
+				if hook != nil && ctx.Err() == nil {
 					hook()
 				}
 			}
@@ -471,7 +590,12 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // 末尾追加连登管家（streak.go）：可兑换档位自动兑换 + 抽奖次数自动抽完——
 // 连登兑换按天数解锁，挂在每日签到后即「到天数那天自动完成兑换→抽奖闭环」。
 func (s *Scheduler) RunCheckinNow() {
+	s.runCheckin(context.Background(), false)
+}
+
+func (s *Scheduler) runCheckin(ctx context.Context, auto bool) {
 	expiringSoon := s.ExpiringSoonWindow()
+	first := true
 	for _, st := range s.cfg.Pool.List() {
 		a := s.cfg.Pool.AuthByUID(st.UID)
 		if a == nil {
@@ -483,6 +607,16 @@ func (s *Scheduler) RunCheckinNow() {
 		if a.IsGlobal() {
 			continue
 		}
+		if auto {
+			if !first {
+				if !s.waitAccountStagger(ctx) {
+					return
+				}
+			} else if ctx.Err() != nil {
+				return
+			}
+		}
+		first = false
 		// 企业版无签到体系：上游对 POST /v2/billing/meter/daily-checkin 直接
 		// 400 code 10001「企业账号不支持该操作」。跳过签到，但**不 continue**——
 		// 下方余额查询照常跑（企业额度走 get-enterprise-user-usage 口径，且是
@@ -513,7 +647,9 @@ func (s *Scheduler) RunCheckinNow() {
 		s.cfg.Pool.ReenableIfCredits(st.UID, remain, total)
 		s.cfg.Pool.SetCreditsDetailed(st.UID, remain, total, expiring, earliestAt, earliestRemaining)
 	}
-	s.RunStreakBonusNow()
+	if ctx.Err() == nil {
+		s.runStreakBonus(ctx, auto)
+	}
 }
 
 // RunActivityNow 立即对池内所有可用账号执行一次对话活跃上报。
@@ -525,11 +661,12 @@ func (s *Scheduler) RunCheckinNow() {
 // RunActivityNow 是无 ctx 的外部入口（面板/测试一次性触发）；排程主循环走
 // runActivity（ctx 取消时立即放弃剩余账号，不等限速睡满）。
 func (s *Scheduler) RunActivityNow() {
-	s.runActivity(context.Background())
+	s.runActivity(context.Background(), false)
 }
 
 // runActivity 活跃上报遍历，随 ctx 取消立即退出。
-func (s *Scheduler) runActivity(ctx context.Context) {
+// auto=true（后台排程）使用账号间随机错峰；auto=false（面板手动）沿用既有短间隔。
+func (s *Scheduler) runActivity(ctx context.Context, auto bool) {
 	first := true
 	for _, st := range s.cfg.Pool.List() {
 		a := s.cfg.Pool.AuthByUID(st.UID)
@@ -549,9 +686,15 @@ func (s *Scheduler) runActivity(ctx context.Context) {
 		// 判断不成立——国际版 /v2/report 可用，跳过即国际版账号永远点不亮连登（上游
 		// a190252 同口径修复）。checkin/travel 的 global 门控不受影响，仍跳过。
 		if !first {
-			if !sleepCtx(ctx, activityAccountDelay) {
+			if auto {
+				if !s.waitAccountStagger(ctx) {
+					return
+				}
+			} else if !s.sleep(ctx, activityAccountDelay) {
 				return // 优雅停机：不等限速睡满，剩余账号下轮再报
 			}
+		} else if auto && ctx.Err() != nil {
+			return
 		}
 		first = false
 		cid := fmt.Sprintf("wb2api-%d", time.Now().UnixMilli())
@@ -591,11 +734,26 @@ func (s *Scheduler) checkActivityStreak(a *auth.Auth) bool {
 // 连续 sessionDeadThreshold 次（3 次）才禁用（P0-1：13 个 disabled 号全是历史误判）。
 // 刷新成功 → ClearSessionDead 清计数（错误判定的账号有复活路径）。
 func (s *Scheduler) RunKeepaliveNow() {
+	s.runKeepalive(context.Background(), false)
+}
+
+func (s *Scheduler) runKeepalive(ctx context.Context, auto bool) {
+	first := true
 	for _, st := range s.cfg.Pool.List() {
 		a := s.cfg.Pool.AuthByUID(st.UID)
 		if a == nil {
 			continue
 		}
+		if auto {
+			if !first {
+				if !s.waitAccountStagger(ctx) {
+					return
+				}
+			} else if ctx.Err() != nil {
+				return
+			}
+		}
+		first = false
 		if err := s.cfg.Upstream.RefreshToken(a); err != nil {
 			log.Printf("keepalive %s: %v", logfmt.Label(st.UID, st.Nickname), err)
 			var ue *upstream.Error
@@ -621,6 +779,10 @@ func (s *Scheduler) RunKeepaliveNow() {
 // 但不做签到、不刷新 token——只让"积分"这个观测量保持新鲜。
 // 供两类入口复用：后台周期任务（StartBalanceRefresh）与面板手动全量刷新。
 func (s *Scheduler) RunBalanceRefreshNow() BalanceRefreshResult {
+	return s.runBalanceRefresh(context.Background(), false)
+}
+
+func (s *Scheduler) runBalanceRefresh(ctx context.Context, auto bool) BalanceRefreshResult {
 	s.balanceMu.Lock()
 	defer s.balanceMu.Unlock()
 	var wg sync.WaitGroup
@@ -628,6 +790,7 @@ func (s *Scheduler) RunBalanceRefreshNow() BalanceRefreshResult {
 	var resultMu sync.Mutex
 	expiringSoon := s.ExpiringSoonWindow()
 	includeDisabled := s.includeDisabledInTasks()
+	first := true
 	for _, st := range s.cfg.Pool.List() {
 		if st.Blocked {
 			resultMu.Lock()
@@ -642,9 +805,27 @@ func (s *Scheduler) RunBalanceRefreshNow() BalanceRefreshResult {
 		if a == nil {
 			continue
 		}
+		if auto {
+			if !first {
+				if !s.waitAccountStagger(ctx) {
+					break
+				}
+			} else if ctx.Err() != nil {
+				break
+			}
+		}
+		first = false
+		if auto {
+			select {
+			case <-ctx.Done():
+				goto waitDone
+			case s.balanceSlots <- struct{}{}:
+			}
+		} else {
+			s.balanceSlots <- struct{}{}
+		}
 		result.Total++
 		wg.Add(1)
-		s.balanceSlots <- struct{}{}
 		go func(a *auth.Auth, uid string) {
 			defer wg.Done()
 			defer func() { <-s.balanceSlots }()
@@ -671,6 +852,7 @@ func (s *Scheduler) RunBalanceRefreshNow() BalanceRefreshResult {
 			resultMu.Unlock()
 		}(a, st.UID)
 	}
+waitDone:
 	wg.Wait()
 	return result
 }
@@ -709,7 +891,14 @@ func (s *Scheduler) StartBalanceRefresh(ctx context.Context, interval time.Durat
 			case <-s.rearmBalance:
 				timer.Stop() // 间隔已变：立刻按新值重算
 			case <-timer.C:
-				s.RunBalanceRefreshNow()
+				capD := cur / 4
+				if capD <= 0 {
+					capD = cur
+				}
+				if !s.waitAutoWakeupJitter(ctx, capD) {
+					return
+				}
+				s.runBalanceRefresh(ctx, true)
 			}
 		}
 	}()
