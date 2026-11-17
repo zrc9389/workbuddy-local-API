@@ -22,3 +22,12 @@ func realmAwareAvailableForModel(p *pool.Pool) func(model string) []string {
 		return p.WeightedAvailableUIDsForModelRealm(bare, realm)
 	}
 }
+
+// realmAwarePickBestForModel 构造会话粘性路由按模型从候选集合中挑选最优健康账号的 realm 感知闭包。
+// 委托 pool.PickBestUIDForModel 执行 Nginx SWRR 平滑挑选。
+func realmAwarePickBestForModel(p *pool.Pool) func(model string, candidates []string) string {
+	return func(model string, candidates []string) string {
+		_, bare := server.ResolveModel(model)
+		return p.PickBestUIDForModel(bare, candidates)
+	}
+}

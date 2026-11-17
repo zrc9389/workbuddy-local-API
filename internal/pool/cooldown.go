@@ -18,6 +18,7 @@ func (p *Pool) SetCredits(uid string, credits, total int64) {
 		e.balanceKnown = true
 		e.credits = credits
 		e.creditsTotal = total
+		e.creditFrac = 0
 		p.dirty.Store(true)
 	}
 }
@@ -96,6 +97,7 @@ func (p *Pool) SetCreditsDetailed(uid string, credits, total, expiring int64, ea
 		e.balanceKnown = true
 		e.credits = credits
 		e.creditsTotal = total
+		e.creditFrac = 0
 		e.creditsExpiring = expiring
 		e.creditsEarliestExpiry = earliestAt
 		e.creditsEarliestRemaining = earliestRemaining

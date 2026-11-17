@@ -226,24 +226,28 @@ func (p *Pool) NoteModelCost(uid, model string, credit float64, tokens int) {
 		return
 	}
 	if credit > 0 {
-		d := int64(credit + 0.5) // 四舍五入
-		if d > e.credits {
-			d = e.credits // 钳 0：扣穿（对账延迟/消费早于记账）不产生负余额
-		}
-		e.credits -= d
-		if e.creditsExpiring > 0 {
-			if d > e.creditsExpiring {
-				e.creditsExpiring = 0
-			} else {
-				e.creditsExpiring -= d
+		e.creditFrac += credit
+		d := int64(e.creditFrac)
+		if d > 0 {
+			e.creditFrac -= float64(d)
+			if d > e.credits {
+				d = e.credits // 钳 0：扣穿（对账延迟/消费早于记账）不产生负余额
 			}
-		}
-		if e.creditsEarliestRemaining > 0 {
-			if d >= e.creditsEarliestRemaining {
-				e.creditsEarliestRemaining = 0
-				e.creditsEarliestExpiry = time.Time{}
-			} else {
-				e.creditsEarliestRemaining -= d
+			e.credits -= d
+			if e.creditsExpiring > 0 {
+				if d > e.creditsExpiring {
+					e.creditsExpiring = 0
+				} else {
+					e.creditsExpiring -= d
+				}
+			}
+			if e.creditsEarliestRemaining > 0 {
+				if d >= e.creditsEarliestRemaining {
+					e.creditsEarliestRemaining = 0
+					e.creditsEarliestExpiry = time.Time{}
+				} else {
+					e.creditsEarliestRemaining -= d
+				}
 			}
 		}
 	}

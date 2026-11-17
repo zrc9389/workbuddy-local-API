@@ -30,6 +30,7 @@ func (r *Router) trimLocked() {
 		r.cfg.Store.DelBind(key)
 	}
 }
+
 func (r *Router) LoadLocal() error {
 	if r.cfg.LocalPath == "" {
 		return nil
@@ -57,14 +58,20 @@ func (r *Router) LoadLocal() error {
 	defer r.mu.Unlock()
 	now := time.Now()
 	for k, v := range rows {
-		if len(k) > 2048 || k == "" || v.UID == "" || len(v.UID) > 128 || now.Sub(v.Active) >= r.cfg.TTL {
+		if len(k) > 2048 || k == "" || v.UID == "" || len(v.UID) > 128 || now.Sub(v.Active) >= r.ttlFor(k) {
 			continue
 		}
-		r.entries[k] = entry{uid: v.UID, lastActive: v.Active}
+		r.entries[k] = entry{
+			uid:        v.UID,
+			lastActive: v.Active,
+			turns:      1,
+			isDerived:  isDerivedKey(k),
+		}
 	}
 	r.trimLocked()
 	return nil
 }
+
 func (r *Router) FlushLocal() error {
 	if r.cfg.LocalPath == "" {
 		return nil
@@ -75,7 +82,7 @@ func (r *Router) FlushLocal() error {
 	rows := map[string]localBinding{}
 	now := time.Now()
 	for k, v := range r.entries {
-		if !expired(v, now, r.cfg.TTL) {
+		if r.isEntryValid(k, v, now) {
 			rows[k] = localBinding{v.uid, v.lastActive}
 		}
 	}

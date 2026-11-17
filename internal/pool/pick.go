@@ -125,7 +125,11 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 	// timer 同锁写入：并发 pick 串行进入写锁，只有一个进入者能通过窗口判定
 	//（天然防重复探索）。key = realm + "\x1f" + reqModel：同模型名可跨域，
 	// 探索节奏按 (域, 模型) 独立；realm==""（Pick 老语义）单独成键。
-	if p.costExploreInterval > 0 && bestTier == 0 && reqModel != "" {
+	// 条件探索：当候选含 tier 1（未知号存在）且距上次探索 ≥ 窗口（零值 timer=从未探索
+	// →首次满足即探）时，本次 pick 生效层切 tier 1-only——探索=搭车改道，把一个
+	// 既有真实用户请求改道给未知号（零新增上游请求；IP 维度零增量，WAF 友好）。
+	// 修正：不局限于 bestTier==0，在全池为 tier 2 收费号时同样允许探索 tier 1，彻底解开探索死锁。
+	if p.costExploreInterval > 0 && reqModel != "" && bestTier != 1 {
 		for _, e := range cands {
 			if ti, _ := costTier(e); ti == 1 {
 				hasTier1 = true
@@ -140,89 +144,72 @@ func (p *Pool) pick(tried map[string]bool, reqModel, realm string) *auth.Auth {
 			explored = true
 		}
 	}
-	// 权重只算一次：顶 5 截断要排序，若在 sort 比较器里现算 weightOf 会翻成 O(n log n) 次
-	// 冗余浮点计算（46 账号约 500 次）。先做 O(n) 预计算，再按 (权重, uid) 排序。
-	// costTier/modelCostOf 同样每候选只算一次（存入 tier/cost1k），比较器只读缓存字段。
-	type weighted struct {
-		e      *entry
-		w      float64
-		tier   int
-		cost1k float64
-	}
-	ws := make([]weighted, 0, len(cands))
+
+	// 收集当前最优层的全量候选账号（废除 Top-5 硬截断，确保所有健康账号均获得调度权）
+	var tierCands []*entry
 	for _, e := range cands {
-		ti, ci := costTier(e)
+		ti, _ := costTier(e)
 		if ti == bestTier {
-			ws = append(ws, weighted{e: e, w: p.routingWeightOf(e, maxCredits, now), tier: ti, cost1k: ci})
+			tierCands = append(tierCands, e)
 		}
 	}
-	// 等权重洗牌：仅当存在权重相等且候选数超过 top5 时，才对 ws 做 Fisher-Yates
-	// 洗牌（且**不消耗 p.randInt64N 注入源**，避免改变 pickWeighted 的确定性语义，
-	// 见 TestPickDeterministicViaSetRandomSource）。权重全等或存在并列时，按字典序
-	// 截断会让 uid 靠后的账号永远进不了 top5（等权重账号被字典序饿死、LRU 兜底
-	// 又只在 top5 内转——惊群集中单号的根因）。洗牌用独立的 time-seeded 源，
-	// 只在截断边界制造等权重随机次序，不影响加权抽签本身的确定性。
-	eq := false
-	if len(ws) > 5 {
-		for i := 1; i < len(ws); i++ {
-			if ws[i].w == ws[0].w {
-				eq = true
-				break
-			}
-		}
-		if eq {
-			shuf := rand.New(rand.NewPCG(uint64(now.UnixNano()), uint64(len(ws))))
-			shuf.Shuffle(len(ws), func(i, j int) { ws[i], ws[j] = ws[j], ws[i] })
-		}
+	if len(tierCands) == 0 {
+		tierCands = cands
 	}
-	sort.SliceStable(ws, func(i, j int) bool {
-		// costTier 硬过滤后 ws 全员同层，但仍按 cost1k 升序排（tier 2 层内单价低者
-		// 在前；tier 0/1 层 cost1k 恒 0，本比较退化为权重比较）——读缓存字段不现算。
-		if ws[i].cost1k != ws[j].cost1k {
-			return ws[i].cost1k < ws[j].cost1k // 收费层：单价低的在前
-		}
-		if ws[i].w != ws[j].w {
-			return ws[i].w > ws[j].w
-		}
-		if eq {
-			return false // 保留 Fisher-Yates 洗牌随机顺序，杜绝 UID 升序饥饿与惊群
-		}
-		return ws[i].e.a.UID < ws[j].e.a.UID // 稳定兜底（洗牌后此项几乎不触发）
-	})
-	cands = cands[:0]
-	for _, c := range ws {
-		cands = append(cands, c.e)
-	}
-	// candsAll 保留截断前的全候选（权重降序），供 LRU 兜底在全量范围选最旧者，
-	// 避免 top5 字典序截断把等权重靠后账号饿死（惊群根因之一）。
-	candsAll := cands
-	if len(cands) > 5 {
-		cands = cands[:5]
-	}
-	var e *entry
-	// 防并发撞号：在持锁内基于「上次选中时刻」过滤，但同一批并发 goroutine 会串行进入
-	// 本函数（写锁），每个进入者都把 lastUsed 置为 now —— 于是同一瞬间的第 2..N 个
-	// 进入者看到前一个账号 lastUsed==now（距今 0 < minPickGap），被自然挤向其他账号。
-	// 关键：lastUsed 在锁内赋值，使时间窗口判定在并发下可重入。
-	eligible := make([]*entry, 0, len(cands))
-	for _, c := range cands {
+
+	// 防并发撞号：在持锁内基于「上次选中时刻」过滤，并发同一瞬间进入者被自然挤向其他账号。
+	eligible := make([]*entry, 0, len(tierCands))
+	for _, c := range tierCands {
 		if now.Sub(c.lastUsed) >= minPickGap {
 			eligible = append(eligible, c)
 		}
 	}
+
+	var e *entry
 	if len(eligible) == 0 {
-		// top5 全部刚被用过：LRU 兜底，在**全候选 candsAll**（非仅 top5）里选最旧者。
-		// 用 usedSeq 单调序号而非 lastUsed 墙钟比较：Windows 等平台 time.Now() 精度
-		// ~0.5ms，快速连续选号时所有 lastUsed 完全相等，Before 全 false 会恒选
-		// candsAll[0] 导致集中。usedSeq 严格全序，与时间精度无关。
-		e = candsAll[0]
-		for _, c := range candsAll[1:] {
-			if c.usedSeq < e.usedSeq {
+		// 全部刚被用过：LRU 兜底，选最旧者。
+		e = tierCands[0]
+		for _, c := range tierCands[1:] {
+			if c.lastUsed.Before(e.lastUsed) || (c.lastUsed.Equal(e.lastUsed) && c.usedSeq < e.usedSeq) {
 				e = c
 			}
 		}
 	} else {
-		e = p.pickWeighted(eligible) // eligible 保序 = top5 降序子集
+		// 稳定权重降序，供纯加权随机与 SWRR 平滑调度共用
+		sort.SliceStable(eligible, func(i, j int) bool {
+			wi := p.routingWeightOf(eligible[i], maxCredits, now)
+			wj := p.routingWeightOf(eligible[j], maxCredits, now)
+			if wi != wj {
+				return wi > wj
+			}
+			return eligible[i].a.UID < eligible[j].a.UID
+		})
+
+		if p.randInt64N != nil {
+			e = p.pickWeighted(eligible)
+		} else {
+			// Nginx SWRR (Smooth Weighted Round-Robin) 调度：
+			// 1. 每个候选当前权重增加其目标有效权重 currentWeight += effW
+			// 2. 选取当前权重最大的候选作为选中者
+			// 3. 选中者扣减总权重 currentWeight -= totalW
+			var best *entry
+			var totalW float64
+			for _, c := range eligible {
+				w := p.routingWeightOf(c, maxCredits, now)
+				c.currentWeight += w
+				totalW += w
+				if best == nil || c.currentWeight > best.currentWeight {
+					best = c
+				}
+			}
+			if best != nil {
+				best.currentWeight -= totalW
+			}
+			e = best
+		}
+	}
+	if e == nil && len(tierCands) > 0 {
+		e = tierCands[0]
 	}
 	if explored {
 		// 探索事件日志（可观测性）：选中号此时才确定，故在选中点打出。
@@ -404,25 +391,32 @@ func (p *Pool) weightOf(e *entry, maxCredits int64, now time.Time) float64 {
 	w := 1.0
 	// 1. credits 比例 ×10（会计入 mid-credit 锚点，避免全员 0 时 credits 项为 0）。
 	if maxCredits > 0 {
-		w += float64(e.credits) / float64(maxCredits) * 10
+		w += (float64(e.credits) / float64(maxCredits)) * 10.0
 	}
-	// 2. 闲置补偿。
+	// 2. 闲置补偿与短周期冷却衰减：
 	if e.lastUsed.IsZero() {
 		w += p.idleWeightMax // 从未使用 → 满分
 	} else {
-		hours := now.Sub(e.lastUsed).Hours()
-		idleW := hours * p.idleWeightPerHour
-		if idleW > p.idleWeightMax {
-			idleW = p.idleWeightMax
+		elapsed := now.Sub(e.lastUsed)
+		if minPickGap > 0 && elapsed < 10*time.Second && elapsed >= 0 {
+			// 短周期冷却衰减：刚用过的账号按秒级平滑过渡 (0.5 ~ 1.0)
+			cooldownFactor := 0.5 + 0.5*(elapsed.Seconds()/10.0)
+			w *= cooldownFactor
+		} else {
+			hours := elapsed.Hours()
+			idleW := hours * p.idleWeightPerHour
+			if idleW > p.idleWeightMax {
+				idleW = p.idleWeightMax
+			}
+			if idleW < 0 {
+				idleW = 0 // lastUsed 在未来（时钟回拨）时钳 0
+			}
+			w += idleW
 		}
-		if idleW < 0 {
-			idleW = 0 // lastUsed 在未来（时钟回拨）时钳 0
-		}
-		w += idleW
 	}
-	// 3.（原「成功率 ×3」因子已删，对齐上游 success-ema-review：errTotal 是终身
-	// 累计、只增不减，成功率 = successCount/(successCount+errTotal) 会让早期出过错
-	// 的号被永久压权且永不恢复；瞬时健康信号已由冷却/熔断/连败降权承接。）
+	if w < 1.0 {
+		w = 1.0
+	}
 	return w
 }
 
@@ -442,6 +436,50 @@ func (p *Pool) routingWeightOf(e *entry, maxCredits int64, now time.Time) float6
 		return w * expiringVirtualSlots
 	}
 	return w
+}
+
+// PickBestUIDForModel 使用 SWRR 从候选 UID 集合中挑选当前最优健康账号。
+// 供 session 粘性路由新会话建联时挑选初始账号使用（取代静态哈希取模）。
+func (p *Pool) PickBestUIDForModel(model string, candidates []string) string {
+	if len(candidates) == 0 {
+		return ""
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	var maxCredits int64
+	var entries []*entry
+	seen := make(map[string]bool, len(candidates))
+	for _, uid := range candidates {
+		if seen[uid] {
+			continue
+		}
+		seen[uid] = true
+		if e, ok := p.byUID[uid]; ok && e.healthyForModel(now, model) {
+			entries = append(entries, e)
+			if e.credits > maxCredits {
+				maxCredits = e.credits
+			}
+		}
+	}
+	if len(entries) == 0 {
+		return candidates[0]
+	}
+	var best *entry
+	var totalW float64
+	for _, e := range entries {
+		w := p.routingWeightOf(e, maxCredits, now)
+		e.currentWeight += w
+		totalW += w
+		if best == nil || e.currentWeight > best.currentWeight {
+			best = e
+		}
+	}
+	if best != nil {
+		best.currentWeight -= totalW
+		return best.a.UID
+	}
+	return candidates[0]
 }
 
 // SetCredits 更新账号余额。

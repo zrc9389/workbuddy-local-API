@@ -159,7 +159,9 @@ func TestPickWeightedUniformWhenAllZero(t *testing.T) {
 
 func TestPickWeightedTopFiveOnly(t *testing.T) {
 	withNoPickGap(t)
-	// 第 6 高 credits 的账号在 Top5 之外，权重抽签永远轮不到它。
+	// SWRR 契约：废除 Top-5 硬截断后，全候选健康账号均参与平滑轮询。
+	// a1..a5 拥有高额 credits（各 1000），a6 拥有低额 credits（5）。
+	// a1..a5 应获得绝大多数配额（>98%），且 a6 按其权重正常参与轮转，绝不被 100% 饿死。
 	p := New("")
 	for _, u := range []string{"a1", "a2", "a3", "a4", "a5", "a6"} {
 		p.Add(&auth.Auth{UID: u})
@@ -169,10 +171,21 @@ func TestPickWeightedTopFiveOnly(t *testing.T) {
 	p.SetCredits("a3", 1000, 0)
 	p.SetCredits("a4", 1000, 0)
 	p.SetCredits("a5", 1000, 0)
-	p.SetCredits("a6", 5, 0) // Top5 之外
+	p.SetCredits("a6", 5, 0)
+	counts := map[string]int{}
 	for i := 0; i < 2000; i++ {
-		if got := p.Pick(); got == nil || got.UID == "a6" {
-			t.Fatalf("iter %d: picked %+v, a6 must stay outside top-5", i, got)
+		got := p.Pick()
+		if got == nil {
+			t.Fatalf("iter %d: pick returned nil", i)
+		}
+		counts[got.UID]++
+	}
+	if counts["a6"] == 0 {
+		t.Fatalf("a6 was starved (0 picks in 2000): %v", counts)
+	}
+	for _, u := range []string{"a1", "a2", "a3", "a4", "a5"} {
+		if counts[u] < 300 {
+			t.Fatalf("high balance account %s got too few picks (%d): %v", u, counts[u], counts)
 		}
 	}
 }

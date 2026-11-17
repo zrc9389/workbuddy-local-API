@@ -198,6 +198,8 @@ type entry struct {
 	a               *auth.Auth
 	credits         int64
 	creditsTotal    int64 // 积分总额度（UserResource 聚合；0 = 未知）
+	creditFrac      float64 // 小数积分累加器（0.0 ~ 1.0，防止 <0.5 积分扣费归零）
+	currentWeight   float64 // Nginx SWRR 平滑加权轮询当前运行态权重
 	// creditsExpiring 配置窗口内即将过期的可用积分子集，是 credits 的一部分。
 	// creditsEarliestExpiry / creditsEarliestRemaining 是全部未来到期批次中的最早一批；
 	// 两者均由签到/余额刷新更新，供 earliest-expiry 路由和状态观测使用。
