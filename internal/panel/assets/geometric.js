@@ -5577,6 +5577,13 @@ export function expiryTone(days) {
                 clearTimeout(WBState._ringTimer);
                 WBState._ringTimer = null;
             }
+            const clearSpin = () => {
+                if (WBState.spinTimer) {
+                    clearTimeout(WBState.spinTimer);
+                    WBState.spinTimer = null;
+                }
+                WBState.isGlobalSpinning = false;
+            };
 
             WBState.ringState = state; // "idle" | "busy" | "error" | "success"
 
@@ -5591,6 +5598,7 @@ export function expiryTone(days) {
                     }, autoResetMs);
                 }
             } else if (state === "error" || state === "red") {
+                clearSpin();
                 WBState.ringState = "error";
                 if (canvasEl) {
                     canvasEl.classList.remove("canvas-fault-jolt");
@@ -5600,16 +5608,25 @@ export function expiryTone(days) {
                 if (typeof soundscape !== "undefined" && soundscape?.triggerErrorSound) {
                     soundscape.triggerErrorSound();
                 }
-                WBState._ringTimer = setTimeout(() => {
-                    WBState.ringState = "idle";
-                    if (canvasEl) canvasEl.classList.remove("canvas-fault-jolt");
-                }, durationMs || 700);
+                if (durationMs !== 0 && durationMs !== Infinity && durationMs !== null) {
+                    WBState._ringTimer = setTimeout(() => {
+                        WBState.ringState = "idle";
+                        clearSpin();
+                        if (canvasEl) canvasEl.classList.remove("canvas-fault-jolt");
+                    }, durationMs > 0 ? durationMs : 700);
+                }
             } else if (state === "success" || state === "green") {
+                clearSpin();
                 WBState.ringState = "success";
-                WBState._ringTimer = setTimeout(() => {
-                    WBState.ringState = "idle";
-                }, durationMs || 800);
+                // durationMs === Infinity / 0 / null 表示常亮绿态（如检测到已校验新版本待确认更新），由状态切换主动复位
+                if (durationMs !== 0 && durationMs !== Infinity && durationMs !== null) {
+                    WBState._ringTimer = setTimeout(() => {
+                        WBState.ringState = "idle";
+                        clearSpin();
+                    }, durationMs > 0 ? durationMs : 800);
+                }
             } else {
+                clearSpin();
                 WBState.ringState = "idle";
                 if (canvasEl) canvasEl.classList.remove("canvas-fault-jolt");
             }
@@ -5684,7 +5701,9 @@ export function expiryTone(days) {
             let t2 = CHAPTER_META[ch]?.btn2 || '[ ACTION 02 ]';
 
             // 重置基础类名：严格仅关于（sphere）页面更新态支持变色，其余页面（含 tasks）始终保持默认白框
-            if (ch === 'sphere' && (WBState.sphereUpdateApplied || (WBState.sphereUpdateReady && !WBState.sphereUpdating))) {
+            if (ch === 'sphere' && WBState.sphereFaultActive) {
+                btn1.className = 'editorial-action-btn border border-rose-500 text-rose-400 canvas-fault-jolt transition-colors';
+            } else if (ch === 'sphere' && (WBState.sphereUpdateApplied || (WBState.sphereUpdateReady && !WBState.sphereUpdating))) {
                 btn1.className = 'editorial-action-btn border border-emerald-400 hover:border-emerald-300 text-emerald-300 bg-emerald-400/10 transition-colors';
             } else if (ch === 'sphere' && (WBState.sphereCheckingUpdate || WBState.sphereUpdating)) {
                 btn1.className = 'editorial-action-btn border border-amber-400 hover:border-amber-300 text-amber-300 bg-amber-400/10 animate-pulse transition-colors';
@@ -5710,7 +5729,9 @@ export function expiryTone(days) {
                 }
             } else if (ch === 'sphere') {
                 t2 = '[ MATRIX ]';
-                if (WBState.sphereUpdateApplied) {
+                if (WBState.sphereRestarting) {
+                    t1 = '[ RESTARTING... ]';
+                } else if (WBState.sphereUpdateApplied) {
                     t1 = '[ RESTART REQUIRED ]';
                 } else if (WBState.sphereUpdating) {
                     t1 = '[ UPDATING... ]';
@@ -9189,6 +9210,20 @@ export function expiryTone(days) {
             WBState.logView = 'LIST';
             WBState.logModelHoverIdx = -1;
             setVertexHover(-1);
+            if (resolvedId !== 'sphere') {
+                if (WBState.sphereFaultTimer) {
+                    clearTimeout(WBState.sphereFaultTimer);
+                    WBState.sphereFaultTimer = null;
+                }
+                WBState.sphereFaultActive = false;
+                if (WBState.ringState === 'success' && !WBState.tasks?.running && !WBState.oauthWaiting) {
+                    setPreviewFrameState('idle');
+                }
+            } else if (WBState.sphereUpdateReady && !WBState.sphereUpdating && !WBState.sphereUpdateApplied) {
+                setPreviewFrameState('success', Infinity);
+            } else if (WBState.sphereCheckingUpdate || WBState.sphereUpdating) {
+                setPreviewFrameState('busy', 0);
+            }
 
             document.querySelectorAll('#chapter-nav .chapter-link').forEach(btn => {
                 const isActive = (meta.navKey && meta.navKey !== 'sphere') ? (btn.getAttribute('data-chapter') === meta.navKey) : false;
@@ -10437,17 +10472,52 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             const ch = WBState.currentChapter;
             if (ch === 'sphere') {
                 const btn1 = document.getElementById('btn-page-chord');
+                const clearBtnUpdateClasses = () => {
+                    if (!btn1) return;
+                    btn1.classList.remove(
+                        'border-white/50',
+                        'border-amber-400', 'text-amber-300', 'bg-amber-400/10', 'animate-pulse',
+                        'border-emerald-400', 'text-emerald-300', 'bg-emerald-400/10',
+                        'border-rose-500', 'text-rose-400', 'canvas-fault-jolt'
+                    );
+                };
+                const triggerSphereFault = () => {
+                    if (WBState.sphereFaultTimer && typeof clearTimeout === 'function') {
+                        clearTimeout(WBState.sphereFaultTimer);
+                        WBState.sphereFaultTimer = null;
+                    }
+                    WBState.sphereFaultActive = true;
+                    syncDynamicBottomButtons();
+                    if (btn1) {
+                        clearBtnUpdateClasses();
+                        btn1.classList.add('border-rose-500', 'text-rose-400', 'canvas-fault-jolt');
+                        WBState.sphereFaultTimer = setTimeout(() => {
+                            WBState.sphereFaultTimer = null;
+                            WBState.sphereFaultActive = false;
+                            btn1.classList.remove('border-rose-500', 'text-rose-400', 'canvas-fault-jolt');
+                            if (WBState.currentChapter === 'sphere') syncDynamicBottomButtons();
+                        }, 1200);
+                    }
+                    if (typeof setPreviewFrameState === 'function') setPreviewFrameState('error', 800);
+                };
                 if (WBState.sphereUpdateApplied) {
-                    notifyEditorialStatus('UPDATE ALREADY INSTALLED // RESTART SERVICE TO ACTIVATE');
+                    notifyEditorialStatus(WBState.sphereRestarting
+                        ? 'UPDATING // RESTARTING SERVICE...'
+                        : 'UPDATE ALREADY INSTALLED // RESTART SERVICE TO ACTIVATE');
                     return;
                 }
                 if (!WBState.sphereUpdateReady) {
                     if (WBState.sphereCheckingUpdate) return;
+                    if (WBState.sphereFaultTimer && typeof clearTimeout === 'function') {
+                        clearTimeout(WBState.sphereFaultTimer);
+                        WBState.sphereFaultTimer = null;
+                    }
+                    WBState.sphereFaultActive = false;
                     WBState.sphereCheckingUpdate = true;
                     soundscape.triggerTileNote(7);
                     notifyEditorialStatus('CHECKING UPDATE // /panel/api/update/check');
                     if (btn1) {
-                        btn1.classList.remove('border-white/50', 'border-rose-500', 'border-emerald-400');
+                        clearBtnUpdateClasses();
                         btn1.classList.add('border-amber-400', 'text-amber-300', 'animate-pulse', 'bg-amber-400/10');
                     }
                     if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
@@ -10464,21 +10534,16 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                         WBState.sphereCheckingUpdate = false;
                         if (data && data.ok !== false && data.has_update === false) {
                             WBState.sphereUpdateReady = false;
-                            syncDynamicBottomButtons();
-                            if (btn1) {
-                                btn1.classList.remove('border-amber-400', 'text-amber-300', 'animate-pulse', 'border-rose-500');
-                                btn1.classList.add('border-emerald-400');
-                                setTimeout(() => btn1.classList.remove('border-emerald-400'), 1200);
-                            }
-                            setPreviewFrameState('success', 1200);
-                            notifyEditorialStatus('UPDATE CHECK COMPLETE // ALREADY UP TO DATE');
+                            triggerSphereFault();
+                            notifyEditorialStatus('ALREADY UP TO DATE // NO NEW VERSION');
                         } else if (data && data.ok !== false && data.has_update === true && data.data?.artifact?.verified === true) {
                             WBState.sphereUpdateReady = true;
+                            WBState.sphereFaultActive = false;
                             if (btn1) {
-                                btn1.classList.remove('border-amber-400', 'text-amber-300', 'animate-pulse', 'border-rose-500', 'border-white/50');
+                                clearBtnUpdateClasses();
                                 btn1.classList.add('border-emerald-400', 'text-emerald-300', 'bg-emerald-400/10');
                             }
-                            setPreviewFrameState('success', 1200);
+                            if (typeof setPreviewFrameState === 'function') setPreviewFrameState('success', Infinity);
                             notifyEditorialStatus(`UPDATE AVAILABLE // V${String(data.current_version || '—').replace(/^v/i, '')} -> V${String(data.latest_version || '—').replace(/^v/i, '')}`);
                             syncDynamicBottomButtons();
                         } else if (data && data.ok !== false && data.has_update === true) {
@@ -10491,13 +10556,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                     }).catch((err) => {
                         WBState.sphereCheckingUpdate = false;
                         WBState.sphereUpdateReady = false;
-                        syncDynamicBottomButtons();
-                        if (btn1) {
-                            btn1.classList.remove('border-amber-400', 'text-amber-300', 'animate-pulse', 'border-emerald-400');
-                            btn1.classList.add('border-rose-500', 'text-rose-400', 'canvas-fault-jolt');
-                            setTimeout(() => { btn1.classList.remove('canvas-fault-jolt'); if (WBState.currentChapter === 'sphere') syncDynamicBottomButtons(); }, 1200);
-                        }
-                        setPreviewFrameState('error', 800);
+                        triggerSphereFault();
                         notifyEditorialStatus(err && err.message && err.message !== 'Check failed'
                             ? `UPDATE CHECK FAILED // ${String(err.message).toUpperCase()}`
                             : 'UPDATE CHECK FAILED // CLICK TO RETRY');
@@ -10507,10 +10566,15 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                         notifyEditorialStatus('UPDATE IN PROGRESS');
                         return;
                     }
+                    if (WBState.sphereFaultTimer && typeof clearTimeout === 'function') {
+                        clearTimeout(WBState.sphereFaultTimer);
+                        WBState.sphereFaultTimer = null;
+                    }
+                    WBState.sphereFaultActive = false;
                     WBState.sphereUpdating = true;
                     soundscape.triggerTileNote(11);
                     if (btn1) {
-                        btn1.classList.remove('border-emerald-400', 'text-emerald-300', 'bg-emerald-400/10');
+                        clearBtnUpdateClasses();
                         btn1.classList.add('border-amber-400', 'text-amber-300', 'animate-pulse', 'bg-amber-400/10');
                     }
                     notifyEditorialStatus('APPLYING UPDATE // /panel/api/update/apply');
@@ -10525,25 +10589,46 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                         if (!data || data.ok !== true) {
                             throw new Error(data && data.error ? (data.code ? `${data.code}: ${data.error}` : data.error) : 'verified update is unavailable');
                         }
+                        const isRestarting = data.status === 'restarting';
                         WBState.sphereUpdateApplied = true;
+                        WBState.sphereRestarting = isRestarting;
                         WBState.sphereUpdateReady = false;
                         WBState.sphereUpdating = false;
                         if (btn1) {
-                            btn1.classList.remove('border-amber-400', 'text-amber-300', 'animate-pulse');
-                            btn1.classList.add('border-emerald-400', 'text-emerald-300');
+                            clearBtnUpdateClasses();
+                            btn1.classList.add('border-emerald-400', 'text-emerald-300', 'bg-emerald-400/10');
                         }
-                        setPreviewFrameState('success', 1000);
+                        if (typeof setPreviewFrameState === 'function') setPreviewFrameState('success', isRestarting ? 1200 : 1000);
                         syncDynamicBottomButtons();
-                        notifyEditorialStatus('UPDATE INSTALLED // RESTART SERVICE TO ACTIVATE');
+                        if (isRestarting) {
+                            notifyEditorialStatus('UPDATING // RESTARTING SERVICE...');
+                            let attempts = 0;
+                            const pollOnline = () => {
+                                attempts++;
+                                if (attempts > 60) {
+                                    notifyEditorialStatus('RESTART TIMEOUT // PLEASE REFRESH MANUALLY');
+                                    return;
+                                }
+                                const probe = (typeof safeApiFetch === 'function')
+                                    ? safeApiFetch('/panel/api/overview', { method: 'GET' }, 3000, true)
+                                    : fetch('/panel/api/overview', { method: 'GET' }).then(r => (r && r.ok ? r.json() : null)).catch(() => null);
+                                Promise.resolve(probe).then(ov => {
+                                    if (ov && ov.ok !== false && !ov.error) {
+                                        location.reload();
+                                    } else {
+                                        setTimeout(pollOnline, 1000);
+                                    }
+                                }).catch(() => {
+                                    setTimeout(pollOnline, 1000);
+                                });
+                            };
+                            setTimeout(pollOnline, 1200);
+                        } else {
+                            notifyEditorialStatus('UPDATE INSTALLED // RESTART SERVICE TO ACTIVATE');
+                        }
                     }).catch((err) => {
                         WBState.sphereUpdating = false;
-                        syncDynamicBottomButtons();
-                        if (btn1) {
-                            btn1.classList.remove('border-amber-400', 'text-amber-300', 'animate-pulse');
-                            btn1.classList.add('border-rose-500', 'text-rose-400', 'canvas-fault-jolt');
-                            setTimeout(() => { btn1.classList.remove('canvas-fault-jolt'); if (WBState.currentChapter === 'sphere') syncDynamicBottomButtons(); }, 1200);
-                        }
-                        setPreviewFrameState('error', 800);
+                        triggerSphereFault();
                         notifyEditorialStatus(err && err.message && err.message !== 'verified update is unavailable'
                             ? `UPDATE FAILED // ${String(err.message).toUpperCase()}`
                             : 'UPDATE FAILED');

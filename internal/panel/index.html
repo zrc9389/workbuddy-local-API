@@ -796,13 +796,13 @@
         .action-feedback-busy { color: #facc15 !important; border-color: #facc15 !important; animation: jsonBtnSlowPulse 1.8s ease-in-out infinite; }
         .action-feedback-busy, .action-feedback-success, .input-verifying-sway, .input-success-green { transition: color .25s ease, border-color .25s ease, border-bottom-color .25s ease; }
         .editorial-input.action-feedback-busy { color: inherit !important; animation: verifyingSway 800ms ease-in-out infinite; }
-        .action-feedback-success { color: #4ade80 !important; border-color: #4ade80 !important; }
+        .action-feedback-success { color: #34d399 !important; border-color: #34d399 !important; }
         .action-feedback-error { color: #ff5c74 !important; border-color: #ff5c74 !important; animation: jsonBtnFaultShake .45s ease-in-out; }
-        #btn-page-chord.border-amber-400 { border-color: #facc15 !important; }
-        #btn-page-chord.border-emerald-400 { border-color: #4ade80 !important; }
-        #btn-page-chord.border-rose-500 { border-color: #ff5c74 !important; }
+        #btn-page-chord.border-amber-400 { border-color: #facc15 !important; color: #facc15 !important; background-color: rgba(250, 204, 21, 0.10) !important; animation: jsonBtnSlowPulse 1.8s ease-in-out infinite; }
+        #btn-page-chord.border-emerald-400 { border-color: #34d399 !important; color: #34d399 !important; background-color: rgba(52, 211, 153, 0.10) !important; }
+        #btn-page-chord.border-rose-500 { border-color: #ff5c74 !important; color: #ff5c74 !important; background-color: rgba(255, 92, 116, 0.10) !important; }
         @media (prefers-reduced-motion: reduce) {
-            .action-feedback-busy, .action-feedback-success, .action-feedback-error { animation: none !important; }
+            .action-feedback-busy, .action-feedback-success, .action-feedback-error, #btn-page-chord.border-amber-400 { animation: none !important; }
         }
 
         /* ==================== Mobile Compatibility (< 768px ONLY; Desktop >= 768px Untouched) ==================== */

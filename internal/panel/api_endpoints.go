@@ -442,12 +442,14 @@ func (p *Panel) updateApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]any{"ok": false, "code": code, "error": err.Error()})
 		return
 	}
+	status := "restart_required"
 	if p.cfg.RestartService != nil {
 		if err := p.cfg.RestartService(); err != nil {
 			writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "code": "restart_failed", "error": "update installed but service restart failed"})
 			return
 		}
+		status = "restarting"
 	}
 	p.updateArtifact = nil
-	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "status": "restart_required"})
+	writeJSON(w, http.StatusAccepted, map[string]any{"ok": true, "status": status})
 }

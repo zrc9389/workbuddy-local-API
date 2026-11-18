@@ -367,3 +367,126 @@ test('applied update requires restart and never re-sends apply', async () => {
   assert.equal(requests.length, 1);
   assert.equal(notices.at(-1), 'UPDATE ALREADY INSTALLED // RESTART SERVICE TO ACTIVATE');
 });
+
+test('update check no-update triggers red fault jolt and error ring state', async () => {
+  const state = {currentChapter:'sphere', sphereUpdateReady:false, sphereUpdating:false, sphereCheckingUpdate:false};
+  const notices = [], frameCalls = [], requests = [], timers = [], classes = new Set();
+  const button = {
+    classList:{add:(...xs)=>xs.forEach(x=>classes.add(x)), remove:(...xs)=>xs.forEach(x=>classes.delete(x))},
+    addEventListener:(_type,fn)=>button.handler=fn
+  };
+  const source = functionSource("        document.getElementById('btn-page-chord').addEventListener('click', () => {", '// second ch removed') + '});';
+  runFunction(source, 'null', {
+    document:{getElementById:()=>button}, WBState:state, soundscape:{triggerTileNote(){}},
+    notifyEditorialStatus:value=>notices.push(value), syncDynamicBottomButtons(){},
+    setPreviewFrameState:(s,d)=>frameCalls.push([s,d]),
+    safeApiFetch:(...args)=>{requests.push(args); return Promise.resolve({ok:true, has_update:false})},
+    setTimeout:(fn,ms)=>{timers.push({fn,ms}); return timers.length}, clearTimeout(){}, Promise, Error, location:{reload(){}}
+  });
+  button.handler();
+  assert.equal(frameCalls.at(-1)[0], 'busy');
+  // Resolve minimum 800ms search timer
+  timers.shift().fn();
+  for (let i=0;i<6;i++) await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(state.sphereCheckingUpdate, false);
+  assert.equal(state.sphereUpdateReady, false);
+  assert.equal(state.sphereFaultActive, true);
+  assert.deepEqual(frameCalls.at(-1), ['error', 800]);
+  assert.ok(classes.has('border-rose-500'));
+  assert.ok(classes.has('canvas-fault-jolt'));
+  assert.equal(notices.at(-1), 'ALREADY UP TO DATE // NO NEW VERSION');
+  // 1200ms fault cleanup clears fault state and classes
+  const faultTimer = timers.find(t => t.ms === 1200);
+  assert.ok(faultTimer);
+  faultTimer.fn();
+  assert.equal(state.sphereFaultActive, false);
+  assert.ok(!classes.has('border-rose-500'));
+});
+
+test('verified update keeps solid green ring (Infinity) and restarting apply polls overview then reloads', async () => {
+  const state = {currentChapter:'sphere', sphereUpdateReady:false, sphereUpdating:false, sphereCheckingUpdate:false};
+  const notices = [], frameCalls = [], requests = [], timers = [];
+  let reloaded = false;
+  const button = {classList:{add(){}, remove(){}}, addEventListener:(_type,fn)=>button.handler=fn};
+  const source = functionSource("        document.getElementById('btn-page-chord').addEventListener('click', () => {", '// second ch removed') + '});';
+  let overviewCalls = 0;
+  runFunction(source, 'null', {
+    document:{getElementById:()=>button}, WBState:state, soundscape:{triggerTileNote(){}},
+    notifyEditorialStatus:value=>notices.push(value), syncDynamicBottomButtons(){},
+    setPreviewFrameState:(s,d)=>frameCalls.push([s,d]),
+    safeApiFetch:(url, ...rest)=>{
+      requests.push([url, ...rest]);
+      if (url === '/panel/api/update/check') return Promise.resolve({ok:true, has_update:true, current_version:'3.0.2', latest_version:'3.0.3', data:{artifact:{verified:true}}});
+      if (url === '/panel/api/update/apply') return Promise.resolve({ok:true, status:'restarting'});
+      if (url === '/panel/api/overview') {
+        overviewCalls++;
+        if (overviewCalls === 1) return Promise.reject(new Error('restarting'));
+        return Promise.resolve({ok:true, accounts:[]});
+      }
+      return Promise.resolve({ok:true});
+    },
+    setTimeout:(fn,ms)=>{timers.push({fn,ms}); return timers.length}, clearTimeout(){}, Promise, Error,
+    location:{reload(){ reloaded = true; }}
+  });
+  button.handler();
+  timers.shift().fn();
+  for (let i=0;i<6;i++) await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(state.sphereUpdateReady, true);
+  assert.deepEqual(frameCalls.at(-1), ['success', Infinity]);
+
+  // Second click applies update and enters restarting poll loop
+  button.handler();
+  for (let i=0;i<6;i++) await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(state.sphereUpdateApplied, true);
+  assert.equal(state.sphereRestarting, true);
+  assert.equal(notices.at(-1), 'UPDATING // RESTARTING SERVICE...');
+  assert.equal(reloaded, false);
+  // First poll fails during restart, schedules retry
+  const firstPoll = timers.shift();
+  assert.equal(firstPoll.ms, 1200);
+  firstPoll.fn();
+  for (let i=0;i<6;i++) await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(reloaded, false);
+  // Second poll succeeds and triggers location.reload()
+  const secondPoll = timers.shift();
+  assert.equal(secondPoll.ms, 1000);
+  secondPoll.fn();
+  for (let i=0;i<6;i++) await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(reloaded, true);
+});
+
+test('setPreviewFrameState clears isGlobalSpinning on idle, success and error and keeps solid green on Infinity', () => {
+  const state = {ringState:'idle', isGlobalSpinning:false, _ringTimer:null, spinTimer:null};
+  const timers = [];
+  const fn = runFunction(
+    functionSource('        function setPreviewFrameState(state, durationMs = 800) {', '        // Visual feedback is explicitly started'),
+    'setPreviewFrameState',
+    {
+      WBState: state,
+      document: {getElementById: () => null},
+      window: {triggerModelSpinAcceleration: () => { state.isGlobalSpinning = true; }},
+      setTimeout: (cb, ms) => { timers.push({cb, ms}); return timers.length; },
+      clearTimeout() {},
+      soundscape: undefined,
+    }
+  );
+  fn('busy', 0);
+  assert.equal(state.ringState, 'busy');
+  assert.equal(state.isGlobalSpinning, true);
+  assert.equal(timers.length, 0);
+
+  fn('success', Infinity);
+  assert.equal(state.ringState, 'success');
+  assert.equal(state.isGlobalSpinning, false);
+  assert.equal(timers.length, 0, 'Infinity success ring must not schedule auto-reset');
+
+  fn('busy', 0);
+  assert.equal(state.isGlobalSpinning, true);
+  fn('error', 800);
+  assert.equal(state.ringState, 'error');
+  assert.equal(state.isGlobalSpinning, false);
+  assert.equal(timers.length, 1);
+  timers.shift().cb();
+  assert.equal(state.ringState, 'idle');
+  assert.equal(state.isGlobalSpinning, false);
+});

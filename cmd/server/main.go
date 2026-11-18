@@ -21,6 +21,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -67,8 +68,34 @@ func stateSibling(stateFile, name string) string {
 	return filepath.Join(dir, name)
 }
 
+// errRestartRequested 由在线更新成功触发优雅退场时返回，供 main() 以退出码 75 交由 systemd Restart=on-failure 拉起新版本。
+var errRestartRequested = errors.New("restart requested after update")
+
+// newRestartTrigger 构造更新后延迟优雅关闭回调：立即返回 nil 让 HTTP 202 restarting 响应完整写出，
+// 随后经 delay 触发 cancel() 进入优雅停机与 SSE 排空；并发多次调用幂等。
+func newRestartTrigger(requested *atomic.Bool, cancel context.CancelFunc, delay time.Duration) func() error {
+	return func() error {
+		if requested == nil || cancel == nil {
+			return errors.New("restart trigger is not configured")
+		}
+		if requested.Swap(true) {
+			return nil
+		}
+		go func() {
+			if delay > 0 {
+				time.Sleep(delay)
+			}
+			cancel()
+		}()
+		return nil
+	}
+}
+
 func main() {
 	if err := run(); err != nil {
+		if errors.Is(err, errRestartRequested) {
+			os.Exit(75)
+		}
 		fmt.Fprintf(os.Stderr, "workbuddy-local: %v\n", err)
 		os.Exit(1)
 	}
@@ -368,6 +395,11 @@ func run() error {
 	if err != nil {
 		log.Fatalf("spool: %v", err)
 	}
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	ctx, cancel := context.WithCancel(sigCtx)
+	defer cancel()
+	var restartRequested atomic.Bool
 	var configSaveMu sync.Mutex
 	pn := panel.New(panel.Config{
 		ModelPolicy: modelPolicy,
@@ -396,6 +428,7 @@ func run() error {
 		Version:                 appVersion,
 		UpdateChecker:           panel.NewUpdateChecker(panel.UpdateSource{GitHubOwner: cfg.Update.GitHubOwner, GitHubRepo: cfg.Update.GitHubRepo, Channel: cfg.Update.Channel}, appVersion),
 		UpdateApplier:           panel.NewUpdateInstaller("", nil),
+		RestartService:          newRestartTrigger(&restartRequested, cancel, 250*time.Millisecond),
 		Live:                    live,
 		// 模型上限探测数据（scripts/probe_max_tokens.py --panel-out 写入）：
 		// 与 state 文件同目录，缺省 data/output_probes.json。
@@ -469,8 +502,7 @@ func run() error {
 		// handler 侧第三道闸（global realm）：false（显式逃生门）时不列 global: 模型名。
 		GlobalEnabled: cfg.Global.Enabled,
 	})
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	// ctx 已在构造 panel 前统一创建，支持 OS 信号与在线更新 RestartService 共同触发优雅停机。
 	retention := panel.NewRetentionManager()
 	retention.SetWindow(cfg.RetentionWindowDur)
 	retention.Run(ctx, time.Minute, func(now time.Time) error {
@@ -550,6 +582,10 @@ func run() error {
 	}
 	p.Flush()
 
+	if restartRequested.Load() {
+		log.Printf("update applied: exiting with code 75 for service manager restart")
+		return errRestartRequested
+	}
 	log.Printf("bye")
 	return nil
 }
