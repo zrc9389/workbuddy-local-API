@@ -391,7 +391,7 @@ func (c *Client) BillingHeaders(req *http.Request, a *auth.Auth) {
 // RefreshHeaders refresh 端点专属头（X-Refresh-Token 只允许出现在这里）。
 func (c *Client) RefreshHeaders(req *http.Request, a *auth.Auth) {
 	c.CommonHeaders(req, a)
-	req.Header.Set("X-Refresh-Token", a.RefreshToken)
+	req.Header.Set("X-Refresh-Token", a.RefreshTokenValue())
 	if a.EnterpriseID != "" {
 		req.Header.Set("X-Enterprise-Id", a.EnterpriseID)
 	}

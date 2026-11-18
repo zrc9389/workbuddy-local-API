@@ -229,12 +229,13 @@ func newUTLSProxyTransport(base *http.Transport, proxyURL *url.URL) (*utlsProxyT
 	}
 
 	u.h2Tr = &http2.Transport{
-		DialTLSContext:     u.dialH2TLSContext,
-		DisableCompression: true,
-		AllowHTTP:          false,
-		ReadIdleTimeout:    h2ReadIdleTimeout,
-		PingTimeout:        h2PingTimeout,
-		IdleConnTimeout:    idleConnTimeout,
+		DialTLSContext:             u.dialH2TLSContext,
+		DisableCompression:         true,
+		AllowHTTP:                  false,
+		StrictMaxConcurrentStreams: true,
+		ReadIdleTimeout:            h2ReadIdleTimeout,
+		PingTimeout:                h2PingTimeout,
+		IdleConnTimeout:            idleConnTimeout,
 	}
 
 	u.h1TLSTr = &http.Transport{

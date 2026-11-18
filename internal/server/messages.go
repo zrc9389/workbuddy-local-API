@@ -328,17 +328,39 @@ func (h *Handler) claudeMessages(w http.ResponseWriter, r *http.Request) {
 
 	scanner := bufio.NewScanner(pr)
 	started := false
+	headersSent := false
 	textStarted := false
 	inputTokens, outputTokens := 0, 0
 	toolBlocks := map[int]struct{ id, name string }{}
 	toolStarted := map[int]bool{}
 	var preStream strings.Builder
+	ensureSSEHeaders := func() {
+		if headersSent {
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.WriteHeader(http.StatusOK)
+		headersSent = true
+	}
 
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
-			if !started {
+			// 透传来自上游/StreamHint 的首包前保活心跳（如 ": ping" / ": keepalive"），
+			// 防止 Anthropic 客户端在长推理首字等待超过 5s 时超时断开。
+			if strings.HasPrefix(line, ":") {
+				ensureSSEHeaders()
+				_, _ = fmt.Fprintf(w, "%s\n\n", line)
+				if ok {
+					flusher.Flush()
+				}
+				continue
+			}
+			if !started && !headersSent {
 				preStream.WriteString(line)
 				preStream.WriteByte('\n')
 			}
@@ -385,9 +407,7 @@ func (h *Handler) claudeMessages(w http.ResponseWriter, r *http.Request) {
 				}
 
 				if !started {
-					w.Header().Set("Content-Type", "text/event-stream")
-					w.Header().Set("Cache-Control", "no-cache")
-					w.Header().Set("Connection", "keep-alive")
+					ensureSSEHeaders()
 					mStart, _ := json.Marshal(map[string]any{
 						"type": "message_start",
 						"message": map[string]any{
@@ -468,6 +488,18 @@ func (h *Handler) claudeMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		<-doneChan
+		if headersSent {
+			errEv, _ := json.Marshal(map[string]any{
+				"type":  "error",
+				"error": map[string]any{"type": "api_error", "message": "upstream returned no message events"},
+			})
+			_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", errEv)
+			if ok {
+				flusher.Flush()
+			}
+			_ = pr.Close()
+			return
+		}
 		status := pipeWriter.statusCode
 		if status < http.StatusBadRequest {
 			status = http.StatusBadGateway

@@ -201,7 +201,7 @@ func TestNewPoolConfigDefaults(t *testing.T) {
 	if !c.SessionSticky.Enabled {
 		t.Error("session_sticky.enabled want true")
 	}
-	if c.SessionTTL.Minutes() != 30 || c.SessionGCInterval.Minutes() != 5 {
+	if c.SessionTTL.Hours() != 12 || c.SessionGCInterval.Minutes() != 5 {
 		t.Errorf("session durations=%v/%v", c.SessionTTL, c.SessionGCInterval)
 	}
 	if c.Upstash.URL != "" || c.Upstash.Token != "" {

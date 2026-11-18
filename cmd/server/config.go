@@ -233,7 +233,7 @@ type Config struct {
 
 	SessionSticky struct {
 		Enabled    bool   `json:"enabled"`     // 默认 true
-		TTL        string `json:"ttl"`         // 会话绑定 TTL，默认 "30m"
+		TTL        string `json:"ttl"`         // 会话绑定 TTL，默认 "12h"
 		GCInterval string `json:"gc_interval"` // 会话 GC 周期，默认 "5m"
 	} `json:"session_sticky"`
 
@@ -334,7 +334,7 @@ func Default() *Config {
 	// costTier 探索默认 30m；"0" 关停。
 	c.Pool.CostExploreInterval = "30m"
 	c.SessionSticky.Enabled = true
-	c.SessionSticky.TTL = "30m"
+	c.SessionSticky.TTL = "12h"
 	c.SessionSticky.GCInterval = "5m"
 	return c
 }

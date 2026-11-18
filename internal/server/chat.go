@@ -869,6 +869,9 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		} else if sink, ok := w.(interface{ observeResponseText(string) error }); ok && sink != nil {
 			observer = upstream.TextStreamObserver(sink.observeResponseText)
 		}
+		if waiter, ok := w.(interface{ beginLiveStreamWait() }); ok && waiter != nil {
+			waiter.beginLiveStreamWait()
+		}
 		resp, responseSpool, err := upstream.AggregateSpoolWithObserver(rc, observer)
 		rc.Close()
 		if err == nil && !payload.IsSpool && aggregateStarved(resp) && !liveResponseStarted(w) {
@@ -1129,7 +1132,7 @@ func usageCreditTotal(resp map[string]any) (credit float64, total int, ok bool) 
 }
 
 func liveResponseStarted(w http.ResponseWriter) bool {
-	if cap, ok := w.(*chatCapture); ok && cap.live != nil && cap.live.started {
+	if cap, ok := w.(*chatCapture); ok && cap.live != nil && cap.live.hasSentHeadersOrStarted() {
 		return true
 	}
 	return false

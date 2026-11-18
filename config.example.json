@@ -101,7 +101,7 @@
   },
   "session_sticky": {
     "enabled": true,
-    "ttl": "30m",
+    "ttl": "12h",
     "gc_interval": "5m"
   },
   "memory": {

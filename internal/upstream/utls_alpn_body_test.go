@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 )
@@ -102,6 +103,10 @@ func TestUTLSALPNSwitchH1ToH2PreservesStreamingBodyWithoutGetBody(t *testing.T) 
 	}
 	if string(respBytes) != "echo:"+payload {
 		t.Fatalf("server echoed %q, want %q", string(respBytes), "echo:"+payload)
+	}
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for !streamBody.IsClosed() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
 	}
 	if !streamBody.IsClosed() {
 		t.Fatal("expected streaming request body to be closed after RoundTrip completed")

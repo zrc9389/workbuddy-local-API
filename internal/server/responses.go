@@ -112,7 +112,7 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 	}
 	recorder := newChatCapture()
 	if stream {
-		recorder.live = newLiveResponsesWriter(w, model)
+		recorder.live = newLiveResponsesWriterWithPing(w, model, h.cfg.SSEFirstBytePing)
 	}
 	defer recorder.close()
 	chatReq, err := http.NewRequestWithContext(context.WithValue(r.Context(), spoolKey{}, nil), http.MethodPost, "/internal/responses-chat", bytes.NewReader(chatBody))
@@ -124,7 +124,7 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 	chatReq.RemoteAddr = r.RemoteAddr
 	h.chatCompletions(recorder, chatReq)
 	if recorder.Code < 200 || recorder.Code >= 300 {
-		if recorder.live != nil && recorder.live.started {
+		if recorder.live != nil && recorder.live.hasSentHeadersOrStarted() {
 			recorder.live.fail("upstream_error")
 			return
 		}
@@ -713,7 +713,7 @@ func reqBoolRaw(raw map[string]json.RawMessage, key string) bool {
 func (h *Handler) forwardLargeResponses(w http.ResponseWriter, r *http.Request, model string, body io.Reader, messages io.ReadSeeker, stream bool, customTools map[string]bool) bool {
 	recorder := newChatCapture()
 	if stream {
-		recorder.live = newLiveResponsesWriter(w, model)
+		recorder.live = newLiveResponsesWriterWithPing(w, model, h.cfg.SSEFirstBytePing)
 	}
 	defer recorder.close()
 	chatReq, err := http.NewRequestWithContext(context.WithValue(context.WithValue(r.Context(), spoolKey{}, nil), internalResponsesKey{}, true), http.MethodPost, "/internal/responses-chat", body)
@@ -724,7 +724,7 @@ func (h *Handler) forwardLargeResponses(w http.ResponseWriter, r *http.Request, 
 	chatReq.RemoteAddr = r.RemoteAddr
 	h.chatCompletions(recorder, chatReq)
 	if recorder.Code < 200 || recorder.Code >= 300 {
-		if recorder.live != nil && recorder.live.started {
+		if recorder.live != nil && recorder.live.hasSentHeadersOrStarted() {
 			recorder.live.fail("upstream_error")
 			return true
 		}
@@ -935,6 +935,11 @@ func (c *chatCapture) Header() http.Header                     { return c.header
 func (c *chatCapture) WriteHeader(code int)                    { c.Code = code }
 func (c *chatCapture) Write(p []byte) (int, error)             { return c.Body.Write(p) }
 func (c *chatCapture) acceptChatResponse(value map[string]any) { c.response = value }
+func (c *chatCapture) beginLiveStreamWait() {
+	if c != nil && c.live != nil {
+		c.live.beginStreamWait()
+	}
+}
 func (c *chatCapture) streamObserver() upstream.StreamObserver {
 	if c.live == nil {
 		return nil
@@ -1320,10 +1325,14 @@ type liveToolCallState struct {
 // 工具调用参数增量（function_call_arguments.delta）即收即推并实时 Flush()；
 // 彻底废除整包聚合落盘后再按 16KB 切片伪造打字机的机制。
 type liveResponsesWriter struct {
-	w         *responseEventWriter
-	id, model string
-	sequence  int
-	started   bool
+	w           *responseEventWriter
+	id, model   string
+	sequence    int
+	started     bool
+	headersSent bool
+
+	firstBytePing    time.Duration
+	firstPingStarted bool
 
 	hasReasoning bool
 	reasoningIdx int
@@ -1341,13 +1350,79 @@ type liveResponsesWriter struct {
 }
 
 func newLiveResponsesWriter(w http.ResponseWriter, model string) *liveResponsesWriter {
+	return newLiveResponsesWriterWithPing(w, model, upstream.DefaultSSEFirstBytePing)
+}
+
+func newLiveResponsesWriterWithPing(w http.ResponseWriter, model string, firstBytePing time.Duration) *liveResponsesWriter {
+	if firstBytePing == 0 {
+		firstBytePing = upstream.DefaultSSEFirstBytePing
+	}
 	return &liveResponsesWriter{
 		w:             &responseEventWriter{ResponseWriter: w},
 		id:            "resp_" + session.NewMessageID(),
 		model:         model,
+		firstBytePing: firstBytePing,
 		toolCalls:     make(map[int]*liveToolCallState),
 		stopKeepalive: make(chan struct{}),
 	}
+}
+
+func (l *liveResponsesWriter) hasSentHeadersOrStarted() bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.started || l.headersSent
+}
+
+func (l *liveResponsesWriter) ensureHeadersLocked() {
+	if l.headersSent {
+		return
+	}
+	l.headersSent = true
+	l.w.Header().Set("Content-Type", "text/event-stream")
+	l.w.Header().Set("Cache-Control", "no-cache")
+	l.w.Header().Set("Connection", "keep-alive")
+	l.w.Header().Set("X-Accel-Buffering", "no")
+	l.w.WriteHeader(http.StatusOK)
+}
+
+// beginStreamWait 在上游已建立 200 响应并等待首个有效增量期间启动首包前保活心跳：
+// 超过 firstBytePing（默认 5s）尚无增量时先下发 SSE 头与 ": ping\n\n" 并 Flush，
+// 防止 Responses 客户端或中间反代在长推理首字前超时断连。
+func (l *liveResponsesWriter) beginStreamWait() {
+	l.mu.Lock()
+	if l.closed || l.started || l.firstPingStarted || l.firstBytePing <= 0 {
+		l.mu.Unlock()
+		return
+	}
+	l.firstPingStarted = true
+	wait := l.firstBytePing
+	l.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(wait)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-l.stopKeepalive:
+				return
+			case <-ticker.C:
+				l.mu.Lock()
+				if l.started || l.closed {
+					l.mu.Unlock()
+					return
+				}
+				l.ensureHeadersLocked()
+				rc := http.NewResponseController(l.w)
+				_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Second))
+				_, _ = io.WriteString(l.w, ": ping\n\n")
+				l.w.Flush()
+				l.mu.Unlock()
+			}
+		}
+	}()
 }
 
 func (l *liveResponsesWriter) closeHelper() {
@@ -1367,11 +1442,7 @@ func (l *liveResponsesWriter) start(id, model string) {
 	if model != "" {
 		l.model = model
 	}
-	l.w.Header().Set("Content-Type", "text/event-stream")
-	l.w.Header().Set("Cache-Control", "no-cache")
-	l.w.Header().Set("Connection", "keep-alive")
-	l.w.Header().Set("X-Accel-Buffering", "no")
-	l.w.WriteHeader(http.StatusOK)
+	l.ensureHeadersLocked()
 
 	// 启动 15 秒心跳保活看门狗：防止静默期间断流并探活死连接
 	go func() {
@@ -1572,6 +1643,7 @@ func (l *liveResponsesWriter) fail(code string) {
 	if l.w.err != nil {
 		return
 	}
+	l.ensureHeadersLocked()
 	writeResponsesEvent(l.w, "response.failed", map[string]any{
 		"type":            "response.failed",
 		"sequence_number": l.sequence,
@@ -1593,6 +1665,22 @@ func (l *liveResponsesWriter) complete(response map[string]any) error {
 	defer l.mu.Unlock()
 	defer l.closeHelper()
 	if !l.started {
+		if l.headersSent {
+			created := make(map[string]any, len(response))
+			for key, value := range response {
+				created[key] = value
+			}
+			created["status"] = "in_progress"
+			created["output"] = []any{}
+			created["output_text"] = ""
+			writeResponsesEvent(l.w, "response.created", map[string]any{
+				"type":            "response.created",
+				"sequence_number": 0,
+				"response":        created,
+			})
+			l.w.Flush()
+			return writeResponsesStreamTail(l.w, response, 1, true)
+		}
 		return writeResponsesStream(l.w, response)
 	}
 
