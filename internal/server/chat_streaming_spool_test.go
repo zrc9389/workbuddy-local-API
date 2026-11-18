@@ -22,6 +22,7 @@ import (
 
 // TestChatCompletions_LargeRequestStreamForwardAndCleaned 验证大请求真正使用临时文件流式转发且请求结束后临时文件完全销毁
 func TestChatCompletions_LargeRequestStreamForwardAndCleaned(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
 	// 构造 1MB 的超长大请求，包含完整上下文与 tail 标志
 	bigPadding := strings.Repeat("X", 1024*1024)
 	userText := bigPadding + "_TAIL_VERIFIED"
