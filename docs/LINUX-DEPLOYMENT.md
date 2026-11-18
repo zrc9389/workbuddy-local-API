@@ -14,7 +14,7 @@
 
 | 路径 | 所有者/权限建议 | 用途 |
 | --- | --- | --- |
-| `/opt/workbuddy-local` | root:root，目录 0755，普通文件 0644 | 只读发行内容、systemd 工作目录 |
+| `/opt/workbuddy-local` | root:root（0755）；开启在线更新时改为服务用户可写 | 发行内容与工作目录（详见 3.3 节） |
 | `/opt/workbuddy-local/wb2api` | root:root，0755 | Linux 网关，不是 Windows exe |
 | `/opt/workbuddy-local/deployment/linux/start.sh` | root:root，0755，LF | 前台启动器，最终 exec Go 进程 |
 | `/opt/workbuddy-local/third_party/meta/bin/linux-ARCH/mihomo` | root:root，0755 | 对应架构的固定版内核 |
@@ -100,53 +100,44 @@ sudo -u workbuddy-local /opt/workbuddy-local/deployment/linux/start.sh \
 
 退出优先 Ctrl+C 并等日志结束，不把 kill -9 当正常停机。
 
-### 3.3 从 3.0.1 预览版/测试版升级到 3.0.1 正式版
+### 3.3 升级到 3.0.2 与面板在线自动更新
 
-`3.0.1 预览版 / 测试版` 不能依赖旧版面板自动更新完成升级，请先手动下载 `3.0.1 正式版` 的发行包或匹配架构的 `wb2api`，按本次 `SHA256SUMS.txt` 核验后再替换。升级只替换程序文件，保留 `/etc/workbuddy-local/config.json`、`/var/lib/workbuddy-local` 下的账号、状态、用量和密码数据，不重新生成配置，也不覆盖账号目录。
+`3.0.1 预览版 / 测试版` 不能依赖旧版面板自动更新完成升级，请先手动下载 `3.0.2` 发行包或匹配架构的 `wb2api`，按本次 `SHA256SUMS.txt` 核验后再替换；`3.0.1 正式版` 及以上用户可使用面板检查并下载更新。升级只替换程序文件，保留 `/etc/workbuddy-local/config.json`、`/var/lib/workbuddy-local` 下的账号、状态、用量和密码数据，不重新生成配置，也不覆盖账号目录。
 
-systemd 模板使用 `ProtectSystem=strict`，而 `ReadWritePaths=` 只放行 `/etc/workbuddy-local` 与 `/var/lib/workbuddy-local`，因此 `/opt/workbuddy-local` 对服务进程默认只读，面板的下载替换会因无法重命名 `wb2api` 而失败。推荐由管理员人工替换：
+推荐的人工替换步骤（适用于保持 `/opt/workbuddy-local` 为 `root:root` 只读权限的部署）：
 
 ```sh
 # 以 amd64 为例；arm64 请替换包名。先核对归档与本次 SHA256SUMS.txt。
-tar -xzf workbuddy-local-v3.0.1-linux-amd64.tar.gz
-cd workbuddy-local-v3.0.1-linux-amd64
+tar -xzf workbuddy-local-v3.0.2-linux-amd64.tar.gz
+cd workbuddy-local-v3.0.2-linux-amd64
 sha256sum -c SHA256SUMS.txt
 sudo systemctl stop workbuddy-local.service
-sudo install -d -m 0700 /root/workbuddy-backup-3.0.1-preview
-sudo cp -a /opt/workbuddy-local/wb2api /root/workbuddy-backup-3.0.1-preview/wb2api
+sudo install -d -m 0700 /root/workbuddy-backup-pre-3.0.2
+sudo cp -a /opt/workbuddy-local/wb2api /root/workbuddy-backup-pre-3.0.2/wb2api
 sudo install -m 0755 -o root -g root ./wb2api /opt/workbuddy-local/wb2api
 sudo systemctl start workbuddy-local.service
 sudo systemctl status --no-pager workbuddy-local.service
 ```
 
-自 `3.0.1 正式版` 起，更新器已支持自动安全轮转常规旧版 `.bak` 文件；需要人工归档的旧程序仍建议放到 `/opt/workbuddy-local` 之外。
-
-如确需使用面板下载替换，不要修改发行包内的 `deployment/linux/workbuddy-local.service` 模板，改用 systemd drop-in 临时放开该目录写权限：
+自 `3.0.1 正式版` 起，更新器已支持自动安全轮转常规旧版 `.bak` 文件；需要人工归档的旧程序仍建议放到 `/opt/workbuddy-local` 之外。自 `3.0.2` 起，发行模板 `deployment/linux/workbuddy-local.service` 已在 `ProtectSystem=strict` 下将 `ReadWritePaths=` 扩展为 `/etc/workbuddy-local /var/lib/workbuddy-local /opt/workbuddy-local`；若需要启用**面板内一键更新并自动重启**（替换成功后网关会以退出码 `75` 优雅退出，由 `Restart=on-failure` 自动拉起新版本并由前端自动刷新），请确保服务用户对 `/opt/workbuddy-local` 及现有 `wb2api*` 具备写权限（老版本升级若未更新 `.service` 文件，还需通过 drop-in 补充 `ReadWritePaths=/opt/workbuddy-local`）：
 
 ```sh
+# 若服务单位尚未放行 /opt/workbuddy-local，可追加 drop-in：
 sudo install -d -m 0755 /etc/systemd/system/workbuddy-local.service.d
-printf '%s\n' '[Service]' 'ReadWritePaths=/opt/workbuddy-local' \
-  | sudo tee /etc/systemd/system/workbuddy-local.service.d/10-update-writable.conf >/dev/null
+printf '%s\n' '[Service]' 'ReadWritePaths=/etc/workbuddy-local /var/lib/workbuddy-local /opt/workbuddy-local' \
+  | sudo tee /etc/systemd/system/workbuddy-local.service.d/update-rw.conf >/dev/null
 sudo systemctl daemon-reload
+
+# 并赋予服务用户目录写权限（或使用 setfacl）：
+sudo chown workbuddy-local:workbuddy-local /opt/workbuddy-local /opt/workbuddy-local/wb2api*
 sudo systemctl restart workbuddy-local.service
 ```
 
-`ReadWritePaths=` 只解除 systemd 的只读挂载，不会改变 Unix 所有权或模式。还需临时让服务用户能写该目录，二选一：
+如出于严格只读审计要求不需要面板自更新，只需保持 `/opt/workbuddy-local` 属主为 `root:root`（服务用户无写权限）或在 `config.json` 中置空 `update.github_owner` / `github_repo`。若曾临时放开后希望恢复只读锁定，可在升级完成后移回属主或收回 ACL：
 
 ```sh
-sudo setfacl -m u:workbuddy-local:rwx /opt/workbuddy-local
-# 或临时：sudo chown workbuddy-local:workbuddy-local /opt/workbuddy-local
-```
-
-在面板完成检查和替换后，人工执行 `sudo systemctl restart workbuddy-local.service` 激活新二进制。确认升级完成后删除该 drop-in、重新 `daemon-reload` 并再次重启，恢复 `/opt/workbuddy-local` 只读，并撤销临时授权：
-
-```sh
-sudo rm /etc/systemd/system/workbuddy-local.service.d/10-update-writable.conf
-sudo systemctl daemon-reload
-sudo systemctl restart workbuddy-local.service
-sudo setfacl -x u:workbuddy-local /opt/workbuddy-local
-# 若曾使用 chown：sudo chown root:root /opt/workbuddy-local
-sudo chown root:root /opt/workbuddy-local/wb2api
+sudo setfacl -x u:workbuddy-local /opt/workbuddy-local 2>/dev/null || true
+sudo chown root:root /opt/workbuddy-local /opt/workbuddy-local/wb2api
 sudo chmod 0755 /opt/workbuddy-local/wb2api
 ```
 
@@ -172,7 +163,7 @@ sudo systemctl status --no-pager workbuddy-local.service
 sudo journalctl -u workbuddy-local.service -n 60 --no-pager
 ```
 
-- `workbuddy-local` 用户/组、`UMask=0077`，不配置 EnvironmentFile 或密码/令牌环境变量。`ProtectSystem=strict` 只放行专用配置/数据目录，另有隔离临时目录；/opt 只读。
+- `workbuddy-local` 用户/组、`UMask=0077`，不配置 EnvironmentFile 或密码/令牌环境变量。`ProtectSystem=strict` 仅放行 `/etc/workbuddy-local`、`/var/lib/workbuddy-local` 与更新所需的 `/opt/workbuddy-local`，另有隔离临时目录；若无需面板自更新，保持 `/opt/workbuddy-local` 为 `root:root` 属主即可维持服务用户只读。
 - **`KillMode=mixed`、`KillSignal=SIGTERM`**：先只通知网关主进程，停止接收并排空流式请求，保留 Mihomo。不要改回 control-group，否则初始 TERM 同时终止内核，可能提前截断 SSE。
 - HTTP 排空最多 30 秒 + 维护关闭最多 30 秒 + Mihomo 关闭最多 10 秒，还要状态写入余量，故 **`TimeoutStopSec=120s`**，不是 40 秒。`SendSIGKILL=yes` 保留最终 cgroup 强杀兜底。mixed 模式下主进程退出时剩余子进程也会被清理，并非允许子进程继续存活满 120 秒。
 - `Restart=on-failure`，间隔 5 秒，60 秒内最多 3 次；人工正常 stop 不触发故障重启。能启动不等于账号/订阅/模型 ready。
