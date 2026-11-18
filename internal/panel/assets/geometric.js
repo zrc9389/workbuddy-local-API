@@ -5719,7 +5719,12 @@ export function expiryTone(days) {
                     t2 = '[ + IMPORT SUBSCRIPTION ]';
                 }
             } else if (ch === 'tasks' || ch === 'scheduler') {
-                t1 = '[ START ALL TASKS ]';
+                const hasSelectedStep = Boolean(
+                    WBState.tasks.selectedStepCode &&
+                    Array.isArray(WBState.tasks.steps) &&
+                    WBState.tasks.steps.some(s => s.code === WBState.tasks.selectedStepCode)
+                );
+                t1 = hasSelectedStep ? '[ <- TASKS ]' : '[ START ALL TASKS ]';
                 t2 = WBState.tasks.scheduleEnabled === false ? '[ ENABLE ALL TASKS ]' : '[ DISABLE ALL TASKS ]';
             } else if (ch === 'usage') {
                 t1 = WBState.usageView === 'CURVE' ? '[ MODEL RANK ]' : '[ TIME CURVE ]';
@@ -5737,7 +5742,12 @@ export function expiryTone(days) {
                 }
             } else if (ch === 'logs') {
                 rebuildErrorModelSeries();
-                t1 = WBState.logView === 'LIST' ? '[ ERROR MODEL ]' : '[ LOG ARCHIVE ]';
+                const hasSelectedLog = WBState.logView !== 'MODEL' && Boolean(
+                    WBState.selectedLogId &&
+                    Array.isArray(WBState.logs) &&
+                    WBState.logs.some(x => x.id === WBState.selectedLogId)
+                );
+                t1 = hasSelectedLog ? '[ <- LOGS ]' : (WBState.logView === 'LIST' ? '[ ERROR MODEL ]' : '[ LOG ARCHIVE ]');
             } else if (ch === 'encryption') {
                 t1 = '[ √ SAVE ]';
                 t2 = '[ <- LOG OUT ]';
@@ -6728,7 +6738,6 @@ export function expiryTone(days) {
                                             已处理 ${step.processedCount ?? step.okCount}/${step.totalCount}，成功 ${step.okCount}，失败 ${step.failures?.length || 0}，跳过 ${step.skippedCount || 0}
                                         </span>
                                     </div>
-                                    <button class="editorial-text-btn" data-action="set-task-step">&larr; 返回任务列表</button>
                                 </div>
                                 <div>${failRows || '<div class="py-4 text-xs text-white/45 text-left">暂无失败记录。</div>'}</div>
                             </div>
@@ -6736,6 +6745,7 @@ export function expiryTone(days) {
                         renderPagerControls(0, 1, '');
                         return;
                     }
+                    WBState.tasks.selectedStepCode = null;
                 }
 
                 const rowsHtml = WBState.tasks.steps.map((st, idx) => {
@@ -7320,7 +7330,6 @@ export function expiryTone(days) {
                             <div class="space-y-3.5 text-left">
                                 <div class="flex justify-between items-center border-b border-white/10 pb-2.5">
                                     <span class="text-xs text-white font-medium tabular-nums-left">${item.time} &bull; HTTP ${item.code} &bull; ${item.model || '—'} &bull; ${accName} &rarr; ${item.egress}</span>
-                                    <button class="editorial-text-btn" data-action="clear-selected-log">&larr; 返回记录</button>
                                 </div>
                                 <div class="text-xs text-white/70 text-left">${item.summary}</div>
                                 <div class="pt-0.5 text-left">
@@ -7332,6 +7341,7 @@ export function expiryTone(days) {
                         renderPagerControls(0, 1, '');
                         return;
                     }
+                    WBState.selectedLogId = null;
                 }
 
                 const filteredLogs = WBState.logs.filter(item => {
@@ -10617,7 +10627,13 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                     }, 1200);
                 });
             } else if (ch === 'tasks' || ch === 'scheduler') {
-                void startAllTasks();
+                if (WBState.tasks.selectedStepCode) {
+                    WBState.tasks.selectedStepCode = null;
+                    notifyEditorialStatus('AUTOMATION RUNS -> TASK PIPELINE LIST');
+                    renderEditorialStage(true);
+                } else {
+                    void startAllTasks();
+                }
             } else if (ch === 'usage') {
                 WBState.usageView = WBState.usageView === 'CURVE' ? 'RANK' : 'CURVE';
                 if (WBState.usageView === 'RANK') WBState.usageModelPage = 0;
@@ -10629,11 +10645,18 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                 notifyEditorialStatus(WBState.packageView === 'MODEL' ? 'VIEW -> MATHEMATICAL MODEL' : 'VIEW -> ACCOUNT PACKAGE LIST');
                 renderEditorialStage(true);
             } else if (ch === 'logs') {
-                WBState.selectedLogId = null;
-                WBState.logView = WBState.logView === 'LIST' ? 'MODEL' : 'LIST';
-                WBState.logModelHoverIdx = -1;
-                notifyEditorialStatus(WBState.logView === 'MODEL' ? 'ERROR MODEL -> HAWKES INTENSITY CURVE' : 'ERROR ARCHIVE -> INCIDENT LIST');
-                renderEditorialStage(true);
+                if (WBState.logView !== 'MODEL' && WBState.selectedLogId) {
+                    WBState.selectedLogId = null;
+                    WBState.logModelHoverIdx = -1;
+                    notifyEditorialStatus('ERROR ARCHIVE -> INCIDENT LIST');
+                    renderEditorialStage(true);
+                } else {
+                    WBState.selectedLogId = null;
+                    WBState.logView = WBState.logView === 'LIST' ? 'MODEL' : 'LIST';
+                    WBState.logModelHoverIdx = -1;
+                    notifyEditorialStatus(WBState.logView === 'MODEL' ? 'ERROR MODEL -> HAWKES INTENSITY CURVE' : 'ERROR ARCHIVE -> INCIDENT LIST');
+                    renderEditorialStage(true);
+                }
             } else if (ch === 'encryption') {
                 const elOld = document.getElementById('cfg-old-pwd');
                 const elNew = document.getElementById('cfg-new-pwd');
