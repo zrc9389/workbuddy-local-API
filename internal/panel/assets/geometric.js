@@ -7055,41 +7055,34 @@ export function expiryTone(days) {
                         WBState.packageModelAccountPage = Math.min(Math.max(0, curP), totalPages - 1);
                         const slice = sortedAccs.slice(WBState.packageModelAccountPage * pageSize, (WBState.packageModelAccountPage + 1) * pageSize);
 
+                        const baselineY = 68;
                         const points = slice.map((acc, i) => {
                             const bal = typeof acc.balance === 'number' ? acc.balance : 0;
                             const quota = typeof acc.quota === 'number' && acc.quota > 0 ? acc.quota : 5000;
                             const ratio = Math.max(0, Math.min(1, bal / quota));
                             const x = PKG_MODEL_X_COORDS[i] !== undefined ? PKG_MODEL_X_COORDS[i] : 40;
-                            // 与模型 1 (Weibull) 完全一致的纵轴区间 [16, 64]，基线 68
-                            const y = Math.round(64 - ratio * 48);
+                            // 与模型 1 (EXPIRY) 完全一致的纵轴区间 [16, 68]，零值贴零线 68
+                            const y = Math.round(baselineY - ratio * 52);
                             return { acc, x, y, bal, quota, ratio };
                         });
 
-                        const curvePts = points.length >= 2 ? points.map(p => `${p.x},${p.y}`).join(' ') : '';
+                        const curvePts = PKG_MODEL_X_COORDS.map((x, idx) => {
+                            const p = points[idx];
+                            return `${x},${p ? p.y : baselineY}`;
+                        }).join(' ');
                         const clipId = 'acc-clip-' + (++WBState.chartClipSeq);
                         const clipDef = animate ? `<defs><clipPath id="${clipId}"><rect x="0" y="-6" width="540" height="84" class="svg-clip-spread-rect" /></clipPath></defs>` : '';
                         const clipAttr = animate ? `clip-path="url(#${clipId})"` : '';
-                        const initP = points.find(p => p.acc.uid === WBState.packageModelAccountUid) || points[0] || { acc: { name: '--' }, x: PKG_MODEL_X_COORDS[0], y: 64, bal: 0, quota: 0 };
+                        const initP = points.find(p => p.acc.uid === WBState.packageModelAccountUid) || points[0] || { acc: { name: '--' }, x: PKG_MODEL_X_COORDS[0], y: baselineY, bal: 0, quota: 0 };
                         const initPacks = getAccountActivePackages(initP.acc);
-                        const slotCards = Array.from({ length: pageSize }, (_, idx) => {
-                            const p = points[idx];
-                            if (!p) {
-                                return `
-                                    <div class="py-1 px-1.5 border border-white/5 text-left opacity-30">
-                                        <div class="text-[9px] text-white/30 mb-0.5 truncate">--</div>
-                                        <div class="text-white/40 font-medium truncate">--</div>
-                                    </div>
-                                `;
-                            }
-                            return `
+                        const slotCards = points.map((p, idx) => `
                                 <div class="py-1 px-1.5 border border-white/10 hover:border-white/40 cursor-pointer transition-colors text-left"
                                      data-hover-model="AccountModel" data-hover-idx="${idx}"
                                      >
                                     <div class="text-[9px] text-white/40 mb-0.5 truncate">${escapeDisplayText(p.acc.name)}</div>
                                     <div class="text-white font-medium truncate">${p.bal.toLocaleString()}</div>
                                 </div>
-                            `;
-                        }).join('');
+                            `).join('');
 
                         commitStageMarkup(container, `
                             <div id="packages-chart-stage" class="flex flex-col justify-start space-y-4 pt-1">
@@ -7103,7 +7096,7 @@ export function expiryTone(days) {
                                         <line x1="0" y1="16" x2="520" y2="16" stroke="rgba(255,255,255,0.06)" stroke-dasharray="2 3" stroke-width="1" />
                                         <line x1="0" y1="68" x2="520" y2="68" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
                                         <g ${clipAttr}>
-                                            ${curvePts ? `<polyline fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="1.35" points="${curvePts}" />` : ''}
+                                            <polyline fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="1.35" points="${curvePts}" />
                                             ${points.map(p => `<circle cx="${p.x}" cy="${p.y}" r="2.5" fill="#ffffff" opacity="0.9" />`).join('')}
                                         </g>
                                         ${points.map(p => `<text x="${p.x}" y="82" fill="rgba(255,255,255,0.38)" font-size="9" font-family="Space Grotesk, monospace" text-anchor="middle"><title>${escapeDisplayText(p.acc.name)}</title>${escapeDisplayText(formatPackageAxisAccountLabel(p.acc.name))}</text>`).join('')}
@@ -7132,7 +7125,7 @@ export function expiryTone(days) {
                         <div id="packages-chart-stage" class="flex flex-col justify-start space-y-4 pt-1">
                             <div>
                                 <div class="flex justify-between items-center gap-3 text-[10px] tracking-[0.15em] text-white/42 mb-3">
-                                    <span id="pkg-model-readout" class="min-w-0 truncate">时段 ${initP.day}天 — 存活 ${initP.remainingPacks} 包 / 临期 ${initP.expiringPacks} 包 / ${initP.expAcc} 账号</span>
+                                    <span id="pkg-model-readout" class="min-w-0 truncate">时段 ${initP.rangeLabel || `${initP.day}天`} — 到期 ${initP.packs ?? 0} 包 / ${initP.expAcc ?? 0} 账号</span>
                                 </div>
                                 <svg data-pkg-chart="expiry" viewBox="0 0 520 86" class="w-full h-[86px] overflow-visible cursor-crosshair">
                                     ${clipDef}
@@ -7143,7 +7136,7 @@ export function expiryTone(days) {
                                         <polyline fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="1.35" points="${curvePts}" />
                                         ${points.map(p => `<circle cx="${p.x}" cy="${p.y}" r="2.5" fill="#ffffff" opacity="0.9" />`).join('')}
                                     </g>
-                                    ${points.map(p => `<text x="${p.x}" y="82" fill="rgba(255,255,255,0.38)" font-size="9" font-family="Space Grotesk, monospace" text-anchor="middle">${p.day}D</text>`).join('')}
+                                    ${points.map(p => `<text x="${p.x}" y="82" fill="rgba(255,255,255,0.38)" font-size="9" font-family="Space Grotesk, monospace" text-anchor="middle">${p.axisLabel || `${p.day}D`}</text>`).join('')}
                                     <line id="pkg-model-cursor" x1="${initP.x}" y1="0" x2="${initP.x}" y2="68" stroke="#f0c987" stroke-width="1.2" opacity="0.8" />
                                 </svg>
                             </div>
@@ -7152,8 +7145,8 @@ export function expiryTone(days) {
                                     <div class="py-1 px-1.5 border border-white/10 hover:border-white/40 cursor-pointer transition-colors text-left"
                                          data-hover-model="package" data-hover-idx="${idx}" data-action="hover-package" data-idx="${idx}"
                                          >
-                                        <div class="text-[9px] text-white/40 mb-0.5">${p.day}天后存活</div>
-                                        <div class="text-white font-medium">${p.survival.toFixed(0)}% / ${p.remainingPacks}包</div>
+                                        <div class="text-[9px] text-white/40 mb-0.5">${p.cardLabel}</div>
+                                        <div class="text-white font-medium">${p.packs} 包</div>
                                     </div>
                                 `).join('')}
                             </div>
@@ -8206,23 +8199,44 @@ export function expiryTone(days) {
     }
 
     function getWeibullModelPoints() {
-        const daysArr = [1, 3, 5, 10, 20, 30];
-        const allActivePacks = WBState.accounts.flatMap(getAccountActivePackages);
-        const totalActivePacks = allActivePacks.length;
-        return daysArr.map((day, i) => {
-            const survivingPackages = allActivePacks.filter(p => p.days == null || p.days > day);
-            const remainingPacks = survivingPackages.length;
-            const expiringPacks = allActivePacks.length - remainingPacks;
-            const survival = totalActivePacks > 0 ? (100 * remainingPacks / totalActivePacks) : 0;
+        const buckets = [
+            { day: 1, axisLabel: '1D', rangeLabel: '1天内', cardLabel: '1天内到期', match: p => p.days !== null && p.days !== undefined && p.days <= 1 },
+            { day: 3, axisLabel: '3D', rangeLabel: '2~3天', cardLabel: '2-3天到期', match: p => p.days !== null && p.days !== undefined && p.days > 1 && p.days <= 3 },
+            { day: 5, axisLabel: '5D', rangeLabel: '4~5天', cardLabel: '4-5天到期', match: p => p.days !== null && p.days !== undefined && p.days > 3 && p.days <= 5 },
+            { day: 10, axisLabel: '10D', rangeLabel: '6~10天', cardLabel: '6-10天到期', match: p => p.days !== null && p.days !== undefined && p.days > 5 && p.days <= 10 },
+            { day: 20, axisLabel: '20D', rangeLabel: '11~20天', cardLabel: '11-20天到期', match: p => p.days !== null && p.days !== undefined && p.days > 10 && p.days <= 20 },
+            { day: 30, axisLabel: '30D', rangeLabel: '21~30天+', cardLabel: '21-30天+', match: p => p.days === null || p.days === undefined || p.days > 20 },
+        ];
+        const activeAccountPacks = WBState.accounts
+            .filter(acc => !acc.blocked && acc.state !== 'BLOCKED')
+            .map(acc => getAccountActivePackages(acc));
+        const allActivePacks = activeAccountPacks.flat();
+        const bucketStats = buckets.map((b) => {
+            const packs = allActivePacks.filter(b.match).length;
             let expAcc = 0;
-            WBState.accounts.forEach(acc => {
-                const activePacks = getAccountActivePackages(acc);
-                if (activePacks.some(p => p.days !== null && p.days <= day)) expAcc++;
+            activeAccountPacks.forEach(activePacks => {
+                if (activePacks.some(b.match)) expAcc++;
             });
+            return { ...b, packs, expAcc };
+        });
+        const maxBucketPacks = Math.max(0, ...bucketStats.map(b => b.packs));
+        return bucketStats.map((b, i) => {
             const x = PKG_MODEL_X_COORDS[i];
-            // 存活包占比映射：存活包越多点位越高（SVG y 越小，范围 64 到 16）
-            const y = Math.round(64 - (survival / 100) * 48);
-            return { day, survival, remainingPacks, expiringPacks, expAcc, packs: remainingPacks, x, y };
+            const ratio = maxBucketPacks > 0 ? (b.packs / maxBucketPacks) : 0;
+            // 按 6 档最大包数档等比缩放（SVG y ∈ [16, 68]，零包落零线 68）
+            const y = b.packs === 0 ? 68 : Math.round(68 - ratio * 52);
+            return {
+                day: b.day,
+                axisLabel: b.axisLabel,
+                rangeLabel: b.rangeLabel,
+                cardLabel: b.cardLabel,
+                packs: b.packs,
+                bucketPacks: b.packs,
+                expiringPacks: b.packs,
+                expAcc: b.expAcc,
+                x,
+                y,
+            };
         });
     }
 
@@ -8234,10 +8248,10 @@ export function expiryTone(days) {
         WBState.packageModelHoverIdx = idx;
         const titleEl = document.getElementById('pkg-model-readout');
         if (titleEl) {
-            const rem = p.remainingPacks ?? p.packs ?? 0;
-            const expP = p.expiringPacks ?? 0;
+            const rangeText = p.rangeLabel || `${p.day}天`;
+            const packCnt = p.packs ?? p.bucketPacks ?? p.expiringPacks ?? 0;
             const expA = p.expAcc ?? 0;
-            titleEl.textContent = `时段 ${p.day}天 — 存活 ${rem} 包 / 临期 ${expP} 包 / ${expA} 账号`;
+            titleEl.textContent = `时段 ${rangeText} — 到期 ${packCnt} 包 / ${expA} 账号`;
         }
         const curEl = document.getElementById('pkg-model-cursor');
         if (curEl) {
