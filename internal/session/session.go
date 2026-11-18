@@ -36,11 +36,11 @@ type Config struct {
 	LocalPath  string
 	MaxEntries int
 	TTL        time.Duration
-	// DerivedTTL 派生兜底会话（d- 前缀）TTL，默认 5m。
+	// DerivedTTL 派生兜底会话（d- 前缀）TTL，默认 10m（且不超过 TTL）。
 	DerivedTTL time.Duration
-	// MaxTurns 显式会话最大轮数上限，默认 10 轮。
+	// MaxTurns 显式会话最大轮数上限，<= 0 表示不设上限（默认 0）。
 	MaxTurns int
-	// MaxDerivedTurns 派生兜底会话最大轮数上限，默认 5 轮。
+	// MaxDerivedTurns 派生兜底会话最大轮数上限，默认 10 轮。
 	MaxDerivedTurns int
 	GCInterval      time.Duration
 	Store           redisstore.Store
@@ -70,7 +70,7 @@ type Router struct {
 }
 
 // New 构建路由器。若 cfg.Store 为 nil 则用 Noop（纯内存）；cfg.Available 为 nil 视为空池。
-// TTL/GCInterval 非正取默认（30m / 5m）——main 从 config 解析后传入，这里兜底。
+// TTL/GCInterval 非正取默认（12h / 5m）——main 从 config 解析后传入，这里兜底。
 func New(cfg Config) *Router {
 	if cfg.MaxEntries > 4096 {
 		cfg.MaxEntries = 4096

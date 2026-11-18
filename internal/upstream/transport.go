@@ -1,8 +1,7 @@
-// transport.go 出站 Transport 构造的单一事实来源（连接层加固，吸收 kongjianguan
-// 4 连击实测经验的前三件，见 .claude/reports/fork-scan-absorb.md T-2）：
-// 真正禁 h2 / TLS 握手超时 / 短 keepalive 探测，全参数集中定义可测试可调整。
-// 第四件 DisableKeepAlives 按报告 trade-off 不吸收（每请求 TLS 握手开销与连接
-// 复用意图相反），分析见 .claude/reports/transport-hardening.md。
+// transport.go 出站基础 Transport 与超时参数的单一事实来源：
+// 默认 tls_profile=chrome_auto 经 utls_transport 与代理链路协商 HTTP/2；
+// 仅在 go_h1 回退路径及此处基础 *http.Transport 上通过空 TLSNextProto 显式禁用 h2，
+// 并统一管理 TLS 握手超时、TCP keepalive 探测与响应头超时参数。
 package upstream
 
 import (
@@ -65,8 +64,8 @@ const (
 	// 注意：本常量只是 newTransport 的构造默认，main.go 会按 config
 	// upstream.header_timeout_seconds 无条件覆盖。因此生产生效值 = config
 	// 解析值（未配置时 normalize 回落 timeout_seconds，默认 120），本 60s 仅作
-	// 「Config 未接线/测试裸用」时的安全网——与 config.example.json 的取值
-	// 对齐避免三处口径漂移（transport 60 / config 回落 120 / example 60）。
+	// 「Config 未接线/测试裸用」时的安全网；生产环境由 config.json（config.example.json
+	// 及 normalize 默认 header_timeout_seconds 均为 120）在启动时统一覆盖。
 	responseHeaderTimeout = 60 * time.Second
 	// h2ReadIdleTimeout HTTP/2 空闲读健康探测间隔（发送 PING 帧识别半死连接）。
 	h2ReadIdleTimeout = 15 * time.Second
@@ -90,21 +89,18 @@ func newDialer() *net.Dialer {
 	}
 }
 
-// newTransport 构造共享出站 Transport（HTTP 与 ChatHTTP 同一实例，连接池不重复）。
+// newTransport 构造基础共享出站 *http.Transport（供直连测试与 go_h1 回退复用；
+// 默认 chrome_auto 代理路径走 utls_transport 协商 HTTP/2）。
 // 分两层防半死连接：
-//   - TLS 层：空 TLSNextProto 真正禁 h2（kongjianguan 二次修正的实证：ForceAttemptHTTP2=false
-//     只对自定义 Dial 生效，默认 TLS 经 ALPN 仍协商出 h2，半死 h2 流复用表现为
-//     "http2: timeout awaiting response headers"——唯一正确写法是置空映射，让 ALPN
-//     完成后无 h2 协议可用，连接退回 HTTP/1.1）。
+//   - TLS 层：空 TLSNextProto（非 nil）在该基础 HTTP/1.1 Transport 上显式禁用 h2，避免标准库隐式回落未受控 h2 池。
 //   - TCP 层：DialContext 10s 建连上限 + 15s keepalive 探测，半开连接在建立期
 //     和复用期都能被快速识别（见 dialTimeout/dialKeepAlive 注释）。
 func newTransport() *http.Transport {
 	dialer := newDialer()
 	return &http.Transport{
 		DialContext: dialer.DialContext,
-		// 空 TLSNextProto（非 nil）真正禁 h2：见函数注释。必须 make 而非 nil——
-		// nil 表示「让标准库注入默认 h2 映射」（kongjianguan 实测：设
-		// ForceAttemptHTTP2=false 后日志仍报 h2 timeout，正是这个陷阱）。
+		// 空 TLSNextProto（非 nil）在基础 Transport 与 go_h1 回退路径上显式禁用 h2
+		// （默认 chrome_auto 路径由 utls_transport 接管 ALPN 与 HTTP/2 协商）。
 		TLSNextProto:          make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 		TLSHandshakeTimeout:   tlsHandshakeTimeout,
 		MaxIdleConns:          maxIdleConns,

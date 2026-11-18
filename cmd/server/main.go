@@ -317,7 +317,7 @@ func run() error {
 		KeepaliveDisabled:  !cfg.Schedule.KeepaliveEnabled,
 		BlackcatDisabled:   !cfg.Schedule.BlackcatEnabled,
 		GrowthDisabled:     !cfg.Schedule.GrowthEnabled,
-		// 保号类四任务是否覆盖禁用账号（缺省 false = 禁用即跳过，保持既有行为）。
+		// 定时保号与余额刷新任务是否覆盖手动禁用账号（缺省 false = 禁用即跳过；401 隔离账号恒跳过）。
 		IncludeDisabledInTasks: cfg.Schedule.IncludeDisabledInTasks,
 	})
 	log.Print("维护任务按 schedule 配置定时执行；余额刷新按配置间隔运行")

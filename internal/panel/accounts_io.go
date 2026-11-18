@@ -296,7 +296,7 @@ func (p *Panel) AccountsImport(w http.ResponseWriter, r *http.Request) {
 			failed = append(failed, it.a.UID)
 			continue
 		}
-		// Panel v1.13 uses Pool.Add, whose upsert preserves all existing pool health state.
+		// 通过 Pool.Add 以 upsert 语义写入账号对象，同时保留池内既有的健康度与统计状态。
 		p.cfg.Pool.Add(a)
 		if p.cfg.Upstream != nil {
 			p.cfg.Upstream.ForgetTransport(a.UID)

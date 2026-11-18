@@ -1,4 +1,4 @@
-// Package scheduler 定时任务：签到 / 活跃上报 / 猫猫旅行 / token keepalive 四类独立排程。
+// Package scheduler 定时任务：签到 / 活跃上报 / 猫猫旅行 / token keepalive / 夜猫子 / 成长任务六类独立排程及周期余额刷新。
 // 签到成功后重新查余额，余额 > 0 的冷却账号自动解冻。
 package scheduler
 
@@ -19,7 +19,7 @@ import (
 
 // Config 调度器依赖。
 //
-// 任务开关用「禁用」命名而非「启用」：零值 Config 即四类任务都启用（hours 回落默认），
+// 任务开关用「禁用」命名而非「启用」：零值 Config 即六类任务都启用（hours 回落默认），
 // 与引入开关前的行为逐字一致（老调用方/老测试无需改动）。
 type Config struct {
 	Pool           *pool.Pool

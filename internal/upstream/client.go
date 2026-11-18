@@ -1211,8 +1211,7 @@ func (c *Client) RefreshTokenContext(parentCtx context.Context, a *auth.Auth) er
 // 等价于 ChatStreamContext(context.Background, ...)：不带调用方取消语义。
 // 需要客户端断开联动的调用方用 ChatStreamContext 传入请求 ctx。
 //
-// global realm：先打 /console/chat/completions，404/405 时同一 base 二次换 /v2/chat/completions
-// （上游新旧路径分叉，PLAN R9 fallback 顺序）。cn：/v2/chat/completions 现状不变。
+// cn 与 global realm 均固定走各自 chatBase 下的 /v2/chat/completions 单一路由（无 /console 回退链）。
 func (c *Client) ChatStream(a *auth.Auth, body []byte, clientIP string, meta ChatMeta) (rc io.ReadCloser, status int, respBody []byte, err error) {
 	return c.ChatStreamContext(context.Background(), a, body, clientIP, meta)
 }

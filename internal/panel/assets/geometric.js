@@ -4908,7 +4908,7 @@ export function expiryTone(days) {
             pCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
         }
 
-        // Comment 1: 底部三段式按钮专用设置器（固定括号不动，仅在定宽中间槽位内等长解码，零闪烁）
+        // 底部三段式按钮专用设置器（固定括号不动，仅在定宽中间槽位内等长解码，零闪烁）
         function stripBtnBrackets(raw) {
             return String(raw || '').replace(/^\[\s*/, '').replace(/\s*\]$/, '').trim();
         }
@@ -4959,7 +4959,7 @@ export function expiryTone(days) {
             models:     { num: '04', navKey: 'models',     geoId: 'models',     geoLabel: 'CROSS PRISMS',   title: 'MODEL REGISTRY',     cn: '模型查看', role: 'UPSTREAM DIRECTORY & CONTEXT SPEC',   desc: '清爽呈现可用大模型名称、上下文容量、输出上限与实时首字响应延迟。', btn1: '[ FETCH MODELS ]',   btn2: '[ FILTER REALM ]' },
             tasks:      { num: '05', navKey: 'tasks',      geoId: 'tasks',      geoLabel: 'CROSS FRAME',    title: 'AUTOMATION RUNS',    cn: '账号任务', role: 'SCHEDULED PIPELINE & MUTEX GUARD',    desc: '按序执行每日活跃上报、访问令牌续期、猫猫旅行状态与每日定时签到四道工序。', btn1: '[ RUN PIPELINE ]',   btn2: '[ PAUSE TASKS ]' },
             usage:      { num: '06', navKey: 'usage',      geoId: 'usage',      geoLabel: 'ZIGGURAT',       title: 'TELEMETRY USAGE',    cn: '积分用量', role: 'DUAL-TRACK TOKEN TIMESERIES',         desc: '追踪 24H 周期内分时段 Token 吞吐趋势，支持 6H/24H 时序跨度与按模型排行视图。', btn1: '[ MODEL RANK ]',     btn2: '[ TIME: 6H ]' },
-            packages:   { num: '07', navKey: 'packages',   geoId: 'packages',   geoLabel: 'BALANCE STAR',   title: 'BALANCE ALLOCATION', cn: '积分构成', role: 'PER-ACCOUNT PACKAGES & FIFO DECAY',   desc: '按账号独立归档多笔生效积分包，支持逐号翻页检视消耗顺位与全局临期分布。', btn1: '[ EXPIRY MODEL ]',   btn2: '[ SORT: EXPIRY ]' },
+            packages:   { num: '07', navKey: 'packages',   geoId: 'packages',   geoLabel: 'BALANCE STAR',   title: 'BALANCE ALLOCATION', cn: '积分构成', role: 'PER-ACCOUNT PACKAGES & FIFO DECAY',   desc: '按账号独立归档多笔生效积分包，支持逐号翻页检视消耗顺位与全局临期分布。', btn1: '[ EXPIRY MODEL ]',   btn2: '[ SORT: USAGE ]' },
             logs:       { num: '08', navKey: 'logs',       geoId: 'logs',       geoLabel: 'SHEARED CUBE',   title: 'INCIDENT ARCHIVE',   cn: '错误记录', role: 'ANOMALY TRACE & HAWKES INTENSITY',    desc: '分页归档网关层拦截的限流与上游异常记录，支持切换时间与错误量数学模型。', btn1: '[ ERROR MODEL ]',    btn2: '[ EXPORT LOGS ]' },
             encryption: { num: '09', navKey: 'encryption', geoId: 'encryption', geoLabel: 'CIPHER CAGE',    title: 'SYSTEM CONFIG',      cn: '系统设置', role: 'ACCESS CIPHER & SAFEGUARD POLICY',    desc: '维护工作台访问密码、低额退池阈值、订阅刷新周期以及全局 JSON 配置备份。', btn1: '[ SAVE CONFIG ]',    btn2: '[ LOG OUT ]' },
             gateway:    { num: '01', navKey: 'overview',   geoId: 'gateway',    geoLabel: 'CONDUIT SLAB',   title: 'SERVICE DISPATCH',   cn: '网关通道', role: 'LOOPBACK COMPATIBILITY ENDPOINT',     desc: '对外提供标准兼容接口 /v1/chat/completions 与 /v1/responses，支持客户端直连。', btn1: '[ RESOURCE CURVE ]', btn2: '[ COPY ENDPOINT ]' },
@@ -5023,7 +5023,7 @@ export function expiryTone(days) {
             egressSubPage: (typeof localStorage !== 'undefined' && parseInt(localStorage.getItem('wb_egress_sub_page') || '0', 10)) || 0,
             egressWarnings: [],
             egressSubnetGroups: [],
-            activeSubId: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_sub_id')) || 'SUB-01', // Comment 5: 当前启用展示节点的订阅源
+            activeSubId: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_active_sub_id')) || 'SUB-01', // 当前启用展示节点的订阅源
             importingSub: false,
             downMbps: 26.4,
             upMbps: 1.48,
@@ -5049,7 +5049,7 @@ export function expiryTone(days) {
             egressProbed: false,
 
             logPage: 0,
-            logView: 'LIST', // 'LIST' | 'MODEL' (Comment 17)
+            logView: 'LIST', // 'LIST' | 'MODEL'
             logModelHoverIdx: -1,
             logFilterCode: 'ALL', // 'ALL' | '429' | '401' | '5XX'
             selectedLogId: null,
@@ -5203,7 +5203,7 @@ export function expiryTone(days) {
                 }
             ],
 
-            // 多订阅隔离节点库：涵盖空闲快节点(<800ms绿色)、空闲慢节点(>=800ms橙色)、超时节点、已被其他账号占用节点 (Comment 5, 7, 20, 21)
+            // 多订阅隔离节点库：涵盖空闲快节点(<800ms绿色)、空闲慢节点(>=800ms橙色)、超时节点、已被其他账号占用节点
             nodes: [
                 // SUB-01: 亚太专线主订阅 (16 节点)
                 { id: 'n01', subId: 'SUB-01', name: 'HK-BGP-01',  ping: 22,   timeout: false, trend: [24, 21, 23, 22, 25, 21, 22] },
@@ -5322,7 +5322,7 @@ export function expiryTone(days) {
                 { name: 'Qwen 2.5 72B',      reqs: '1,640', prompt: '5.1M', comp: '2.2M', credits: '1,680' }
             ],
 
-            // Comment 17: 时间-错误量数学模型采样（Hawkes 自激衰减强度 λ(t) = μ + Σα·exp(-βΔt)）
+            // 时间-错误量数学模型采样（Hawkes 自激衰减强度 λ(t) = μ + Σα·exp(-βΔt)）
             errorModelSeries: {
                 labels: (() => {
                     const curH = getBeijingCurrentHour();
@@ -5443,7 +5443,7 @@ export function expiryTone(days) {
             const last = pts.split(' ').pop().split(',');
             if (animateSpread) {
                 const cid = 'sp-clip-' + (++WBState.chartClipSeq);
-                // Comment 12: 使用 svg-mini-clip-rect 实现由快到慢、由左到右蔓延入场动画
+                // 使用 svg-mini-clip-rect 实现由快到慢、由左到右蔓延入场动画
                 return `<svg width="${w}" height="${h}" class="block overflow-visible opacity-85">
                     <defs><clipPath id="${cid}"><rect x="0" y="-4" width="${w + 8}" height="${h + 8}" class="svg-mini-clip-rect" /></clipPath></defs>
                     <g clip-path="url(#${cid})">
@@ -5477,7 +5477,7 @@ export function expiryTone(days) {
             return [make(primary), make(secondary)];
         }
 
-        // Comment 4 & 10: 任务页进度条：停用时灰线从右向左以快到慢替换白/红线，启用时白/红线从左向右以快到慢替换灰线，中间始终留有一小条缝隙不相贴；快速切换时平滑减速反向
+        // 任务页进度条：停用时灰线从右向左以快到慢替换白/红线，启用时白/红线从左向右以快到慢替换灰线，中间始终留有一小条缝隙不相贴；快速切换时平滑减速反向
         function renderTaskStatusLine(step, widthPx = 108, animateBars = false) {
             const total = Math.max(1, step.totalCount || 1);
             const failed = step.failures ? step.failures.length : Math.max(0, total - step.okCount);
@@ -5567,7 +5567,7 @@ export function expiryTone(days) {
         window.changeCustomizationPage = (p) => { WBState.customization.page = p; renderEditorialStage(true); soundscape.triggerTileNote(5); };
 
         // 全局统一 3D 几何画框状态与动效规范 (黄: 刷新/任务执行; 红: 报错颤抖; 绿: 成功短暂变绿)
-        // Comment 4: 特效仅作用于模型外围圆圈那小部分白色亮弧，外围方框 preview-canvas 绝不变色！
+        // 特效仅作用于模型外围圆圈那小部分白色亮弧，外围方框 preview-canvas 绝不变色！
         function setPreviewFrameState(state, durationMs = 800) {
             const canvasBox = document.getElementById("preview-canvas");
             const canvasEl = document.getElementById("project-preview-canvas");
@@ -5691,7 +5691,7 @@ export function expiryTone(days) {
         }
         window.triggerTaskFaultAlarmVisual = triggerTaskFaultAlarmVisual;
 
-        // Comment 1: 同步底部按钮文案，仅作用于定宽中间槽位，括号永不闪烁
+        // 同步底部按钮文案，仅作用于定宽中间槽位，括号永不闪烁
         function syncDynamicBottomButtons() {
             const ch = WBState.currentChapter;
             const btn1 = document.getElementById('btn-page-chord');
@@ -5865,7 +5865,7 @@ export function expiryTone(days) {
 
             if (ch === 'accounts') {
                 l1.textContent = '可用选号池'; v1.textContent = `${routableAcc} / ${totalAcc}`;
-                // Comment 5: 不要出现强启，保持展示低额保护总数
+                // 不要出现强启，保持展示低额保护总数
                 l2.textContent = `低额保护 (<${WBState.configThreshold})`; v2.textContent = `${lowAcc}`;
                 l3.textContent = '限流冷却中'; v3.textContent = `${coolingAcc}`;
             } else if (ch === 'egress') {
@@ -5884,7 +5884,7 @@ export function expiryTone(days) {
                 l3.textContent = '平均首字延迟'; v3.textContent = avgTtft === null ? '—' : `${avgTtft} ms`;
             } else if (ch === 'tasks' || ch === 'scheduler') {
                 const faultSteps = WBState.tasks.steps.filter(s => (s.failures?.length || 0) > 0).length;
-                // Comment 11: 修改为 4项定时任务
+                // 修改为 4项定时任务
                 l1.textContent = '维护工序'; v1.textContent = '4 项维护任务';
                 l2.textContent = '运行状态'; v2.textContent = (WBState.tasks.scheduleEnabled === false || WBState.tasks.pausedAll) ? '排程停用' : (WBState.tasks.running ? '执行锁定' : '空闲就绪');
                 l3.textContent = '异常工序'; v3.textContent = WBState.tasks.scheduleEnabled === false ? '每日调度已暂停' : (faultSteps > 0 ? `${faultSteps} 项含报错` : '全部正常');
@@ -5904,17 +5904,17 @@ export function expiryTone(days) {
                 l3.textContent = '缓存命中率'; v3.textContent = WBState.usageCacheHitRate == null ? '—' : WBState.usageCacheHitRate.toFixed(1) + '%';
             } else if (ch === 'packages') {
                 let totalPackCount = 0;
-                let threeDaysCredits = 0;
+                let oneDayCredits = 0;
                 WBState.accounts.filter(a => !a.blocked && a.state !== 'BLOCKED').forEach(acc => {
                     const activePacks = getAccountActivePackages(acc);
                     totalPackCount += activePacks.length;
                     activePacks.forEach(p => {
-                        if (p.days != null && p.days <= 1) threeDaysCredits += (p.remain !== undefined ? p.remain : p.total || 0);
+                        if (p.days != null && p.days <= 1) oneDayCredits += (p.remain !== undefined ? p.remain : p.total || 0);
                     });
                 });
                 l1.textContent = '持包账号数'; v1.textContent = `${WBState.accounts.filter(a => !a.blocked && a.state !== 'BLOCKED' && getAccountActivePackages(a).length > 0).length} 个账号`;
                 l2.textContent = '生效独立包'; v2.textContent = `${totalPackCount}`;
-                l3.textContent = '1天内到期'; v3.textContent = threeDaysCredits.toLocaleString();
+                l3.textContent = '1天内到期'; v3.textContent = oneDayCredits.toLocaleString();
             } else if (ch === 'logs') {
                 l1.textContent = '归档异常数'; v1.textContent = `${WBState.logs.length} 条`;
                 l2.textContent = '自动故障转移'; v2.textContent = '—';
@@ -5942,7 +5942,7 @@ export function expiryTone(days) {
             }
         }
 
-        // 无重绘悬停游标更新，防止打断 SVG 曲线从左向右蔓延入场动画 (Comment 12)
+        // 无重绘悬停游标更新，防止打断 SVG 曲线从左向右蔓延入场动画
         window.hoverUsagePoint = (idx) => {
             const ds = WBState.usageRange === '24H' ? WBState.usage24h : WBState.usage6h;
             if (idx >= 0) {
@@ -5998,7 +5998,7 @@ export function expiryTone(days) {
                 WBState.lastChartRevealAt = performance.now();
             }
 
-            // 1. 系统概览 / 网关通道 / 谐振球体（带从左向右由快到慢蔓延曲线动画 Comment 12）
+            // 1. 系统概览 / 网关通道 / 谐振球体（带从左向右由快到慢蔓延曲线动画 ）
             if (ch === 'customization') {
                 const cust = WBState.customization;
                 const activeTab = cust.currentTab;
@@ -6239,10 +6239,10 @@ export function expiryTone(days) {
             }
 
             // 2. 账号池 (accounts)：
-            // - Comment 2: 去除 #7890ab 等编号
-            // - Comment 3: CN/GLOBAL 左移，除最后出口和启用外全部统一向左对齐等宽间距
-            // - Comment 14/15: 删除右上辅助提示字
-            // - Comment 20: 独立出口节点选择页面重构（3列网格分页、1号1出口互斥变灰、<800绿色/>=800橙色、超时与不可选统一后置）
+            // - 去除 #7890ab 等编号
+            // - CN/GLOBAL 左移，除最后出口和启用外全部统一向左对齐等宽间距
+            // - 删除右上辅助提示字
+            // - 独立出口节点选择页面重构（3列网格分页、1号1出口互斥变灰、<800绿色/>=800橙色、超时与不可选统一后置）
             if (ch === 'accounts') {
                 if (WBState.selectedAccountUid || WBState.selectingSystemDefault) {
                     const isSystemDefault = Boolean(WBState.selectingSystemDefault);
@@ -6479,7 +6479,7 @@ export function expiryTone(days) {
                 if (WBState.accountPage >= totalPages) WBState.accountPage = totalPages - 1;
                 const slice = filtered.slice(WBState.accountPage * pageSize, (WBState.accountPage + 1) * pageSize);
 
-                // Comment 2 & 3: 去除 #7890ab，CN/GLOBAL 左移，除最后出口和启用外，前 4 列统一向左对齐 + 等宽间距 (column-gap: 20px)
+                // 去除 #7890ab，CN/GLOBAL 左移，除最后出口和启用外，前 4 列统一向左对齐 + 等宽间距 (column-gap: 20px)
                 const rowsHtml = slice.map((acc, idx) => {
                     const rawLow = isRawLowBalance(acc);
                     const lowProtected = isLowBalanceProtected(acc);
@@ -6490,7 +6490,7 @@ export function expiryTone(days) {
                     let statusCls = 'tone-normal';
                     let actionLabel = '停用';
 
-                    // Comment 1: 出现令牌隔离这种严重报错的时候，无论是否停用或启用，均显示令牌隔离
+                    // 出现令牌隔离这种严重报错的时候，无论是否停用或启用，均显示令牌隔离
                     const isTokenBlocked = (acc.state === 'BLOCKED' || acc.state === 'TOKEN_EXPIRED' || acc.state === 'UNAUTHORIZED');
                     if (isTokenBlocked) {
                         statusText = acc.deletionPending ? '隔离·删除挂起' : '令牌隔离';
@@ -6570,10 +6570,8 @@ export function expiryTone(days) {
             }
 
             // 3. 账号出口 (egress)：
-            // - Comment 5: 订阅来源右侧增加“选择”，点击变为橙色“启用”并切换节点列表展示的订阅源
-            // - Comment 6: 订阅 URL 最多占当前页面 1/3 宽度，剩余省略号
-            // - Comment 7: 节点列表右侧操作由“设为主用”改为“刷新”
-            // - Comment 21: 节点列表前面为节点名，中间为绑定该节点的账号名称
+            // - 订阅来源拆分为“查看”（切换节点列表视图）与“启用/停用”（控制订阅源生效），URL 采用 fade-truncate 渐隐截断
+            // - 节点列表依次展示节点名、绑定账号归属、延迟测速与单节点“刷新”操作
             if (ch === 'egress') {
                 if (WBState.importingSub) {
                     commitStageMarkup(container, `
@@ -6700,7 +6698,8 @@ export function expiryTone(days) {
                                 </div>
                             </div>
                         `;
-                    }).join('');                    // Comment 6: 订阅来源启用并强制展示底部分页器，方便换页浏览多条订阅
+                    }).join('');
+                    // 订阅来源列表展示底部分页器，支持翻页浏览多条订阅
                     renderPagerControls(WBState.egressSubPage, totalPages, 'changeEgressSubPage', true);
                 }
 
@@ -6737,7 +6736,7 @@ export function expiryTone(days) {
                 return;
             }
 
-            // 4. 模型查看 (models)：统一贴顶向上对齐，拉取模型放左钮、域筛选放右钮 (Comment 9)
+            // 4. 模型查看 (models)：统一贴顶向上对齐，拉取模型放左钮、域筛选放右钮
             if (ch === 'models') {
                 const filteredModels = WBState.models.filter(m => modelMatchesFilter(m, WBState.modelRealmFilter));
 
@@ -6763,7 +6762,7 @@ export function expiryTone(days) {
                 return;
             }
 
-            // 5. 账号任务 (tasks / scheduler)：报错在 1/9 处突然冒红、4项定时任务 (Comment 10 & 11)
+            // 5. 账号任务 (tasks / scheduler)：报错在 1/9 处突然冒红、4项定时任务
             if (ch === 'tasks' || ch === 'scheduler') {
                 if (WBState.tasks.selectedStepCode) {
                     const step = WBState.tasks.steps.find(s => s.code === WBState.tasks.selectedStepCode);
@@ -6866,7 +6865,7 @@ export function expiryTone(days) {
                 return;
             }
 
-            // 6. 积分用量 (usage)：线性图从左向右由快到慢快速蔓延入场动画 (Comment 12)
+            // 6. 积分用量 (usage)：线性图从左向右由快到慢快速蔓延入场动画
             if (ch === 'usage') {
                 if (WBState.usageView === 'RANK') {
                     const pageSize = 4;
@@ -6954,10 +6953,8 @@ export function expiryTone(days) {
             }
 
             // 7. 积分构成 (packages)：
-            // - Comment 6: 增加跟账号相关的到期时间分布数学模型视图与平滑出现特效
-            // - Comment 7: Tab 标题去掉 (12)，固定宽度防跳动
-            // - Comment 10: KPI 不显示个包，只显示纯数字
-            // - Comment 11: 底部右按钮支持账号排序与临期时间排序切换
+            // - 支持账号持包列表、单号生效包明细分页、以及互斥到期区间分桶 / 账号额度统计双数学模型
+            // - 列表态底部右按钮支持“按账号名称排序 (NAME)”与“按积分用量最少排序 (USAGE)”切换
             if (ch === 'packages') {
                 if (WBState.selectedPackageUid) {
                     const accIdx = WBState.accounts.findIndex(a => a.uid === WBState.selectedPackageUid);
@@ -6968,9 +6965,6 @@ export function expiryTone(days) {
                         const totalPages = Math.max(1, Math.ceil(activePacks.length / pageSize));
                         if (WBState.packageDetailPage >= totalPages) WBState.packageDetailPage = totalPages - 1;
                         const slice = activePacks.slice(WBState.packageDetailPage * pageSize, (WBState.packageDetailPage + 1) * pageSize);
-
-                        const prevAcc = WBState.accounts[(accIdx - 1 + WBState.accounts.length) % WBState.accounts.length];
-                        const nextAcc = WBState.accounts[(accIdx + 1) % WBState.accounts.length];
 
                         const packRows = slice.map((p, idx) => {
                             const globalOrder = WBState.packageDetailPage * pageSize + idx + 1;
@@ -6996,7 +6990,6 @@ export function expiryTone(days) {
                                         <span class="text-white text-xs font-medium">${escapeDisplayText(acc.name)}</span>
                                         <span class="text-white/38 text-[10.5px]">&bull; ${activePacks.length} 个独立生效包</span>
                                     </div>
-                                    <!-- Comment 9: 去除右上角上一号下一号返回按钮 -->
                                 </div>
                                 <div>${packRows || '<div class="py-6 text-xs text-white/35 text-left">该账号当前无剩余生效积分包</div>'}</div>
                             </div>
@@ -7006,9 +6999,9 @@ export function expiryTone(days) {
                     }
                 }
 
-                // Comment 1 & 2: Chapter 07 积分构成 Stage
+                // Chapter 07 积分构成 Stage
                 if (WBState.packageView === 'LIST' || WBState.packageView === 'ACCOUNTS') {
-                    // Comment 1: 规定一个页面只能有 4 行
+                    // 规定一个页面只能有 4 行
                     const pageSize = 4;
                     let sortedAccounts;
                     if (WBState.packageListSort === 'USAGE') {
@@ -7065,7 +7058,7 @@ export function expiryTone(days) {
                     return;
                 }
 
-                // Comment 2: 数学模型页面 (MODEL)
+                // 数学模型页面 (MODEL)
                 if (WBState.packageView === 'MODEL') {
                     if (WBState.packageModelMode === 'ACCOUNT') {
                         // 模型 2: 按账号排序的折线统计图 (尺寸/坐标系/交互格子严格对齐模型 1 EXPIRY)
@@ -7129,12 +7122,12 @@ export function expiryTone(days) {
                                 </div>
                             </div>
                         `, animate);
-                        // Comment 2: 仅按账号排序的折线统计图页面出现换页功能，带平滑过渡动画
+                        // 仅按账号排序的折线统计图页面出现换页功能，带平滑过渡动画
                         renderPagerControls(WBState.packageModelAccountPage || 0, totalPages, 'changeModelAccountPage', true);
                         return;
                     }
 
-                    // 模型 1: 按天数排序的折线统计图 (Weibull 寿命衰减与到期分布模型，无换页)
+                    // 模型 1: 互斥到期时间区间分桶统计折线图（无换页）
                     const points = getWeibullModelPoints();
                     const curvePts = points.map(p => `${p.x},${p.y}`).join(' ');
                     const clipId = 'pkg-clip-' + (++WBState.chartClipSeq);
@@ -7173,7 +7166,7 @@ export function expiryTone(days) {
                             </div>
                         </div>
                     `, animate);
-                    // Comment 2: 不在按天数排序的折线统计中出现换页功能
+                    // 不在按天数排序的折线统计中出现换页功能
                     renderPagerControls(0, 1, '');
                     return;
                 }
@@ -7221,7 +7214,7 @@ export function expiryTone(days) {
                     return;
                 }
 
-                // Comment 11: 账号列表根据 WBState.packageSort 排序 (EXPIRY=临期时间升序, ACCOUNT=账号名顺位)
+                // 账号列表根据 WBState.packageSort 排序 (EXPIRY=临期时间升序, ACCOUNT=账号名顺位)
                 const accCandidates = (WBState.packageExpiringOnly
                     ? WBState.accounts.filter(acc => getAccountActivePackages(acc).some(p => p.days != null && p.days <= 7))
                     : WBState.accounts.slice()).sort((a, b) => {
@@ -7264,7 +7257,7 @@ export function expiryTone(days) {
 
                 commitStageMarkup(container, `
                     <div>
-                        <!-- Comment 7: 去掉 (12)，固定 Tab 标题且避免切换跳动 -->
+                        <!-- 去掉 (12)，固定 Tab 标题且避免切换跳动 -->
                         <div class="flex items-center space-x-5 mb-2 text-left">
                             <button class="editorial-tab active" data-action="set-package-view" data-view="ACCOUNTS">按账号查看</button>
                             
@@ -7277,9 +7270,9 @@ export function expiryTone(days) {
             }
 
             // 8. 错误记录 (logs)：
-            // - Comment 15: 删除右上辅助提示字
-            // - Comment 16: 右侧显示账号名称而非 #90d14b 编号（颜色保持不变）
-            // - Comment 17: 点击按钮 1 切入时间-错误量关系数学模型（Hawkes 自激指数衰减曲线 + 左起由快到慢蔓延动画）
+            // - 删除右上辅助提示字
+            // - 右侧显示账号名称而非 #90d14b 编号（颜色保持不变）
+            // - 点击按钮 1 切入时间-错误量关系数学模型（Hawkes 自激指数衰减曲线 + 左起由快到慢蔓延动画）
             if (ch === 'logs') {
                 if (WBState.logView === 'MODEL') {
                     const em = WBState.errorModelSeries;
@@ -7419,7 +7412,7 @@ export function expiryTone(days) {
             }
 
             // 9. 系统设置 (encryption / config)：
-            // - Comment 4: 在订阅定时刷新时间旁边上下排布“导入 JSON 配置”与“导出 JSON 配置”
+            // - 在订阅定时刷新时间旁边上下排布“导入 JSON 配置”与“导出 JSON 配置”
             if (ch === 'encryption') {
                 commitStageMarkup(container, `
                     <div class="space-y-6 pt-1 text-left">
@@ -7497,7 +7490,7 @@ export function expiryTone(days) {
             renderEditorialStage(false);
         };
 
-        // Comment 4: 授权成功统一处理流程
+        // 授权成功统一处理流程
         function handleOAuthComplete(authData) {
             if (IS_PROD_ENV) {
                 if (WBState.oauthPollTimer) clearInterval(WBState.oauthPollTimer);
@@ -7614,7 +7607,7 @@ export function expiryTone(days) {
             } catch (_) { throw new Error('download failed'); }
         }
 
-        // Comment 4: 系统设置 导入/导出 JSON 配置
+        // 系统设置 导入/导出 JSON 配置
         let jsonImportTimer = null;
         window.triggerImportJsonConfig = () => {
             const btnImport = document.getElementById('btn-import-json');
@@ -7710,7 +7703,7 @@ export function expiryTone(days) {
             notifyEditorialStatus(`EXPORTED ${WBState.logs.length} INCIDENT TRACES JSON`);
         };
 
-        // Comment 20: 1 账号 1 独立出口互斥绑定（若节点超时或已被其他账号绑定则禁止抢占）
+        // 1 账号 1 独立出口互斥绑定（若节点超时或已被其他账号绑定则禁止抢占）
         window.bindAccountEgress = (uid, nodeName) => {
             const acc = WBState.accounts.find(a => a.uid === uid);
             const node = WBState.nodes.find(n => n.name === nodeName);
@@ -7755,7 +7748,7 @@ export function expiryTone(days) {
             renderEditorialStage(true);
         };
 
-        // Comment 5: 单节点测速刷新联动几何圆圈 (变黄慢闪 -> 成功短暂变绿 / 失败变红颤抖)
+        // 单节点测速刷新联动几何圆圈 (变黄慢闪 -> 成功短暂变绿 / 失败变红颤抖)
         window.probeSingleNode = (nodeId) => {
             const target = WBState.nodes.find(n => n.id === nodeId);
             if (!target) return;
@@ -7784,14 +7777,14 @@ export function expiryTone(days) {
             }, 450);
         };
 
-        // Comment 5: 切换启用订阅源（选中项变橙色“启用”，其他变回“选择”，节点列表联动隔离）
+        // 切换启用订阅源（选中项变橙色“启用”，其他变回“选择”，节点列表联动隔离）
         window.selectActiveSub = (subId) => {
             WBState.activeSubId = subId;
             if (typeof localStorage !== 'undefined') {
                 try { localStorage.setItem('wb_active_sub_id', subId); } catch (_) {}
             }
             WBState.egressPage = 0; // 重置节点列表至第1页以便查看新节点
-            // 严格保留 WBState.egressSubPage，点击查看后还在当前订阅页面 (Comment 2)
+            // 严格保留 WBState.egressSubPage，点击查看后还在当前订阅页面
             const sub = WBState.subscriptions.find(s => s.id === subId);
             soundscape.triggerTileNote(11);
             notifyEditorialStatus(`ACTIVE SUBSCRIPTION -> ${sub ? sub.name : subId}`);
@@ -7856,7 +7849,7 @@ export function expiryTone(days) {
             }, 1000);
         };
 
-        // Comment 3: 订阅拉取校验与动效 (黄色轻微晃动 -> 成功转绿平复 / 失败变红强烈抖动)
+        // 订阅拉取校验与动效 (黄色轻微晃动 -> 成功转绿平复 / 失败变红强烈抖动)
         let _lastSubImportClickTime = 0;
         window.confirmImportSub = async () => {
             const now = Date.now();
@@ -8001,7 +7994,7 @@ export function expiryTone(days) {
             }
         };
 
-        // Comment 2: 账号池兜底输入验证微动效 (黄色轻微晃动 -> 成功变绿平复后返回 / 失败变红强烈抖动)
+        // 账号池兜底输入验证微动效 (黄色轻微晃动 -> 成功变绿平复后返回 / 失败变红强烈抖动)
         let _lastOAuthImportClickTime = 0;
         window.importFromPastedCallbackUrl = async () => {
             const now = Date.now();
@@ -8064,7 +8057,7 @@ export function expiryTone(days) {
                 }
             };
 
-            // 无论是输入为空还是输入其他内容，检测过程中均进行缓慢晃动的黄色高亮过渡 (Comment 1)
+            // 无论是输入为空还是输入其他内容，检测过程中均进行缓慢晃动的黄色高亮过渡
             setPreviewFrameState('busy', 400);
             WBState._isImportingCallback = true;
             if (inpEl) {
@@ -8139,7 +8132,7 @@ export function expiryTone(days) {
             }, 300);
         };
 
-        // Comment 8: 扫描所有账号绑定的出口连通性（通=绿色，不通/超时=红色，相同地区=黄色）
+        // 扫描所有账号绑定的出口连通性（通=绿色，不通/超时=红色，相同地区=黄色）
         function probeAllAccountEgress() {
             setPreviewFrameState('busy', 1200);
             WBState.egressProbed = true;
@@ -8190,7 +8183,7 @@ export function expiryTone(days) {
             renderEditorialStage(true);
         }
 
-        // Comment 6: 积分构成数学模型悬停交互
+        // 积分构成数学模型悬停交互
         function sortAccountsAlphanumeric(accList) {
         return accList.slice().sort((a, b) => {
             const aName = a.name || '';
@@ -8219,6 +8212,7 @@ export function expiryTone(days) {
         return out;
     }
 
+    // 保留导出名 getWeibullModelPoints 以兼容外部单测导入；内部实现为 6 档互斥到期区间分桶统计。
     function getWeibullModelPoints() {
         const buckets = [
             { day: 1, axisLabel: '1D', rangeLabel: '1天内', cardLabel: '1天内到期', match: p => p.days !== null && p.days !== undefined && p.days <= 1 },
@@ -8329,7 +8323,7 @@ export function expiryTone(days) {
             renderEditorialStage(true);
         }
 
-        // Comment 10: 流水线执行时含报错工序推进到 1/9 处即突然冒红，绝不先走满白线到末尾
+        // 流水线执行时含报错工序推进到 1/9 处即突然冒红，绝不先走满白线到末尾
         let pipelineTimers = [];
         function clearPipelineTimers() {
             pipelineTimers.forEach(t => clearTimeout(t));
@@ -8429,7 +8423,7 @@ export function expiryTone(days) {
             updateEditorialKeyFigures(false);
             notifyEditorialStatus('SCHEDULED PIPELINE RUNNING // MUTEX LOCKED');
 
-            // Comment 5: 流水线执行期间 3D 几何与外圈以 2.0 倍速旋转，直至任务执行结束
+            // 流水线执行期间 3D 几何与外圈以 2.0 倍速旋转，直至任务执行结束
             if (typeof setPreviewFrameState === 'function') setPreviewFrameState('busy', 0);
 
             [0, 1, 2, 3].forEach((stepIdx) => {
@@ -8534,7 +8528,7 @@ export function expiryTone(days) {
                 if (stateSpan) {
                     scrambleText(stateSpan, isP ? "已暂停" : (st.failures?.length ? "报错" : "正常"), 360);
                 }
-                // Comment 4: 切换时不通过 innerHTML 销毁重建 DOM，保持 DOM 节点持久，实现平滑反向 transition
+                // 切换时不通过 innerHTML 销毁重建 DOM，保持 DOM 节点持久，实现平滑反向 transition
                 const shell = rowEl?.querySelector(".task-line-shell");
                 if (shell) {
                     const activeTrack = shell.querySelector(".task-active-track");
@@ -9038,7 +9032,7 @@ export function expiryTone(days) {
                 pCtx.arc(cx, cy, 118, 0, Math.PI * 2);
                 pCtx.stroke();
 
-                // Comment 4: 模型外围圆圈那小部分扫描亮弧变色 (黄/红/绿)
+                // 模型外围圆圈那小部分扫描亮弧变色 (黄/红/绿)
                 let rArcColor;
                 if (ringState === "busy") {
                     // 黄色缓慢呼吸闪烁: 周期 1.8 秒，alpha 在 0.45 ~ 1.0 之间波动，最暗依然清晰可见亮黄色
@@ -10467,7 +10461,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             soundscape.triggerTileNote(9);
         });
 
-        // 底部按钮 1：高价值视角切换与核心写操作（含 Comment 9 拉取模型、Comment 17 时间-错误量数学模型）
+        // 底部按钮 1：高价值视角切换与核心写操作（含拉取模型与时间-错误量数学模型切换）
         document.getElementById('btn-page-chord').addEventListener('click', () => {
             const ch = WBState.currentChapter;
             if (ch === 'sphere') {
@@ -10684,7 +10678,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                     refreshEgressView();
                     return;
                 }
-                // Comment 3 & 4: 刷新全量节点，右侧几何模型圆圈黄色慢闪，非全超时则短暂变绿，全部超时才变红颤抖
+                // 刷新全量节点，右侧几何模型圆圈黄色慢闪，非全超时则短暂变绿，全部超时才变红颤抖
                 if (WBState.importingSub) {
                     WBState.importingSub = false;
                     renderEditorialStage(true);
@@ -10837,7 +10831,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                     return;
                 }
 
-                // --- Comment 1: 密码修改状态机规范 ---
+                // --- 密码修改状态机规范 ---
                 if (isChangingPwd) {
                     const missing = [];
                     if (!oldVal && elOld) missing.push(elOld);
@@ -10937,7 +10931,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
 
                 if (IS_PROD_ENV) return;
 
-                // --- Comment 1: 保护阈值和刷新时间独立校验与动效 ---
+                // --- 保护阈值和刷新时间独立校验与动效 ---
                 const rawThStr = (elTh?.value || '').trim();
                 const rawSubStr = (elSub?.value || '').trim();
                 const thVal = parseInt(rawThStr, 10);
@@ -11067,7 +11061,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                     renderEditorialStage(false);
                 }
             } else if (ch === 'egress') {
-                // Comment 3: 导入页面为确定导入，非导入页面为进入导入
+                // 导入页面为确定导入，非导入页面为进入导入
                 if (WBState.importingSub) {
                     confirmImportSub();
                 } else {
@@ -11095,9 +11089,9 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             } else if (ch === 'packages') {
                 WBState.selectedPackageUid = null;
                 if (WBState.packageView === 'MODEL') {
-                    // 数学模型页面：切换到另外一个数学模型 (按天数到期衰减 <-> 按账号额度统计)
+                    // 数学模型页面：切换到另外一个数学模型 (互斥到期区间分桶 <-> 按账号额度统计)
                     WBState.packageModelMode = (WBState.packageModelMode === 'ACCOUNT' ? 'EXPIRY' : 'ACCOUNT');
-                    notifyEditorialStatus(WBState.packageModelMode === 'ACCOUNT' ? 'MODEL -> ACCOUNT QUOTA CURVE (1-9 TO A-Z)' : 'MODEL -> WEIBULL EXPIRY DECAY');
+                    notifyEditorialStatus(WBState.packageModelMode === 'ACCOUNT' ? 'MODEL -> ACCOUNT QUOTA CURVE (1-9 TO A-Z)' : 'MODEL -> EXPIRY INTERVAL BUCKETS');
                     renderEditorialStage(true);
                 } else {
                     // 非数学模型页面：切换“按账号名称排序”与“按积分用量最少排序”
@@ -11139,7 +11133,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             }
 
             const btnImport = document.getElementById('btn-import-json');
-            // Comment 9: 导入过程中按钮与圆环变黄慢闪
+            // 导入过程中按钮与圆环变黄慢闪
             if (btnImport) {
                 btnImport.classList.remove('tone-fault', 'tone-forced');
                 btnImport.classList.add('tone-guard', 'animate-pulse');
@@ -11723,7 +11717,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             lastPkgModelSwitchTime = now;
             WBState.selectedPackageUid = null;
             WBState.packageModelMode = (WBState.packageModelMode === 'ACCOUNT' ? 'EXPIRY' : 'ACCOUNT');
-            notifyEditorialStatus(WBState.packageModelMode === 'ACCOUNT' ? 'MODEL -> ACCOUNT QUOTA CURVE (1-9 TO A-Z)' : 'MODEL -> WEIBULL EXPIRY DECAY');
+            notifyEditorialStatus(WBState.packageModelMode === 'ACCOUNT' ? 'MODEL -> ACCOUNT QUOTA CURVE (1-9 TO A-Z)' : 'MODEL -> EXPIRY INTERVAL BUCKETS');
             renderEditorialStage(true);
         }
 

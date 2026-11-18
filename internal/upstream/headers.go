@@ -1,4 +1,4 @@
-// Package headers 构造三类上游请求头（common / chat / billing / refresh）。
+// Package upstream 构造四类上游请求头（common / chat / billing / refresh）。
 // 规则来自 docs/api-reference.md §0/§4/§6。
 package upstream
 
@@ -359,8 +359,8 @@ func ExtractClientIP(r *http.Request) string {
 }
 
 // BillingHeaders billing 接口请求头。
-// UA 语义：默认**不设置**（保持现状，Go 客户端自带默认 UA）；仅当显式配置
-// c.UserAgent 非空才覆盖——避免默认路径给 billing 引入新的 UA 指纹。
+// UA 语义：默认通过 c.billingUA() 注入 WorkBuddy/<clientVersion>；
+// 若显式配置了非空 c.UserAgent，则以配置值覆盖。
 func (c *Client) BillingHeaders(req *http.Request, a *auth.Auth) {
 	// AccessToken 加锁快照（同 ChatHeaders：keepalive 可在 a.mu 内改写）。
 	req.Header.Set("Authorization", "Bearer "+a.AccessTokenValue())

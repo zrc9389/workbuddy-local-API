@@ -96,7 +96,7 @@ test('XSS escaping prevents raw HTML/attribute injection in accounts, packages a
     // 4. Packages account model view
     globalThis.WBState.selectedPackageUid = null;
     globalThis.WBState.packageView = 'MODEL';
-    globalThis.WBState.packageModelKind = 'ACCOUNT';
+    globalThis.WBState.packageModelMode = 'ACCOUNT';
     globalThis.renderEditorialStage(false);
     assertSafeMarkup('packages-model', stage.innerHTML);
 

@@ -763,8 +763,8 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string, 
 		return nil
 	}
 
-	// 15 秒心跳保活看门狗：在大模型深度推理（reasoning）等上游静默无字节下发阶段，
-	// 定时向下游写入标准 SSE 注释心跳（: keepalive\n\n）并刷新 30 秒写截止时间，
+	// 双阶段心跳保活看门狗：首帧到达前每 5 秒（默认 DefaultSSEFirstBytePing）先发
+	// ": ping\n\n" 保活心跳，首帧到达后再每 15 秒发送 ": keepalive\n\n" 并刷新 30 秒写截止时间，
 	// 既能穿透中间反代与 NAT 超时截断，又能在客户端断网/半开死连接时主动探测并掐断上游。
 	var firstFrameSent atomic.Bool
 	firstByteWait := o.firstBytePing

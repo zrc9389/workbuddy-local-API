@@ -171,7 +171,7 @@ type panelModelsResult struct {
 }
 
 // modelsDomain 按域读取/刷新模型目录（调用方已确认该域有可用账号）。
-// 命中 TTL 直接返回；失败负缓存期内不打上游。成功 10 分钟 TTL，失败 60 秒负缓存；
+// 命中 TTL 直接返回；失败负缓存期内不打上游。成功 3 分钟 TTL（panelModelsTTL），失败 60 秒负缓存；
 // 失败时保留旧条目，由调用方按旧快照继续展示。
 func (p *Panel) modelsDomain(realm string, force bool, fetch func() ([]upstream.ModelInfo, error)) panelModelsResult {
 	var snap *panelModelsSnapshot

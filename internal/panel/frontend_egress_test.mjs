@@ -75,7 +75,7 @@ test('egress binds by node ID and refreshes subscriptions individually', async (
 test('subscription import switches view 500ms after success without waiting for preload', async () => {
   const src=fs.readFileSync(new URL('./assets/geometric.js',import.meta.url),'utf8');
   const start=src.indexOf('        let _lastSubImportClickTime = 0;');
-  const end=src.indexOf('        // Comment 2: 账号池兜底',start);
+  const end=src.indexOf('        let _lastOAuthImportClickTime = 0;',start);
   assert.ok(start>=0 && end>start);
   const timers=[]; const renders=[];
   const elem=value=>({value,style:{},classList:{add(){},remove(){}},addEventListener(){},removeEventListener(){},focus(){},offsetWidth:0});
