@@ -7089,9 +7089,9 @@ export function expiryTone(days) {
                         commitStageMarkup(container, `
                             <div id="packages-chart-stage" class="flex flex-col justify-start space-y-4 pt-1">
                                 <div>
-                                    <div class="flex justify-between items-center text-[10px] tracking-[0.15em] text-white/42 mb-3">
-                                        <span id="pkg-model-readout">账号 ${escapeDisplayText(initP.acc.name)} — 积分 ${initP.bal.toLocaleString()} / 额度 ${initP.quota.toLocaleString()} / 独立包 ${initPacks.length}</span>
-                                        <span class="text-white/60 font-mono">BALANCE / QUOTA // 账号额度统计</span>
+                                    <div class="flex justify-between items-center gap-3 text-[10px] tracking-[0.15em] text-white/42 mb-3">
+                                        <span id="pkg-model-readout" class="min-w-0 truncate">账号 ${escapeDisplayText(initP.acc.name)} — 积分 ${initP.bal.toLocaleString()} / 额度 ${initP.quota.toLocaleString()} / 独立包 ${initPacks.length}</span>
+                                        <span class="text-white/60 font-mono shrink-0">账号额度统计</span>
                                     </div>
                                     <svg data-pkg-chart="account" viewBox="0 0 520 70" class="w-full h-[70px] overflow-visible cursor-crosshair">
                                         ${clipDef}
@@ -7140,9 +7140,8 @@ export function expiryTone(days) {
                     commitStageMarkup(container, `
                         <div id="packages-chart-stage" class="flex flex-col justify-start space-y-4 pt-1">
                             <div>
-                                <div class="flex justify-between items-center text-[10px] tracking-[0.15em] text-white/42 mb-3">
-                                    <span id="pkg-model-readout">时段 ${initP.day}天 — 存活积分 ${initP.survival.toFixed(1)}% (${(initP.survivingCredits || 0).toLocaleString()}) / 预计到期 ${initP.expAcc} 账号 / 仍存活 ${initP.remainingPacks} 包 / 临期 ${initP.expiringPacks} 包</span>
-                                    <span class="text-white/60 font-mono">已知到期包剩余占比</span>
+                                <div class="flex justify-between items-center gap-3 text-[10px] tracking-[0.15em] text-white/42 mb-3">
+                                    <span id="pkg-model-readout" class="min-w-0 truncate">时段 ${initP.day}天 — 存活 ${initP.remainingPacks} 包 / 临期 ${initP.expiringPacks} 包 / ${initP.expAcc} 账号</span>
                                 </div>
                                 <svg data-pkg-chart="expiry" viewBox="0 0 520 86" class="w-full h-[86px] overflow-visible cursor-crosshair">
                                     ${clipDef}
@@ -7163,7 +7162,7 @@ export function expiryTone(days) {
                                          data-hover-model="package" data-hover-idx="${idx}" data-action="hover-package" data-idx="${idx}"
                                          >
                                         <div class="text-[9px] text-white/40 mb-0.5">${p.day}天后存活</div>
-                                        <div class="text-white font-medium">${p.survival.toFixed(1)}% / ${p.remainingPacks}包</div>
+                                        <div class="text-white font-medium">${p.survival.toFixed(0)}% / ${p.remainingPacks}包</div>
                                     </div>
                                 `).join('')}
                             </div>
@@ -8202,22 +8201,21 @@ export function expiryTone(days) {
     function getWeibullModelPoints() {
         const daysArr = [1, 3, 5, 10, 20, 30];
         const allActivePacks = WBState.accounts.flatMap(getAccountActivePackages);
-        const totalActiveCredits = allActivePacks.reduce((sum, p) => sum + (Number(p.remain) || 0), 0);
+        const totalActivePacks = allActivePacks.length;
         return daysArr.map((day, i) => {
             const survivingPackages = allActivePacks.filter(p => p.days == null || p.days > day);
-            const survivingCredits = survivingPackages.reduce((sum, p) => sum + (Number(p.remain) || 0), 0);
-            const survival = totalActiveCredits > 0 ? (100 * survivingCredits / totalActiveCredits) : 0;
             const remainingPacks = survivingPackages.length;
             const expiringPacks = allActivePacks.length - remainingPacks;
+            const survival = totalActivePacks > 0 ? (100 * remainingPacks / totalActivePacks) : 0;
             let expAcc = 0;
             WBState.accounts.forEach(acc => {
                 const activePacks = getAccountActivePackages(acc);
                 if (activePacks.some(p => p.days !== null && p.days <= day)) expAcc++;
             });
             const x = [40, 110, 210, 310, 410, 500][i];
-            // 存活百分比映射：存活率越高点位越高（SVG y 越小，范围 64 到 16）
+            // 存活包占比映射：存活包越多点位越高（SVG y 越小，范围 64 到 16）
             const y = Math.round(64 - (survival / 100) * 48);
-            return { day, survival, survivingCredits, remainingPacks, expiringPacks, expAcc, packs: remainingPacks, x, y };
+            return { day, survival, remainingPacks, expiringPacks, expAcc, packs: remainingPacks, x, y };
         });
     }
 
@@ -8229,7 +8227,10 @@ export function expiryTone(days) {
         WBState.packageModelHoverIdx = idx;
         const titleEl = document.getElementById('pkg-model-readout');
         if (titleEl) {
-            titleEl.textContent = `时段 ${p.day}天 — 存活积分 ${p.survival.toFixed(1)}% (${(p.survivingCredits || 0).toLocaleString()}) / 预计到期 ${p.expAcc} 账号 / 仍存活 ${p.remainingPacks} 包 / 临期 ${p.expiringPacks} 包`;
+            const rem = p.remainingPacks ?? p.packs ?? 0;
+            const expP = p.expiringPacks ?? 0;
+            const expA = p.expAcc ?? 0;
+            titleEl.textContent = `时段 ${p.day}天 — 存活 ${rem} 包 / 临期 ${expP} 包 / ${expA} 账号`;
         }
         const curEl = document.getElementById('pkg-model-cursor');
         if (curEl) {
@@ -11958,7 +11959,7 @@ if (typeof document !== 'undefined') {
         window.addEventListener('load', bootGeometricRuntime, { once: true });
     }
 }
-export { initEditorialEventDelegation, handleDataAction, bootGeometricRuntime };
+export { initEditorialEventDelegation, handleDataAction, bootGeometricRuntime, getWeibullModelPoints };
 
 window.resetOAuthLoginLink = () => {
     if (WBState.oauthPollTimer) {

@@ -54,7 +54,7 @@ test('model refresh replaces the previous snapshot and normalizes realm', async 
     {name:'blocked', blocked:true, packages:[{days:1, remain:900}]}
   ];
   window.hoverPackageModelPoint(0);
-  assert.match(dom.$('pkg-model-readout').textContent, /1天.*80\.0%.*1 账号.*1/);
+  assert.match(dom.$('pkg-model-readout').textContent, /1天.*存活 1 包.*临期 1 包.*1 账号/);
   window.hoverPackageModelPoint(3);
-  assert.match(dom.$('pkg-model-readout').textContent, /10天.*0\.0%.*1 账号.*2/);
+  assert.match(dom.$('pkg-model-readout').textContent, /10天.*存活 0 包.*临期 2 包.*1 账号/);
 });
