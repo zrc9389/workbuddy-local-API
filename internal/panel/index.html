@@ -804,6 +804,323 @@
         @media (prefers-reduced-motion: reduce) {
             .action-feedback-busy, .action-feedback-success, .action-feedback-error { animation: none !important; }
         }
+
+        /* ==================== Mobile Compatibility (< 768px ONLY; Desktop >= 768px Untouched) ==================== */
+        @media (max-width: 767px) {
+            /* 1. Header & login viewport safety */
+            header {
+                padding: 12px 14px !important;
+                align-items: center !important;
+            }
+            header > div:first-child h1 {
+                font-size: 14px !important;
+                margin-bottom: 3px !important;
+            }
+            #role-tag {
+                font-size: 8.5px !important;
+                letter-spacing: 0.12em !important;
+            }
+            #top-right-controls {
+                gap: 2px !important;
+                font-size: 11px !important;
+            }
+            #top-right-controls > * {
+                margin-left: 0 !important;
+            }
+            #top-right-controls button {
+                padding: 4px 6px !important;
+            }
+            #mute-label {
+                width: auto !important;
+                min-width: 34px !important;
+            }
+
+            /* Login & intro screen */
+            #prompt-box {
+                width: 100% !important;
+                max-width: 100vw !important;
+                padding-left: 16px !important;
+                padding-right: 16px !important;
+            }
+            #prompt-subtitle {
+                font-size: 13px !important;
+                letter-spacing: 0.14em !important;
+            }
+            #password-container {
+                width: 100% !important;
+                max-width: calc(100vw - 36px) !important;
+            }
+            #password-container > div {
+                width: 100% !important;
+                max-width: calc(100vw - 36px) !important;
+            }
+            #intro-bottom-left {
+                left: 14px !important;
+                bottom: 16px !important;
+            }
+            #main-footer {
+                padding-left: 14px !important;
+                padding-right: 14px !important;
+                bottom: 14px !important;
+            }
+
+            /* 2. Project editorial page: vertical native scroll + 3D preview box at bottom */
+            #project-page-view {
+                align-items: flex-start !important;
+                justify-content: flex-start !important;
+                overflow-y: auto !important;
+                overflow-x: hidden !important;
+                -webkit-overflow-scrolling: touch;
+                padding: 60px 14px 20px !important;
+            }
+            #editorial-scale-shell {
+                width: 100% !important;
+                max-width: 100% !important;
+                height: auto !important;
+                min-height: calc(100dvh - 80px);
+                transform: none !important;
+                justify-content: flex-start !important;
+                gap: 12px !important;
+            }
+
+            /* Top chapter bar: 2-row stack with horizontally scrollable 01~10 nav */
+            #editorial-scale-shell > div:first-child {
+                height: auto !important;
+                flex-direction: column !important;
+                align-items: stretch !important;
+                gap: 8px !important;
+                padding-bottom: 8px !important;
+                overflow: visible !important;
+            }
+            #editorial-scale-shell > div:first-child > div:first-child {
+                min-width: 0 !important;
+                width: 100% !important;
+                justify-content: space-between !important;
+            }
+            #page-archive-tag {
+                width: auto !important;
+                max-width: 180px !important;
+                text-align: right;
+            }
+            #chapter-nav {
+                width: 100% !important;
+                overflow-x: auto !important;
+                overflow-y: hidden !important;
+                -webkit-overflow-scrolling: touch;
+                padding-bottom: 4px !important;
+                gap: 14px !important;
+            }
+            #chapter-nav > .chapter-link {
+                margin-left: 0 !important;
+                flex-shrink: 0 !important;
+                padding: 5px 2px !important;
+                font-size: 11.5px !important;
+            }
+
+            /* Central 12-col stage -> single column with business stage on top and 3D box centered below */
+            #editorial-scale-shell > .grid.grid-cols-12 {
+                display: flex !important;
+                flex-direction: column !important;
+                align-items: stretch !important;
+                gap: 16px !important;
+                margin-top: 0 !important;
+                margin-bottom: 0 !important;
+                padding-top: 4px !important;
+                padding-bottom: 4px !important;
+            }
+            #editorial-scale-shell > .grid.grid-cols-12 > .col-span-7 {
+                width: 100% !important;
+                min-width: 0 !important;
+            }
+            #editorial-scale-shell > .grid.grid-cols-12 > .col-span-5 {
+                width: 100% !important;
+                align-items: center !important;
+                justify-content: center !important;
+                margin-top: 4px !important;
+            }
+            #preview-canvas {
+                width: 100% !important;
+                max-width: 320px !important;
+                height: 260px !important;
+                padding: 12px !important;
+            }
+
+            /* Title, subtitle, description, KPI strip, stage body */
+            #page-role {
+                max-width: 100% !important;
+                text-overflow: ellipsis;
+            }
+            #editorial-scale-shell .col-span-7 > div:nth-child(2) {
+                height: auto !important;
+                flex-wrap: wrap !important;
+                white-space: normal !important;
+                overflow: visible !important;
+                gap: 4px 10px !important;
+            }
+            #page-title {
+                font-size: 24px !important;
+                line-height: 1.15 !important;
+                max-width: 100% !important;
+                white-space: normal !important;
+            }
+            #page-cn-subtitle {
+                margin-left: 0 !important;
+                font-size: 12px !important;
+            }
+            #page-desc {
+                height: auto !important;
+                min-height: 0 !important;
+                max-height: none !important;
+                max-width: 100% !important;
+                overflow: visible !important;
+            }
+            #editorial-kpi-strip {
+                display: flex !important;
+                flex-wrap: wrap !important;
+                gap: 10px 16px !important;
+                height: auto !important;
+                min-height: 0 !important;
+                max-height: none !important;
+                max-width: 100% !important;
+                padding-top: 10px !important;
+                padding-bottom: 10px !important;
+            }
+            #editorial-kpi-strip > div {
+                flex: 1 1 28% !important;
+                min-width: 92px !important;
+            }
+            #page-spec-1, #page-spec-2, #page-spec-3 {
+                font-size: 18px !important;
+            }
+            #editorial-stage-body {
+                height: auto !important;
+                min-height: 200px !important;
+                max-height: none !important;
+                max-width: 100% !important;
+                overflow: visible !important;
+            }
+
+            /* Bottom action buttons & pager bar */
+            #editorial-stage-body + div {
+                height: auto !important;
+                max-width: 100% !important;
+                flex-direction: column !important;
+                align-items: stretch !important;
+                gap: 10px !important;
+                padding-top: 10px !important;
+            }
+            #editorial-stage-body + div > div:first-child {
+                width: 100% !important;
+                display: flex !important;
+                flex-wrap: wrap !important;
+                gap: 8px !important;
+            }
+            #btn-page-chord,
+            #btn-page-ripple {
+                min-width: 0 !important;
+                flex: 1 1 45% !important;
+                padding: 0 8px !important;
+                font-size: 10px !important;
+                letter-spacing: 0.08em !important;
+                height: 36px !important;
+            }
+            #btn-page-chord .btn-mid,
+            #btn-page-ripple .btn-mid {
+                min-width: 0 !important;
+                max-width: 100% !important;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            #editorial-pager {
+                width: 100% !important;
+                min-width: 0 !important;
+                justify-content: center !important;
+                padding: 2px 0 !important;
+            }
+
+            /* Footer archive line */
+            #editorial-scale-shell > div:last-child {
+                height: auto !important;
+                flex-direction: column !important;
+                align-items: flex-start !important;
+                gap: 4px !important;
+                overflow: visible !important;
+                padding-top: 10px !important;
+                padding-bottom: 6px !important;
+            }
+            #page-coords,
+            #editorial-status-line {
+                white-space: normal !important;
+                word-break: break-word;
+                overflow: visible !important;
+                line-height: 1.4;
+            }
+
+            /* 3. Responsive wrapping for editorial rows & fixed-column chapter grids */
+            #editorial-stage-body .editorial-row {
+                display: flex !important;
+                flex-wrap: wrap !important;
+                align-items: center !important;
+                column-gap: 10px !important;
+                row-gap: 6px !important;
+                grid-template-columns: none !important;
+            }
+            #editorial-stage-body .editorial-row > * {
+                min-width: 0 !important;
+                max-width: 100% !important;
+            }
+            #editorial-stage-body .editorial-row > div[style*="grid-template-columns"] {
+                display: flex !important;
+                flex-wrap: wrap !important;
+                align-items: center !important;
+                gap: 4px 10px !important;
+                grid-template-columns: none !important;
+                flex: 1 1 180px !important;
+            }
+            #editorial-stage-body .grid.grid-cols-4 {
+                grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+                height: auto !important;
+                gap: 10px 12px !important;
+            }
+            #editorial-stage-body .grid.grid-cols-3 {
+                grid-template-columns: minmax(0, 1fr) !important;
+                gap: 12px !important;
+            }
+            #editorial-stage-body .grid.grid-cols-6 {
+                grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+                gap: 6px !important;
+            }
+            #editorial-stage-body .grid.grid-cols-2 {
+                grid-template-columns: minmax(0, 1fr) !important;
+                gap: 8px !important;
+            }
+            #usage-cursor-readout,
+            #err-model-readout,
+            #pkg-model-readout {
+                white-space: normal !important;
+                line-height: 1.4;
+            }
+            #editorial-stage-body .whitespace-nowrap {
+                max-width: 100%;
+            }
+            #editorial-stage-body svg,
+            #editorial-stage-body [data-hover-model] {
+                touch-action: pan-y;
+            }
+        }
+
+        @media (max-width: 400px) {
+            header {
+                padding: 10px 10px !important;
+            }
+            #top-right-controls > span {
+                display: none !important;
+            }
+            #top-right-controls button {
+                padding: 4px 4px !important;
+                font-size: 10.5px !important;
+            }
+        }
 </style>
 </head>
 <body class="relative w-screen h-screen overflow-hidden select-none bg-[#050605]">

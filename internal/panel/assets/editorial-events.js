@@ -264,4 +264,18 @@ export function initEditorialEventDelegation(targetDoc) {
             globalObj.setVertexHover(-1);
         }
     }, true);
+
+    // 8. 触屏点击高亮委托 (pointerdown, 仅非鼠标触控输入生效，不影响桌面端)
+    doc.addEventListener('pointerdown', (ev) => {
+        if (ev.pointerType === 'mouse') return;
+        const modelEl = ev.target?.closest ? ev.target.closest('[data-hover-model]') : null;
+        if (!modelEl) return;
+        const type = String(modelEl.dataset.hoverModel || '').toLowerCase().replace(/model$/, '');
+        const idx = parseInt(modelEl.dataset.hoverIdx, 10);
+        if (Number.isNaN(idx)) return;
+        if (type === 'usage' && typeof globalObj.hoverUsagePoint === 'function') globalObj.hoverUsagePoint(idx);
+        else if (type === 'error' && typeof globalObj.hoverErrorModelPoint === 'function') globalObj.hoverErrorModelPoint(idx);
+        else if (type === 'package' && typeof globalObj.hoverPackageModelPoint === 'function') globalObj.hoverPackageModelPoint(idx);
+        else if (type === 'account' && typeof globalObj.hoverAccountModelPoint === 'function') globalObj.hoverAccountModelPoint(idx);
+    }, true);
 }

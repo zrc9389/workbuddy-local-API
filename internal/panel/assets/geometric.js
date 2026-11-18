@@ -108,7 +108,7 @@ export function expiryTone(days) {
                 const cx = tile.stableScreenX;
                 const cy = tile.stableScreenY;
                 const tileSize = Math.max(10, tile.screenSize || 20);
-                const gridN = tile.project ? 5 : 4;
+                const gridN = window.innerWidth < 768 ? (tile.project ? 3 : 2) : (tile.project ? 5 : 4);
                 const cellStep = tileSize / gridN;
                 const baseDotSize = Math.max(1.15, Math.min(2.4, cellStep * 0.58));
 
@@ -163,7 +163,7 @@ export function expiryTone(days) {
             const tileSize = Math.max(10, tile.screenSize || fallbackSize);
 
             // 保持高密度点阵：普通方块 6x6=36 颗，项目方块 7x7=49 颗，确保消散前呈现完整紧实结构
-            const gridN = tile.project ? 7 : 6;
+            const gridN = window.innerWidth < 768 ? (tile.project ? 3 : 2) : (tile.project ? 7 : 6);
             const cellStep = tileSize / gridN;
             const baseDotSize = Math.max(1.15, Math.min(2.4, cellStep * 0.58));
 
@@ -1173,7 +1173,7 @@ export function expiryTone(days) {
         let lastAmbientSpawnTime = 0;
 
         function initIntroGrid() {
-            const dpr = Math.min(window.devicePixelRatio || 1, 2);
+            const dpr = Math.min(window.devicePixelRatio || 1, window.innerWidth < 768 ? 1.5 : 2);
             const w = window.innerWidth;
             const h = window.innerHeight;
             introCanvas.width = w * dpr;
@@ -2648,9 +2648,14 @@ export function expiryTone(days) {
         function updateResponsiveScale() {
             const w = window.innerWidth;
             const h = window.innerHeight;
-            currentUiScale = Math.max(0.45, Math.min(1.85, Math.min(w / 1440, h / 860)));
-            const safeStageH = h - 74 * currentUiScale - 24;
-            currentPageScale = Math.max(0.40, Math.min(1.85, Math.min((w - 64) / 1100, safeStageH / 664)));
+            if (w < 768) {
+                currentUiScale = Math.max(0.82, Math.min(1, w / 420));
+                currentPageScale = 1;
+            } else {
+                currentUiScale = Math.max(0.45, Math.min(1.85, Math.min(w / 1440, h / 860)));
+                const safeStageH = h - 74 * currentUiScale - 24;
+                currentPageScale = Math.max(0.40, Math.min(1.85, Math.min((w - 64) / 1100, safeStageH / 664)));
+            }
             document.documentElement.style.setProperty('--ui-scale', currentUiScale.toFixed(4));
             document.documentElement.style.setProperty('--page-scale', currentPageScale.toFixed(4));
         }
@@ -3768,7 +3773,7 @@ export function expiryTone(days) {
 
         function resizeMainWorldCanvas() {
             updateResponsiveScale();
-            const dpr = Math.min(window.devicePixelRatio || 1, 2);
+            const dpr = Math.min(window.devicePixelRatio || 1, window.innerWidth < 768 ? 1.5 : 2);
             const w = window.innerWidth;
             const h = window.innerHeight;
             worldCanvas.width = w * dpr;
@@ -3857,7 +3862,8 @@ export function expiryTone(days) {
             }
 
             fallingRain = [];
-            for (let i = 0; i < 115; i++) {
+            const rainCount = window.innerWidth < 768 ? 36 : 115;
+            for (let i = 0; i < rainCount; i++) {
                 fallingRain.push({
                     nx: Math.random(),
                     y: Math.random() * h,
@@ -3869,7 +3875,8 @@ export function expiryTone(days) {
         }
 
         function spawnPondRipple(x, y, maxR = 65, strength = 0.65) {
-            if (waterRipples.length > 90) waterRipples.shift();
+            const maxRipples = window.innerWidth < 768 ? 24 : 90;
+            if (waterRipples.length > maxRipples) waterRipples.shift();
             waterRipples.push({
                 x,
                 y,
@@ -4676,7 +4683,9 @@ export function expiryTone(days) {
 
                 wCtx.strokeStyle = blendedTheme.rainColor;
                 wCtx.lineWidth = Math.max(0.8, 1 * currentUiScale);
-                for (let i = 0; i < fallingRain.length; i++) {
+                const activeRainCount = w < 768 ? Math.min(fallingRain.length, 36) : fallingRain.length;
+                const rainRippleProb = w < 768 ? 0.15 : 0.35;
+                for (let i = 0; i < activeRainCount; i++) {
                     const drop = fallingRain[i];
                     const dx = drop.nx * w;
                     const hitY = drop.hitRatioY * h;
@@ -4690,7 +4699,7 @@ export function expiryTone(days) {
                     if (drop.nx < 0) drop.nx += 1;
 
                     if (drop.y >= hitY) {
-                        if (Math.random() < 0.35) {
+                        if (Math.random() < rainRippleProb) {
                             spawnPondRipple(dx, hitY, 24 + Math.random() * 40, 0.46);
                         }
                         drop.y = -25;
@@ -11586,8 +11595,13 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
         document.addEventListener('pointerdown', (e) => {
             const el = e.target?.closest?.('#packages-chart-stage');
             if (el) {
-                el._pkgStartX = e.clientX;
-                el._pkgStartY = e.clientY;
+                const onSvgChart = Boolean(e.target?.closest?.('svg[data-pkg-chart]'));
+                if (onSvgChart && (window.innerWidth < 768 || (e.pointerType && e.pointerType !== 'mouse'))) {
+                    el._pkgStartX = null;
+                } else {
+                    el._pkgStartX = e.clientX;
+                    el._pkgStartY = e.clientY;
+                }
             }
         }, { passive: true });
 
@@ -11603,20 +11617,19 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             }
         }, { passive: true });
 
-        document.addEventListener('mousemove', (e) => {
-            const svgEl = e.target?.closest?.('svg[data-pkg-chart]');
-            if (!svgEl) return;
+        function updatePkgChartHoverFromClientX(svgEl, clientX) {
+            if (!svgEl || typeof clientX !== 'number') return false;
             const mode = svgEl.getAttribute('data-pkg-chart');
-            const rect = svgEl.getBoundingClientRect();
-            if (rect.width <= 0) return;
-            const svgX = ((e.clientX - rect.left) / rect.width) * 520;
+            const rect = svgEl.getBoundingClientRect?.();
+            if (!rect || rect.width <= 0) return false;
+            const svgX = Math.max(0, Math.min(520, ((clientX - rect.left) / rect.width) * 520));
             if (mode === 'account') {
                 const xCoords = [40, 120, 200, 280, 360, 440];
                 const sortedAccs = sortAccountsAlphanumeric(WBState.accounts.filter(a => !a.blocked && a.state !== 'BLOCKED'));
                 const pageSize = 6;
                 const slice = sortedAccs.slice((WBState.packageModelAccountPage || 0) * pageSize, ((WBState.packageModelAccountPage || 0) + 1) * pageSize);
                 const count = Math.min(slice.length, xCoords.length);
-                if (count <= 0) return;
+                if (count <= 0) return false;
                 let nearestIdx = 0;
                 let minDiff = Infinity;
                 for (let i = 0; i < count; i++) {
@@ -11628,6 +11641,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                 }
                 if (typeof hoverAccountModelPoint === 'function') {
                     hoverAccountModelPoint(nearestIdx);
+                    return true;
                 }
             } else if (mode === 'expiry') {
                 const xCoords = [40, 110, 210, 310, 410, 500];
@@ -11642,9 +11656,101 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                 }
                 if (typeof hoverPackageModelPoint === 'function') {
                     hoverPackageModelPoint(nearestIdx);
+                    return true;
                 }
             }
+            return false;
+        }
+
+        function updateChartHoverFromClientX(targetEl, clientX) {
+            if (!targetEl || typeof clientX !== 'number') return false;
+            const svgEl = targetEl.closest?.('svg[data-pkg-chart]');
+            if (svgEl) return updatePkgChartHoverFromClientX(svgEl, clientX);
+
+            const hoverHit = targetEl.closest?.('[data-hover-model]');
+            if (hoverHit) {
+                const modelType = String(hoverHit.dataset?.hoverModel || '').toLowerCase().replace(/model$/, '');
+                if (modelType === 'usage') {
+                    const track = hoverHit.parentElement || hoverHit;
+                    const rect = track.getBoundingClientRect?.();
+                    const ds = WBState.usageRange === '24H' ? WBState.usage24h : WBState.usage6h;
+                    const len = ds?.labels?.length || 0;
+                    if (rect && rect.width > 0 && len > 0 && typeof window.hoverUsagePoint === 'function') {
+                        const ratio = Math.max(0, Math.min(0.9999, (clientX - rect.left) / rect.width));
+                        const idx = Math.min(len - 1, Math.max(0, Math.floor(ratio * len)));
+                        window.hoverUsagePoint(idx);
+                        return true;
+                    }
+                } else if (modelType === 'error') {
+                    const track = hoverHit.parentElement || hoverHit;
+                    const rect = track.getBoundingClientRect?.();
+                    const len = WBState.errorModelSeries?.labels?.length || 0;
+                    if (rect && rect.width > 0 && len > 0 && typeof window.hoverErrorModelPoint === 'function') {
+                        const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+                        const idx = len === 1 ? 0 : Math.min(len - 1, Math.max(0, Math.round(ratio * (len - 1))));
+                        window.hoverErrorModelPoint(idx);
+                        return true;
+                    }
+                } else if (modelType === 'account' || modelType === 'package') {
+                    const idx = parseInt(hoverHit.dataset?.hoverIdx, 10);
+                    if (!Number.isNaN(idx)) {
+                        if (modelType === 'account' && typeof window.hoverAccountModelPoint === 'function') {
+                            window.hoverAccountModelPoint(idx);
+                            return true;
+                        }
+                        if (modelType === 'package' && typeof window.hoverPackageModelPoint === 'function') {
+                            window.hoverPackageModelPoint(idx);
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            const anySvg = targetEl.closest?.('svg');
+            if (anySvg) {
+                const rect = anySvg.getBoundingClientRect?.();
+                if (!rect || rect.width <= 0) return false;
+                if (anySvg.querySelector?.('#usage-cursor-line')) {
+                    const ds = WBState.usageRange === '24H' ? WBState.usage24h : WBState.usage6h;
+                    const len = ds?.labels?.length || 0;
+                    if (len > 0 && typeof window.hoverUsagePoint === 'function') {
+                        const ratio = Math.max(0, Math.min(0.9999, (clientX - rect.left) / rect.width));
+                        window.hoverUsagePoint(Math.min(len - 1, Math.max(0, Math.floor(ratio * len))));
+                        return true;
+                    }
+                } else if (anySvg.querySelector?.('#err-model-cursor-line')) {
+                    const len = WBState.errorModelSeries?.labels?.length || 0;
+                    if (len > 0 && typeof window.hoverErrorModelPoint === 'function') {
+                        const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+                        window.hoverErrorModelPoint(len === 1 ? 0 : Math.min(len - 1, Math.max(0, Math.round(ratio * (len - 1)))));
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        document.addEventListener('mousemove', (e) => {
+            const svgEl = e.target?.closest?.('svg[data-pkg-chart]');
+            if (!svgEl) return;
+            updatePkgChartHoverFromClientX(svgEl, e.clientX);
         }, { passive: true });
+
+        ['touchstart', 'touchmove'].forEach((evtName) => {
+            document.addEventListener(evtName, (e) => {
+                const touch = e.touches?.[0] || e.changedTouches?.[0];
+                if (!touch) return;
+                updateChartHoverFromClientX(e.target, touch.clientX);
+            }, { passive: true });
+        });
+
+        ['pointerdown', 'pointermove'].forEach((evtName) => {
+            document.addEventListener(evtName, (e) => {
+                if (e.pointerType === 'mouse') return;
+                if (evtName === 'pointermove' && e.buttons === 0 && e.pointerType !== 'touch') return;
+                updateChartHoverFromClientX(e.target, e.clientX);
+            }, { passive: true });
+        });
 
         document.addEventListener('wheel', (e) => {
             const el = e.target?.closest?.('#packages-chart-stage');
@@ -11749,7 +11855,8 @@ function bootGeometricRuntime() {
     Object.assign(window, { renderEditorialStage, notifyEditorialStatus, setVertexHover,
         syncDynamicBottomButtons, switchCustomizationTab, selectCustomMusic,
         deleteCustomMusic, selectCustomSlogan, deleteCustomSlogan, selectCustomTheme,
-        handleCustomMusicFileSelected, openCustomMusicPicker, setPreviewFrameState, switchChapterInPlace, probeAllAccountEgress, triggerReturnToMatrix });
+        handleCustomMusicFileSelected, openCustomMusicPicker, setPreviewFrameState, switchChapterInPlace, probeAllAccountEgress, triggerReturnToMatrix,
+        updateResponsiveScale, updateChartHoverFromClientX });
     initEditorialEventDelegation(document);
     const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (typeof window !== 'undefined' && window.requestAnimationFrame ? window.requestAnimationFrame : (cb => setTimeout(cb, 16)));
     if (typeof updateResponsiveScale === 'function') updateResponsiveScale();
