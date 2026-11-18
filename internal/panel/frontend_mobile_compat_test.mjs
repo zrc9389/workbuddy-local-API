@@ -125,8 +125,8 @@ test('touch events at 390x844 update Usage, Packages (Account/Expiry), and Error
     closest(sel) { return sel === 'svg[data-pkg-chart]' ? this : null; }
   };
   document.dispatchEvent({type: 'pointermove', pointerType: 'touch', buttons: 1, target: accountSvg, clientX: 205});
-  assert.equal(globalThis.WBState.packageModelAccountUid, 'a3', 'touch pointermove near x=200 should select 3rd account point');
-  assert.equal(dom.$('pkg-model-cursor').getAttribute('x1'), 200);
+  assert.equal(globalThis.WBState.packageModelAccountUid, 'a3', 'touch pointermove near x=210 should select 3rd account point');
+  assert.equal(dom.$('pkg-model-cursor').getAttribute('x1'), 210);
   assert.match(dom.$('pkg-model-readout').textContent, /账号 acc3/);
 
   // 4. Error Model chart touch scrub

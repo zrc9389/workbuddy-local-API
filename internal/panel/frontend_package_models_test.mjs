@@ -145,4 +145,10 @@ test('07 packages EXPIRY model view renders compact pack readout without legacy 
     assert.match(accountHtml, /<span class="text-white\/60 font-mono shrink-0">账号额度统计<\/span>/);
     assert.match(accountHtml, /class="flex justify-between items-center gap-3 text-\[10px\]/);
     assert.match(accountHtml, /<span id="pkg-model-readout" class="min-w-0 truncate">/);
+    assert.match(accountHtml, /<svg data-pkg-chart="account" viewBox="0 0 520 86" class="w-full h-\[86px\] overflow-visible cursor-crosshair">/);
+    assert.match(accountHtml, /y1="68" x2="520" y2="68"/);
+    assert.match(accountHtml, /id="pkg-model-cursor" x1="40" y1="0" x2="40" y2="68"/);
+    assert.match(accountHtml, /<circle cx="40" cy="54" r="2\.5" fill="#ffffff" opacity="0\.9"/);
+    assert.ok(!accountHtml.includes('relative w-full h-5 mt-1.5 font-mono'), 'ACCOUNT X-axis ticks must live inside 86px SVG like EXPIRY');
+    assert.equal((accountHtml.match(/<div class="py-1 px-1\.5 border border-white\/(10|5)/g) || []).length, 6, 'ACCOUNT footer must preserve 6 fixed card slots');
 });

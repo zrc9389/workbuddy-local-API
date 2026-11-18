@@ -7047,7 +7047,7 @@ export function expiryTone(days) {
                 // Comment 2: 数学模型页面 (MODEL)
                 if (WBState.packageView === 'MODEL') {
                     if (WBState.packageModelMode === 'ACCOUNT') {
-                        // 模型 2: 按账号排序的折线统计图 (账号优先排序为从 1~9，然后是从 A 到 Z)
+                        // 模型 2: 按账号排序的折线统计图 (尺寸/坐标系/交互格子严格对齐模型 1 EXPIRY)
                         const sortedAccs = sortAccountsAlphanumeric(WBState.accounts.filter(a => !a.blocked && a.state !== 'BLOCKED'));
                         const pageSize = 6;
                         const totalPages = Math.max(1, Math.ceil(sortedAccs.length / pageSize));
@@ -7055,36 +7055,41 @@ export function expiryTone(days) {
                         WBState.packageModelAccountPage = Math.min(Math.max(0, curP), totalPages - 1);
                         const slice = sortedAccs.slice(WBState.packageModelAccountPage * pageSize, (WBState.packageModelAccountPage + 1) * pageSize);
 
-                        const xCoords = [40, 120, 200, 280, 360, 440];
                         const points = slice.map((acc, i) => {
                             const bal = typeof acc.balance === 'number' ? acc.balance : 0;
                             const quota = typeof acc.quota === 'number' && acc.quota > 0 ? acc.quota : 5000;
                             const ratio = Math.max(0, Math.min(1, bal / quota));
-                            const x = xCoords[i] !== undefined ? xCoords[i] : (40 + i * 80);
-                            const y = Math.round(62 - ratio * 46);
+                            const x = PKG_MODEL_X_COORDS[i] !== undefined ? PKG_MODEL_X_COORDS[i] : 40;
+                            // 与模型 1 (Weibull) 完全一致的纵轴区间 [16, 64]，基线 68
+                            const y = Math.round(64 - ratio * 48);
                             return { acc, x, y, bal, quota, ratio };
                         });
 
-                        const baselineY = 62;
-                        let curvePts = `0,${baselineY} 520,${baselineY}`;
-                        if (points.length > 0) {
-                            const firstP = points[0];
-                            const lastP = points[points.length - 1];
-                            const dyStart = baselineY - firstP.y;
-                            const startRiseX = Math.max(0, firstP.x - dyStart);
-                            const startSeg = startRiseX > 0 ? `0,${baselineY} ${startRiseX},${baselineY}` : `0,${Math.min(baselineY, firstP.y + firstP.x)}`;
-
-                            const dyEnd = baselineY - lastP.y;
-                            const dropX = lastP.x + dyEnd;
-                            const endSeg = dropX < 520 ? `${dropX},${baselineY} 520,${baselineY}` : `520,${lastP.y + (520 - lastP.x)}`;
-
-                            curvePts = `${startSeg} ${points.map(p => `${p.x},${p.y}`).join(' ')} ${endSeg}`;
-                        }
+                        const curvePts = points.length >= 2 ? points.map(p => `${p.x},${p.y}`).join(' ') : '';
                         const clipId = 'acc-clip-' + (++WBState.chartClipSeq);
                         const clipDef = animate ? `<defs><clipPath id="${clipId}"><rect x="0" y="-6" width="540" height="84" class="svg-clip-spread-rect" /></clipPath></defs>` : '';
                         const clipAttr = animate ? `clip-path="url(#${clipId})"` : '';
-                        const initP = points.find(p => p.acc.uid === WBState.packageModelAccountUid) || points[0] || { acc: { name: '--' }, x: 40, bal: 0, quota: 0 };
+                        const initP = points.find(p => p.acc.uid === WBState.packageModelAccountUid) || points[0] || { acc: { name: '--' }, x: PKG_MODEL_X_COORDS[0], y: 64, bal: 0, quota: 0 };
                         const initPacks = getAccountActivePackages(initP.acc);
+                        const slotCards = Array.from({ length: pageSize }, (_, idx) => {
+                            const p = points[idx];
+                            if (!p) {
+                                return `
+                                    <div class="py-1 px-1.5 border border-white/5 text-left opacity-30">
+                                        <div class="text-[9px] text-white/30 mb-0.5 truncate">--</div>
+                                        <div class="text-white/40 font-medium truncate">--</div>
+                                    </div>
+                                `;
+                            }
+                            return `
+                                <div class="py-1 px-1.5 border border-white/10 hover:border-white/40 cursor-pointer transition-colors text-left"
+                                     data-hover-model="AccountModel" data-hover-idx="${idx}"
+                                     >
+                                    <div class="text-[9px] text-white/40 mb-0.5 truncate">${escapeDisplayText(p.acc.name)}</div>
+                                    <div class="text-white font-medium truncate">${p.bal.toLocaleString()}</div>
+                                </div>
+                            `;
+                        }).join('');
 
                         commitStageMarkup(container, `
                             <div id="packages-chart-stage" class="flex flex-col justify-start space-y-4 pt-1">
@@ -7093,34 +7098,20 @@ export function expiryTone(days) {
                                         <span id="pkg-model-readout" class="min-w-0 truncate">账号 ${escapeDisplayText(initP.acc.name)} — 积分 ${initP.bal.toLocaleString()} / 额度 ${initP.quota.toLocaleString()} / 独立包 ${initPacks.length}</span>
                                         <span class="text-white/60 font-mono shrink-0">账号额度统计</span>
                                     </div>
-                                    <svg data-pkg-chart="account" viewBox="0 0 520 70" class="w-full h-[70px] overflow-visible cursor-crosshair">
+                                    <svg data-pkg-chart="account" viewBox="0 0 520 86" class="w-full h-[86px] overflow-visible cursor-crosshair">
                                         ${clipDef}
-                                        <line x1="0" y1="62" x2="520" y2="62" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
-                                        <line x1="0" y1="16" x2="520" y2="16" stroke="rgba(255,255,255,0.04)" stroke-dasharray="2 3" stroke-width="1" />
+                                        <line x1="0" y1="16" x2="520" y2="16" stroke="rgba(255,255,255,0.06)" stroke-dasharray="2 3" stroke-width="1" />
+                                        <line x1="0" y1="68" x2="520" y2="68" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
                                         <g ${clipAttr}>
-                                            <polyline fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="1.35" points="${curvePts}" />
-                                            ${points.map(p => `<circle cx="${p.x}" cy="${p.y}" r="2.5" fill="#98dfc2" opacity="0.95" />`).join('')}
+                                            ${curvePts ? `<polyline fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="1.35" points="${curvePts}" />` : ''}
+                                            ${points.map(p => `<circle cx="${p.x}" cy="${p.y}" r="2.5" fill="#ffffff" opacity="0.9" />`).join('')}
                                         </g>
-                                        <line id="pkg-model-cursor" x1="${initP.x}" y1="0" x2="${initP.x}" y2="62" stroke="#f0c987" stroke-width="1.2" opacity="0.8" />
+                                        ${points.map(p => `<text x="${p.x}" y="82" fill="rgba(255,255,255,0.38)" font-size="9" font-family="Space Grotesk, monospace" text-anchor="middle"><title>${escapeDisplayText(p.acc.name)}</title>${escapeDisplayText(formatPackageAxisAccountLabel(p.acc.name))}</text>`).join('')}
+                                        <line id="pkg-model-cursor" x1="${initP.x}" y1="0" x2="${initP.x}" y2="68" stroke="#f0c987" stroke-width="1.2" opacity="0.8" />
                                     </svg>
-                                    <div class="relative w-full h-5 mt-1.5 font-mono">
-                                        ${points.map(p => `
-                                            <span class="absolute top-0 text-[9px] tracking-[0.08em] text-white/40 whitespace-nowrap truncate max-w-[76px] text-center"
-                                                  style="left: ${((p.x / 520) * 100).toFixed(2)}%; transform: translateX(-50%);" title="${escapeDisplayText(p.acc.name)}">
-                                                ${escapeDisplayText(p.acc.name)}
-                                            </span>
-                                        `).join('')}
-                                    </div>
                                 </div>
                                 <div class="grid grid-cols-6 gap-2 pt-1 text-[10.5px]">
-                                    ${points.map((p, idx) => `
-                                        <div class="py-1 px-1.5 border border-white/10 hover:border-white/40 cursor-pointer transition-colors text-left"
-                                             data-hover-model="AccountModel" data-hover-idx="${idx}"
-                                             >
-                                            <div class="text-[9px] text-white/40 mb-0.5 truncate">${escapeDisplayText(p.acc.name)}</div>
-                                            <div class="text-white font-medium">${p.bal.toLocaleString()}</div>
-                                        </div>
-                                    `).join('')}
+                                    ${slotCards}
                                 </div>
                             </div>
                         `, animate);
@@ -8198,6 +8189,22 @@ export function expiryTone(days) {
         });
     }
 
+    const PKG_MODEL_X_COORDS = [40, 110, 210, 310, 410, 500];
+
+    function formatPackageAxisAccountLabel(name) {
+        const raw = String(name || '');
+        if (!raw) return '--';
+        let weight = 0;
+        let out = '';
+        for (const ch of raw) {
+            const w = ch.charCodeAt(0) > 127 ? 2 : 1;
+            if (weight + w > 10) return out + '…';
+            weight += w;
+            out += ch;
+        }
+        return out;
+    }
+
     function getWeibullModelPoints() {
         const daysArr = [1, 3, 5, 10, 20, 30];
         const allActivePacks = WBState.accounts.flatMap(getAccountActivePackages);
@@ -8212,7 +8219,7 @@ export function expiryTone(days) {
                 const activePacks = getAccountActivePackages(acc);
                 if (activePacks.some(p => p.days !== null && p.days <= day)) expAcc++;
             });
-            const x = [40, 110, 210, 310, 410, 500][i];
+            const x = PKG_MODEL_X_COORDS[i];
             // 存活包占比映射：存活包越多点位越高（SVG y 越小，范围 64 到 16）
             const y = Math.round(64 - (survival / 100) * 48);
             return { day, survival, remainingPacks, expiringPacks, expAcc, packs: remainingPacks, x, y };
@@ -8256,8 +8263,7 @@ export function expiryTone(days) {
         }
         const curEl = document.getElementById('pkg-model-cursor');
         if (curEl) {
-            const xCoords = [40, 120, 200, 280, 360, 440];
-            const xVal = xCoords[idx] !== undefined ? xCoords[idx] : 120;
+            const xVal = PKG_MODEL_X_COORDS[idx] !== undefined ? PKG_MODEL_X_COORDS[idx] : PKG_MODEL_X_COORDS[0];
             curEl.setAttribute('x1', xVal);
             curEl.setAttribute('x2', xVal);
         }
@@ -11654,7 +11660,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             if (!rect || rect.width <= 0) return false;
             const svgX = Math.max(0, Math.min(520, ((clientX - rect.left) / rect.width) * 520));
             if (mode === 'account') {
-                const xCoords = [40, 120, 200, 280, 360, 440];
+                const xCoords = PKG_MODEL_X_COORDS;
                 const sortedAccs = sortAccountsAlphanumeric(WBState.accounts.filter(a => !a.blocked && a.state !== 'BLOCKED'));
                 const pageSize = 6;
                 const slice = sortedAccs.slice((WBState.packageModelAccountPage || 0) * pageSize, ((WBState.packageModelAccountPage || 0) + 1) * pageSize);
@@ -11674,7 +11680,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                     return true;
                 }
             } else if (mode === 'expiry') {
-                const xCoords = [40, 110, 210, 310, 410, 500];
+                const xCoords = PKG_MODEL_X_COORDS;
                 let nearestIdx = 0;
                 let minDiff = Infinity;
                 for (let i = 0; i < xCoords.length; i++) {
