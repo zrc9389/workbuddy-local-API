@@ -12,8 +12,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// DefaultSSEFirstBytePing 默认流式响应进入 SSE 输出后等待上游首包的心跳间隔（5s）。
+const DefaultSSEFirstBytePing = 5 * time.Second
 
 // errEmptyStream 上游返回 200 但没有有效 SSE 数据帧（空流/只有注释/[DONE]）。
 // 用哨兵错误替代裸 fmt.Errorf：StreamHint 的调用方（handler 流式路径）需要区分
@@ -688,8 +692,21 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 type StreamOption func(*streamOptions)
 
 type streamOptions struct {
-	onErrorFrame func(payload string)
-	onUsage      func(usage map[string]any)
+	onErrorFrame       func(payload string)
+	onUsage            func(usage map[string]any)
+	firstBytePing      time.Duration
+	immediateFirstPing bool
+}
+
+// WithFirstBytePing 设置进入 SSE 输出阶段后等待上游首包的保活心跳阈值（默认 5s；<0 禁用）。
+func WithFirstBytePing(d time.Duration) StreamOption {
+	return func(o *streamOptions) { o.firstBytePing = d }
+}
+
+// WithImmediateFirstPing 在进入 SSE 输出阶段瞬间立即下发一条 ": ping\n\n" 注释保活
+// （用于 PrecheckStreamWithDeadline 等待上游首包超过阈值后立刻切入流式保活的场景）。
+func WithImmediateFirstPing() StreamOption {
+	return func(o *streamOptions) { o.immediateFirstPing = true }
 }
 
 // WithUsageObserver 注册流中 usage 用量末帧提取观察者
@@ -749,17 +766,49 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string, 
 	// 15 秒心跳保活看门狗：在大模型深度推理（reasoning）等上游静默无字节下发阶段，
 	// 定时向下游写入标准 SSE 注释心跳（: keepalive\n\n）并刷新 30 秒写截止时间，
 	// 既能穿透中间反代与 NAT 超时截断，又能在客户端断网/半开死连接时主动探测并掐断上游。
+	var firstFrameSent atomic.Bool
+	firstByteWait := o.firstBytePing
+	if firstByteWait == 0 {
+		firstByteWait = DefaultSSEFirstBytePing
+	}
+	if o.immediateFirstPing {
+		if err := refreshAndWrite([]byte(": ping\n\n")); err != nil {
+			return err
+		}
+	}
+
 	stopKeepalive := make(chan struct{})
 	defer close(stopKeepalive)
 	go func() {
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
+		var firstPingC <-chan time.Time
+		var firstPingTimer *time.Timer
+		if firstByteWait > 0 && !o.immediateFirstPing {
+			firstPingTimer = time.NewTimer(firstByteWait)
+			firstPingC = firstPingTimer.C
+			defer firstPingTimer.Stop()
+		}
 		for {
 			select {
 			case <-stopKeepalive:
 				return
+			case <-firstPingC:
+				firstPingC = nil
+				if !firstFrameSent.Load() {
+					if err := refreshAndWrite([]byte(": ping\n\n")); err != nil {
+						if c, ok := r.(io.Closer); ok {
+							_ = c.Close()
+						}
+						return
+					}
+				}
 			case <-ticker.C:
-				if err := refreshAndWrite([]byte(": keepalive\n\n")); err != nil {
+				comment := []byte(": keepalive\n\n")
+				if !firstFrameSent.Load() {
+					comment = []byte(": ping\n\n")
+				}
+				if err := refreshAndWrite(comment); err != nil {
 					if c, ok := r.(io.Closer); ok {
 						_ = c.Close()
 					}
@@ -773,6 +822,7 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string, 
 	firstID := ""
 
 	writeRaw := func(payload string) error {
+		firstFrameSent.Store(true)
 		if hint := frameGatewayHint(hintFn, payload); hint != "" {
 			payload = attachHintToErrorFrame(payload, hint)
 		}
@@ -817,6 +867,7 @@ func StreamHint(w http.ResponseWriter, r io.Reader, hintFn func(string) string, 
 			}
 			valid = 1
 		}
+		firstFrameSent.Store(true)
 		if werr := refreshAndWrite([]byte("data: " + payload + "\n\n")); werr != nil {
 			return 0, werr
 		}
@@ -1028,4 +1079,66 @@ func PrecheckStream(rc io.ReadCloser) (io.ReadCloser, error) {
 
 	combined := io.MultiReader(bytes.NewReader(peeked), br)
 	return &peekCloser{Reader: combined, Closer: rc}, nil
+}
+
+// asyncPrecheckReader 将尚未返回首帧的异步预检结果无缝衔接回流式读取器，
+// 避免超时切换进 SSE 输出阶段时出现并发读同一 bufio.Reader 的数据竞争。
+type asyncPrecheckReader struct {
+	done   <-chan precheckOutcome
+	rc     io.ReadCloser
+	inner  io.Reader
+	closed atomic.Bool
+}
+
+type precheckOutcome struct {
+	r   io.ReadCloser
+	err error
+}
+
+func (a *asyncPrecheckReader) Read(p []byte) (int, error) {
+	if a.inner == nil {
+		out := <-a.done
+		if out.err != nil {
+			return 0, out.err
+		}
+		a.inner = out.r
+	}
+	return a.inner.Read(p)
+}
+
+func (a *asyncPrecheckReader) Close() error {
+	if a.closed.Swap(true) {
+		return nil
+	}
+	if a.rc != nil {
+		return a.rc.Close()
+	}
+	return nil
+}
+
+// PrecheckStreamWithDeadline 带首包等待上限的预检：
+// 若 maxWait 内收到首帧或空流，行为与 PrecheckStream 完全一致（可安全换号）；
+// 若超过 maxWait 仍未收到上游首帧（深度推理首字慢），返回 slowFirstByte=true 与无缝衔接的 ReadCloser，
+// 供调用方立即进入 SSE 输出阶段并下发 ": ping\n\n" 保活，防止客户端断连重连撞击。
+func PrecheckStreamWithDeadline(rc io.ReadCloser, maxWait time.Duration) (out io.ReadCloser, slowFirstByte bool, err error) {
+	if rc == nil {
+		return nil, false, errEmptyStream
+	}
+	if maxWait <= 0 {
+		r, e := PrecheckStream(rc)
+		return r, false, e
+	}
+	done := make(chan precheckOutcome, 1)
+	go func() {
+		r, e := PrecheckStream(rc)
+		done <- precheckOutcome{r: r, err: e}
+	}()
+	timer := time.NewTimer(maxWait)
+	defer timer.Stop()
+	select {
+	case res := <-done:
+		return res.r, false, res.err
+	case <-timer.C:
+		return &asyncPrecheckReader{done: done, rc: rc}, true, nil
+	}
 }

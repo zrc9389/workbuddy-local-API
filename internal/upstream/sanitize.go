@@ -134,6 +134,25 @@ func SanitizeTools(tools any) {
 	sanitizeTools(tools)
 }
 
+// sanitizeMetadata 剥除客户端透传的 metadata.user_id / metadata.userId 设备会话关联指纹；
+// 若剥除后 metadata 为空对象则一并删除 metadata 键。
+func sanitizeMetadata(obj map[string]any) {
+	if obj == nil {
+		return
+	}
+	meta, ok := obj["metadata"].(map[string]any)
+	if !ok || meta == nil {
+		return
+	}
+	delete(meta, "user_id")
+	delete(meta, "userId")
+	if len(meta) == 0 {
+		delete(obj, "metadata")
+	} else {
+		obj["metadata"] = meta
+	}
+}
+
 // sanitizeText 单段文本净化：预检不中 → 返回原串（零分配）。
 func sanitizeText(text string) string {
 	if !hasFingerprint(text) {

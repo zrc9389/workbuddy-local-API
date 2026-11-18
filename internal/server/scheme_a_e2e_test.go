@@ -95,8 +95,8 @@ func TestSchemeA_LargeCodexOver256KiBNormalizedAndSanitized(t *testing.T) {
 			t.Fatalf("wire leaked fingerprint %q", bad)
 		}
 	}
-	if key, _ := out["prompt_cache_key"].(string); !strings.HasPrefix(key, "wb2a-") {
-		t.Fatalf("missing prompt_cache_key: %v", out["prompt_cache_key"])
+	if key, _ := out["prompt_cache_key"].(string); !strings.HasPrefix(key, "conv-") || strings.Contains(key, "wb2a-") {
+		t.Fatalf("unexpected prompt_cache_key: %v", out["prompt_cache_key"])
 	}
 }
 

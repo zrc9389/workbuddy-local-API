@@ -27,6 +27,13 @@ var restoreDefaultEgressBackoffs = []time.Duration{
 	15 * time.Second,
 }
 
+func (p *Panel) loginTLSProfile() string {
+	if p != nil && p.cfg.Upstream != nil {
+		return p.cfg.Upstream.TLSProfileValue()
+	}
+	return ""
+}
+
 // DefaultEgressInfo 状态载荷
 type DefaultEgressInfo struct {
 	OK       bool   `json:"ok"`
@@ -83,7 +90,7 @@ func (p *Panel) SetDefaultEgress(w http.ResponseWriter, r *http.Request) {
 		if p.cfg.Upstream != nil {
 			p.cfg.Upstream.SetDefaultProxy("")
 		}
-		_ = setLoginProxy("")
+		_ = setLoginProxyWithProfile("", p.loginTLSProfile())
 		p.persistDefaultEgress("")
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "node_id": ""})
 		return
@@ -120,7 +127,7 @@ func (p *Panel) SetDefaultEgress(w http.ResponseWriter, r *http.Request) {
 		if p.cfg.Upstream != nil {
 			p.cfg.Upstream.SetDefaultProxy(proxy)
 		}
-		_ = setLoginProxy(proxy)
+		_ = setLoginProxyWithProfile(proxy, p.loginTLSProfile())
 		p.persistDefaultEgress(v.Node)
 		return nil
 	})
@@ -240,7 +247,7 @@ func (p *Panel) RestoreDefaultEgress(ctx context.Context) {
 				if p.cfg.Upstream != nil {
 					p.cfg.Upstream.SetDefaultProxy(proxy)
 				}
-				_ = setLoginProxy(proxy)
+				_ = setLoginProxyWithProfile(proxy, p.loginTLSProfile())
 				return nil
 			})
 			cancel()

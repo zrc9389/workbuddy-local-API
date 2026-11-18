@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/upstream"
 )
 
 const (
@@ -329,6 +330,7 @@ func (p *Panel) loginPoll(w http.ResponseWriter, r *http.Request) {
 		// CN 也显式补 realm 键（幂等），让 auth 文件形态统一（与 LoadDir 存量迁移对齐）。
 		_, _ = a.BackfillRealm()
 	}
+	var replacedOld *auth.Auth
 	if old := p.cfg.Pool.AuthByUID(acct.UID); old != nil {
 		if safeCredentialPath(p.cfg.AuthDir, old.FilePath) != nil || old.ImportCredentialsAndSave(a, true) != nil {
 			writeErr(w, http.StatusInternalServerError, "could not save credentials")
@@ -336,6 +338,7 @@ func (p *Panel) loginPoll(w http.ResponseWriter, r *http.Request) {
 		}
 		a.FilePath = old.FilePath
 		a.ProxyURL = old.ProxyURLValue() // 保留原有代理配置，并作为全新隔离实例入池
+		replacedOld = old
 	} else {
 		if safeCredentialPath(p.cfg.AuthDir, a.FilePath) != nil || a.SaveAtomic() != nil {
 			writeErr(w, http.StatusInternalServerError, "could not save credentials")
@@ -343,6 +346,12 @@ func (p *Panel) loginPoll(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	p.cfg.Pool.Add(a)
+	if replacedOld != nil {
+		accountEgressService.Forget(replacedOld)
+		if p.cfg.Upstream != nil {
+			p.cfg.Upstream.ForgetTransport(acct.UID)
+		}
+	}
 	p.cfg.Pool.Revive(acct.UID) // 全新登录 = 人工恢复口径：清掉旧号遗留的禁用/冷却/熔断
 
 	// 顺带签到 + 余额刷新（幂等；失败不影响登录结果，只体现在返回字段里）。
@@ -428,25 +437,27 @@ func (p *Panel) loginRegions(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// setLoginProxy 动态为设备流授权配置定向代理出口（严禁回退直连）
+// setLoginProxy 动态为设备流授权配置定向代理出口（默认启用 uTLS 拟态传输层，严禁回退直连）。
 func setLoginProxy(proxyURL string) error {
+	return setLoginProxyWithProfile(proxyURL, upstream.TLSProfileChromeAuto)
+}
+
+// setLoginProxyWithProfile 按 tlsProfile 为设备流授权配置代理传输层：
+// tlsProfile != "go_h1" 时复用 uTLS HelloChrome_Auto + HTTP/2 代理传输层。
+func setLoginProxyWithProfile(proxyURL, tlsProfile string) error {
 	raw := strings.TrimSpace(proxyURL)
 	if raw == "" {
 		setLoginHTTP(&http.Client{Timeout: 30 * time.Second, Transport: loginProxyFailure{}})
 		return nil
 	}
-	u, err := url.Parse(raw)
+	rt, err := upstream.NewProxyRoundTripper(raw, tlsProfile)
 	if err != nil {
 		setLoginHTTP(&http.Client{Timeout: 30 * time.Second, Transport: loginProxyFailure{}})
 		return err
 	}
 	setLoginHTTP(&http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			Proxy:           http.ProxyURL(u),
-			MaxIdleConns:    4,
-			IdleConnTimeout: 30 * time.Second,
-		},
+		Timeout:   30 * time.Second,
+		Transport: rt,
 	})
 	return nil
 }

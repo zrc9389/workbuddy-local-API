@@ -2,7 +2,9 @@ package upstream
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"net"
@@ -15,8 +17,10 @@ import (
 )
 
 const (
-	defaultEgressAcquireTimeout = 15 * time.Second
-	defaultEgressMinSwitchGap   = 500 * time.Millisecond
+	defaultEgressAcquireTimeout       = 15 * time.Second
+	defaultEgressMinSwitchGap         = 500 * time.Millisecond
+	defaultEgressSameAccountMinGap    = 250 * time.Millisecond
+	defaultEgressSameAccountGapJitter = 150 * time.Millisecond
 )
 
 // ErrEgressGuardTimeout 表示在 AcquireTimeout 内未能等到同出口被其他账号释放。
@@ -30,6 +34,12 @@ type EgressGuardOptions struct {
 	// MinSwitchGap 跨账号切换同一出口时的最小静默错峰间隔；
 	// 0 使用默认 500ms；<0 表示不额外等待。
 	MinSwitchGap time.Duration
+	// SameAccountMinGap 同账号并发启动的最小错峰下界；
+	// 0 使用默认 250ms；<0 表示关闭同账号启动错峰（测试快速注入用）。
+	SameAccountMinGap time.Duration
+	// SameAccountGapJitter 同账号并发启动的随机抖动上界（叠加在 SameAccountMinGap 上）；
+	// 0 且 SameAccountMinGap>=0 时默认 150ms；<0 表示无附加随机抖动。
+	SameAccountGapJitter time.Duration
 	// Now 可选时钟注入（测试用）；nil 时使用 time.Now。
 	Now func() time.Time
 }
@@ -37,8 +47,10 @@ type EgressGuardOptions struct {
 // DefaultEgressGuardOptions 返回生产默认配置。
 func DefaultEgressGuardOptions() EgressGuardOptions {
 	return EgressGuardOptions{
-		AcquireTimeout: defaultEgressAcquireTimeout,
-		MinSwitchGap:   defaultEgressMinSwitchGap,
+		AcquireTimeout:       defaultEgressAcquireTimeout,
+		MinSwitchGap:         defaultEgressMinSwitchGap,
+		SameAccountMinGap:    defaultEgressSameAccountMinGap,
+		SameAccountGapJitter: defaultEgressSameAccountGapJitter,
 	}
 }
 
@@ -48,11 +60,12 @@ type egressWaiter struct {
 }
 
 type egressSlot struct {
-	ownerUID    string
-	activeCount int
-	lastUID     string
-	lastRelease time.Time
-	waiters     []*egressWaiter
+	ownerUID       string
+	activeCount    int
+	lastUID        string
+	lastRelease    time.Time
+	nextSameAcctAt time.Time
+	waiters        []*egressWaiter
 }
 
 // EgressGuard 跨账号同出口 fail-closed 并发门禁：
@@ -62,11 +75,13 @@ type egressSlot struct {
 //   - 不同出口键：完全并发互不干扰；
 //   - 等待超时或 ctx 取消：严格 fail-closed 返回错误，绝不放行。
 type EgressGuard struct {
-	mu             sync.Mutex
-	slots          map[string]*egressSlot
-	acquireTimeout time.Duration
-	minSwitchGap   time.Duration
-	nowFn          func() time.Time
+	mu                   sync.Mutex
+	slots                map[string]*egressSlot
+	acquireTimeout       time.Duration
+	minSwitchGap         time.Duration
+	sameAccountMinGap    time.Duration
+	sameAccountGapJitter time.Duration
+	nowFn                func() time.Time
 }
 
 // NewEgressGuard 构造跨账号同出口并发门禁。
@@ -81,16 +96,61 @@ func NewEgressGuard(opts EgressGuardOptions) *EgressGuard {
 	} else if gap < 0 {
 		gap = 0
 	}
+	sameMin := opts.SameAccountMinGap
+	sameJitter := opts.SameAccountGapJitter
+	if sameMin < 0 {
+		sameMin = 0
+		sameJitter = 0
+	} else {
+		if sameMin == 0 {
+			sameMin = defaultEgressSameAccountMinGap
+		}
+		if sameJitter == 0 {
+			sameJitter = defaultEgressSameAccountGapJitter
+		} else if sameJitter < 0 {
+			sameJitter = 0
+		}
+	}
 	nowFn := opts.Now
 	if nowFn == nil {
 		nowFn = time.Now
 	}
 	return &EgressGuard{
-		slots:          make(map[string]*egressSlot),
-		acquireTimeout: timeout,
-		minSwitchGap:   gap,
-		nowFn:          nowFn,
+		slots:                make(map[string]*egressSlot),
+		acquireTimeout:       timeout,
+		minSwitchGap:         gap,
+		sameAccountMinGap:    sameMin,
+		sameAccountGapJitter: sameJitter,
+		nowFn:                nowFn,
 	}
+}
+
+func (g *EgressGuard) sameAccountGap() time.Duration {
+	if g == nil || g.sameAccountMinGap <= 0 {
+		return 0
+	}
+	jitter := time.Duration(0)
+	if g.sameAccountGapJitter > 0 {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err == nil {
+			jitter = time.Duration(binary.LittleEndian.Uint64(b[:]) % uint64(g.sameAccountGapJitter+1))
+		}
+	}
+	return g.sameAccountMinGap + jitter
+}
+
+func (g *EgressGuard) reserveSameAccountStaggerLocked(slot *egressSlot, now time.Time) time.Duration {
+	gap := g.sameAccountGap()
+	if gap <= 0 {
+		return 0
+	}
+	if slot.nextSameAcctAt.After(now) {
+		wait := slot.nextSameAcctAt.Sub(now)
+		slot.nextSameAcctAt = slot.nextSameAcctAt.Add(gap)
+		return wait
+	}
+	slot.nextSameAcctAt = now.Add(gap)
+	return 0
 }
 
 func (g *EgressGuard) now() time.Time {
@@ -130,27 +190,49 @@ func (g *EgressGuard) Acquire(ctx context.Context, key, uid string) (func(), err
 	g.mu.Lock()
 	now := g.now()
 	g.cleanupExpiredLocked(now)
+	waitStagger := func(d time.Duration, releaseFn func()) (func(), error) {
+		if d <= 0 {
+			return releaseFn, nil
+		}
+		if d > g.acquireTimeout {
+			releaseFn()
+			return nil, ErrEgressGuardTimeout
+		}
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			return releaseFn, nil
+		case <-ctx.Done():
+			releaseFn()
+			return nil, ctx.Err()
+		}
+	}
+
 	slot := g.slots[key]
 	if slot == nil {
 		slot = &egressSlot{
-			ownerUID:    uid,
-			activeCount: 1,
+			ownerUID:       uid,
+			activeCount:    1,
+			nextSameAcctAt: now.Add(g.sameAccountGap()),
 		}
 		g.slots[key] = slot
 		g.mu.Unlock()
 		return makeRelease(), nil
 	}
-	// 同账号在途重入：直接递增 activeCount，保留单账号 max_in_flight 并发能力。
+	// 同账号在途重入：保留单账号 max_in_flight 并发能力，同时施加轻量启动错峰抖动（防瞬时齐发）。
 	if slot.activeCount > 0 && slot.ownerUID == uid {
 		slot.activeCount++
+		wait := g.reserveSameAccountStaggerLocked(slot, now)
 		g.mu.Unlock()
-		return makeRelease(), nil
+		return waitStagger(wait, makeRelease())
 	}
 	// 槽位空闲且无排队者，检查是否满足跨账号切换最小间隔。
 	if slot.activeCount == 0 && len(slot.waiters) == 0 {
 		if slot.lastUID == "" || slot.lastUID == uid || g.minSwitchGap <= 0 || now.Sub(slot.lastRelease) >= g.minSwitchGap {
 			slot.ownerUID = uid
 			slot.activeCount = 1
+			slot.nextSameAcctAt = now.Add(g.sameAccountGap())
 			g.mu.Unlock()
 			return makeRelease(), nil
 		}
@@ -183,9 +265,10 @@ func (g *EgressGuard) Acquire(ctx context.Context, key, uid string) (func(), err
 				// 队头且与当前持有者同账号（例如同账号连续两个等待者被依次唤醒）。
 				slot.waiters = slot.waiters[1:]
 				slot.activeCount++
+				wait := g.reserveSameAccountStaggerLocked(slot, g.now())
 				notifyHeadLocked(slot)
 				g.mu.Unlock()
-				return makeRelease(), nil
+				return waitStagger(wait, makeRelease())
 			}
 			if slot.activeCount == 0 {
 				var gapRemain time.Duration
@@ -199,6 +282,7 @@ func (g *EgressGuard) Acquire(ctx context.Context, key, uid string) (func(), err
 					slot.waiters = slot.waiters[1:]
 					slot.ownerUID = uid
 					slot.activeCount = 1
+					slot.nextSameAcctAt = g.now().Add(g.sameAccountGap())
 					notifyHeadLocked(slot)
 					g.mu.Unlock()
 					return makeRelease(), nil

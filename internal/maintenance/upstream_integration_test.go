@@ -68,16 +68,22 @@ func TestRealUpstreamActionsCoverAllAccounts(t *testing.T) {
 		t.Fatal("start failed")
 	}
 	st := waitFinished(t, svc)
-	for _, step := range st.Steps {
-		if step.Total != 16 || step.Completed != 8 || step.Failed != 8 || len(step.Accounts) != 16 {
-			t.Fatalf("step=%+v", step)
+	for idx, step := range st.Steps {
+		wantFailed := 0
+		wantIsolatedState := "skipped"
+		if idx == 0 {
+			wantFailed = 8
+			wantIsolatedState = "failed"
+		}
+		if step.Total != 16 || step.Completed != 8 || step.Failed != wantFailed || len(step.Accounts) != 16 {
+			t.Fatalf("step[%d]=%+v", idx, step)
 		}
 		for _, result := range step.Accounts {
 			if result.UID == "manual" && result.State != "done" {
 				t.Fatalf("manual=%+v", result)
 			}
-			if strings.HasPrefix(result.UID, "isolated") && result.State != "failed" {
-				t.Fatalf("isolated=%+v", result)
+			if strings.HasPrefix(result.UID, "isolated") && result.State != wantIsolatedState {
+				t.Fatalf("step[%d] isolated=%+v want %s", idx, result, wantIsolatedState)
 			}
 		}
 	}
@@ -91,9 +97,12 @@ func TestRealUpstreamActionsCoverAllAccounts(t *testing.T) {
 	}
 	for i := 0; i < 8; i++ {
 		uid := fmt.Sprintf("isolated%d", i)
-		for _, path := range []string{"/v2/plugin/auth/token/refresh", "/v2/billing/meter/daily-checkin", "/v2/report", "/activity/growth/buddy/info"} {
-			if calls[uid][path] != 1 {
-				t.Errorf("%s %s calls=%d", uid, path, calls[uid][path])
+		if calls[uid]["/v2/plugin/auth/token/refresh"] != 1 {
+			t.Errorf("%s /v2/plugin/auth/token/refresh calls=%d want 1", uid, calls[uid]["/v2/plugin/auth/token/refresh"])
+		}
+		for _, path := range []string{"/v2/billing/meter/daily-checkin", "/v2/report", "/activity/growth/buddy/info"} {
+			if calls[uid][path] != 0 {
+				t.Errorf("%s %s calls=%d want 0 (skipped after token failure)", uid, path, calls[uid][path])
 			}
 		}
 	}

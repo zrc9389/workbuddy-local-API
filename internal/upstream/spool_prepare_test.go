@@ -139,8 +139,8 @@ func TestPrepareSpoolFileFullParityOver256KiB(t *testing.T) {
 	if parsed["tool_choice"] != "auto" {
 		t.Fatalf("tool_choice=%v want auto", parsed["tool_choice"])
 	}
-	if key, _ := parsed["prompt_cache_key"].(string); !strings.HasPrefix(key, "wb2a-uid12345-") {
-		t.Fatalf("prompt_cache_key=%q not injected", key)
+	if key, _ := parsed["prompt_cache_key"].(string); !strings.HasPrefix(key, "conv-uid12345-") || strings.Contains(key, "wb2a-") {
+		t.Fatalf("prompt_cache_key=%q not injected with natural conv- prefix", key)
 	}
 
 	wireStr := string(outBytes)

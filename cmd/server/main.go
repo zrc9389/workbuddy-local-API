@@ -321,7 +321,12 @@ func run() error {
 		log.Printf("[reqlog] 请求指标已启用；JSONL 归档已关闭")
 	}
 
-	taskService := tasks.New(tasks.Config{Pool: p, Upstream: up})
+	taskService := tasks.New(tasks.Config{
+		Pool:              p,
+		Upstream:          up,
+		AccountStaggerMin: 800 * time.Millisecond,
+		AccountStaggerMax: 2200 * time.Millisecond,
+	})
 	maintenanceAction := maintenance.UpstreamAction(p, up)
 	maint := maintenance.New(p, func(ctx context.Context, step, uid string) (string, error) {
 		message, err := maintenanceAction(ctx, step, uid)
@@ -333,6 +338,7 @@ func run() error {
 		}
 		return message, err
 	})
+	maint.SetAccountStagger(800*time.Millisecond, 2200*time.Millisecond)
 	if err := maint.SetStorage(stateSibling(cfg.StateFile, "maintenance-status.json")); err != nil {
 		log.Printf("maintenance: restore failed: %v", err)
 	}

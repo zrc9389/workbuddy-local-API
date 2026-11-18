@@ -1245,7 +1245,7 @@ func (c *Client) ChatStreamContext(ctx context.Context, a *auth.Auth, body []byt
 		realm = a.Realm()
 		uid = a.UID
 	}
-	if len(body) > LargePayloadThreshold && IsPayloadUnmodified(body) {
+	if len(body) > LargePayloadThreshold && !c.SanitizeFingerprints.Load() && !c.globalOn(a) && IsPayloadUnmodified(body) {
 		return c.ChatStreamReaderContext(ctx, a, bytes.NewReader(body), int64(len(body)), clientIP, meta, true)
 	}
 	prepared := c.prepareBody(body, realm, uid, meta.ConversationID)

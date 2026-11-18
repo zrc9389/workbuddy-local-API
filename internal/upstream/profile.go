@@ -29,9 +29,7 @@ func (c *Client) FetchAccountProfile(a *auth.Auth) (string, error) {
 	req.Header.Set("x-client-platform", "web")
 	req.Header.Set("Origin", "https://www.workbuddy.cn")
 	req.Header.Set("Referer", "https://www.workbuddy.cn/profile/account-settings")
-	if ua := c.userAgent(a); ua != "" {
-		req.Header.Set("User-Agent", ua)
-	}
+	req.Header.Set("User-Agent", chromeAutoWebUA)
 	data, err := c.doJSON(req, a)
 	if err != nil {
 		return "", err

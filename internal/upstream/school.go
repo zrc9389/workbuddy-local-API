@@ -60,6 +60,12 @@ const schoolOpenDayActivityID = "school_open_day_2026"
 
 // mpEventBase 小程序埋点公共指纹（appservice wQ+Ao 对齐）。
 func mpEventBase(a *auth.Auth) map[string]any {
+	dp := a.EnsureDeviceProfile()
+	uid, nick := "", ""
+	if a != nil {
+		uid = a.UID
+		nick = a.NicknameValue()
+	}
 	return map[string]any{
 		"timestamp":    time.Now().UnixMilli(),
 		"ideType":      "WorkBuddy_MP",
@@ -69,13 +75,13 @@ func mpEventBase(a *auth.Auth) map[string]any {
 		"product":      "SaaS",
 		"ideName":      "wx_app_cloud",
 		"platform":     "mini_program",
-		"os":           "windows",
-		"osVersion":    "11",
-		"arch":         "x64",
-		"machineId":    "0655736a-607f-4d9d-b430-58176ee9a090",
+		"os":           dp.OS,
+		"osVersion":    dp.OSVersion,
+		"arch":         dp.Arch,
+		"machineId":    dp.MachineID,
 		"timezone":     "Asia/Shanghai",
-		"userId":       a.UID,
-		"userNickname": a.NicknameValue(),
+		"userId":       uid,
+		"userNickname": nick,
 	}
 }
 
@@ -120,7 +126,7 @@ func (c *Client) ReportMPEvent(a *auth.Auth, events ...map[string]any) error {
 
 // SchoolChatTimesEvents 构造一条 chat_request_send 事件（chat_3_times 计数）。
 func SchoolChatTimesEvents(conversationID string) map[string]any {
-	rid := "wb2api-" + clientToken()
+	rid := NewRandomHex(16)
 	return map[string]any{
 		"eventCode":   "chat_request_send",
 		"inputLength": 14, "isPlan": false, "isAutoExecuteTerminal": false,
@@ -205,7 +211,7 @@ func MiniPlaybookEvents(caseID, caseName string) []map[string]any {
 	send := map[string]any{
 		"eventCode": "playbook_prompt_send", "source": "discover",
 		"promptLength": 96, "isOfficial": 1,
-		"conversationId": "wb2api-mp-pb-" + clientToken(),
+		"conversationId": NewRandomUUID(),
 		"extVersion":     "2.2.8",
 	}
 	for k, v := range base {

@@ -285,6 +285,9 @@ func PrepareSpoolFile(ra io.ReaderAt, size int64, opts SpoolPrepareOptions) (io.
 			delete(meta, "conversationId")
 		}
 	}
+	if opts.Sanitize {
+		sanitizeMetadata(ctrl)
+	}
 
 	modelName, _ := ctrl["model"].(string)
 	injectThinking(ctrl, lookupDefaultEffort(opts.DefaultEfforts, modelName))

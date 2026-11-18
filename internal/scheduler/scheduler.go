@@ -5,7 +5,6 @@ package scheduler
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"math/rand"
 	"sync"
@@ -697,7 +696,7 @@ func (s *Scheduler) runActivity(ctx context.Context, auto bool) {
 			return
 		}
 		first = false
-		cid := fmt.Sprintf("wb2api-%d", time.Now().UnixMilli())
+		cid := upstream.NewRandomUUID()
 		if err := s.cfg.Upstream.ReportChatActivity(a, cid, ""); err != nil {
 			log.Printf("activity %s: %v", logfmt.Label(a.UID, a.NicknameValue()), err)
 			continue

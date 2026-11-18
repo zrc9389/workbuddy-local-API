@@ -71,8 +71,8 @@ func TestRunRecordsPartialOutcome(t *testing.T) {
 	if st.LastResult != "partial" {
 		t.Fatalf("last_result=%q want partial", st.LastResult)
 	}
-	if st.LastFailed != 4 {
-		t.Fatalf("last_failed=%d want 4 (one failure in each of four steps)", st.LastFailed)
+	if st.LastFailed != 1 {
+		t.Fatalf("last_failed=%d want 1 (token failure skips remaining steps in same round)", st.LastFailed)
 	}
 }
 

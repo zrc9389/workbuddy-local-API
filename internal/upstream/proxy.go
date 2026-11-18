@@ -122,6 +122,39 @@ func (s safeProxyTransport) CloseIdleConnections() {
 	roundTripCloseIdle(s.target())
 }
 func ValidateProxyURL(raw string) error { return auth.ValidateProxyURL(raw) }
+
+// TLSProfileValue 返回客户端当前生效的 TLS 拟态档位（chrome_auto / go_h1）。
+func (c *Client) TLSProfileValue() string {
+	if c == nil {
+		return TLSProfileChromeAuto
+	}
+	return c.effectiveTLSProfile()
+}
+
+// NewProxyRoundTripper 构造独立代理传输层（供 panel OAuth 登录等外部调用方复用）：
+// tlsProfile != "go_h1" 时默认采用 uTLS HelloChrome_Auto + HTTP/2 代理传输层，
+// 否则回落标准 Go http.Transport。
+func NewProxyRoundTripper(proxyURL, tlsProfile string) (http.RoundTripper, error) {
+	raw := strings.TrimSpace(proxyURL)
+	if err := auth.ValidateProxyURL(raw); err != nil {
+		return nil, err
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, err
+	}
+	profile := strings.ToLower(strings.TrimSpace(tlsProfile))
+	if profile == TLSProfileGoH1 {
+		tr := newTransport()
+		tr.Proxy = http.ProxyURL(u)
+		tr.MaxIdleConns = 4
+		tr.MaxIdleConnsPerHost = 2
+		tr.MaxConnsPerHost = 4
+		tr.IdleConnTimeout = idleConnTimeout
+		return tr, nil
+	}
+	return newUTLSProxyTransport(newTransport(), u)
+}
 func (c *Client) ForgetTransport(uid string) {
 	if c == nil {
 		return

@@ -104,6 +104,7 @@ func prepareBodyOpt(src []byte, sanitize bool, efforts map[string][]string, defa
 			sanitizeMessages(msgs)
 		}
 		sanitizeTools(obj["tools"])
+		sanitizeMetadata(obj)
 	}
 	if msgs, ok := obj["messages"].([]any); ok {
 		guardEmptyTextParts(msgs)

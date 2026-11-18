@@ -4,6 +4,8 @@ package tasks
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/logfmt"
@@ -18,8 +20,10 @@ import (
 type Config struct {
 	Pool              *pool.Pool
 	Upstream          *upstream.Client
-	ScanConcurrency   int // default 4; hard maximum 8, shared by scans and queue preparation
-	MaxActiveAccounts int // default 4; hard maximum 8 across manual and queued execution
+	ScanConcurrency   int           // default 4; hard maximum 8, shared by scans and queue preparation
+	MaxActiveAccounts int           // default 4; hard maximum 8 across manual and queued execution
+	AccountStaggerMin time.Duration // 账号间随机错峰下界（0=关闭，供单测零耗时）
+	AccountStaggerMax time.Duration // 账号间随机错峰上界
 }
 type Service struct {
 	cfg              Config
@@ -48,6 +52,44 @@ func New(cfg Config) *Service {
 	}
 	return &Service{cfg: cfg, scanSlots: make(chan struct{}, cfg.ScanConcurrency), activeAccounts: make(map[string]struct{}), deletingAccounts: make(map[string]struct{}), activeScans: make(map[string]int), generation: make(map[string]uint64)}
 }
+func (p *Service) waitAccountStagger(ctx context.Context) bool {
+	if p == nil {
+		return true
+	}
+	minD, maxD := p.cfg.AccountStaggerMin, p.cfg.AccountStaggerMax
+	if minD <= 0 && maxD <= 0 {
+		return ctx == nil || ctx.Err() == nil
+	}
+	if minD < 0 {
+		minD = 0
+	}
+	if maxD < minD {
+		maxD = minD
+	}
+	d := minD
+	if span := maxD - minD; span > 0 {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err == nil {
+			d += time.Duration(binary.LittleEndian.Uint64(b[:]) % uint64(span+1))
+		}
+	}
+	if d <= 0 {
+		return ctx == nil || ctx.Err() == nil
+	}
+	if ctx == nil {
+		time.Sleep(d)
+		return true
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 func (p *Service) ready() error {
 	if p == nil || p.cfg.Pool == nil || p.cfg.Upstream == nil {
 		return errors.New("task service unavailable")

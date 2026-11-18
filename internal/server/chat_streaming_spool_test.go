@@ -82,8 +82,8 @@ func TestChatCompletions_LargeRequestStreamForwardAndCleaned(t *testing.T) {
 	if parsed["model"] != "deepseek-v4.1" || parsed["stream"] != true {
 		t.Fatalf("unexpected model/stream: %v %v", parsed["model"], parsed["stream"])
 	}
-	if key, _ := parsed["prompt_cache_key"].(string); !strings.HasPrefix(key, "wb2a-u_spool_") {
-		t.Fatalf("expected prompt_cache_key injected, got %q", key)
+	if key, _ := parsed["prompt_cache_key"].(string); !strings.HasPrefix(key, "conv-u_spool_") || strings.Contains(key, "wb2a-") {
+		t.Fatalf("expected natural conv- prompt_cache_key injected, got %q", key)
 	}
 	msgs := parsed["messages"].([]any)
 	gotUser, _ := msgs[1].(map[string]any)["content"].(string)

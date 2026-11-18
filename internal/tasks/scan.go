@@ -16,10 +16,18 @@ func (p *Service) Scan(ctx context.Context) (ScanResult, error) {
 	states := p.cfg.Pool.List()
 	items := make([]ScanAccountItem, len(states))
 	var wg sync.WaitGroup
+	firstScanned := true
 	for i, st := range states {
 		if st.Disabled {
 			continue
 		}
+		if !firstScanned {
+			if !p.waitAccountStagger(ctx) {
+				wg.Wait()
+				return ScanResult{}, ctx.Err()
+			}
+		}
+		firstScanned = false
 		if err := p.acquireScan(ctx); err != nil {
 			wg.Wait()
 			return ScanResult{}, err

@@ -60,7 +60,7 @@ func desktopFingerprint(a *auth.Auth) map[string]any {
 	}
 	return map[string]any{
 		"timezone":     "Asia/Shanghai",
-		"reportDelay":  2000,
+		"reportDelay":  1600 + int(now%900),
 		"userId":       uid,
 		"username":     nick,
 		"userNickname": nick,
@@ -263,12 +263,16 @@ func DesktopAutomationCreateEvent(name string) DesktopEvent {
 // 与桌面指纹（copilot 域）不同：web 域事件是浏览器形状（os/machineId/userAgent），
 // 用于 Library_read 等页面行为类任务（实测 library_doc_intro_click 4 秒点亮）。
 func (c *Client) ReportWebEvent(a *auth.Auth, eventCode, pageURL, elementID, elementName string) error {
-	ua := "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
+	ua := chromeAutoWebUA
 	dp := a.EnsureDeviceProfile()
+	osVer := dp.OSVersion
+	if osVer == "" {
+		osVer = "10.0.19045"
+	}
 	ev := map[string]any{
 		"eventCode": eventCode, "timestamp": time.Now().UnixMilli(), "reportDelay": 0,
 		"pageURL": pageURL, "elementId": elementID, "elementName": elementName,
-		"os": "Win32", "arch": "", "osVersion": "10.0", "userAgent": ua,
+		"os": "Win32", "arch": dp.Arch, "osVersion": osVer, "userAgent": ua,
 		"machineId": dp.WebMachineID, "userId": a.UID,
 		"userNickname": a.NicknameValue(), "enterpriseId": a.EnterpriseID,
 	}
@@ -417,7 +421,7 @@ func (c *Client) MarketExpertList(a *auth.Auth, expertType string) ([]MarketExpe
 // expert_actual_use 等 JOIN 事件的 requestId 必须是该服务端 id——自造 UUID 不计数
 // （客户端 resolveRealRequestId 同款语义，Sunny row 2113 实证）。
 func (c *Client) DesktopChatWithExpert(a *auth.Auth, expertID string) (conversationID, requestID string, err error) {
-	conversationID = fmt.Sprintf("wb2api-conv-%d", time.Now().UnixNano())
+	conversationID = NewRandomUUID()
 	body := map[string]any{
 		"model": "fast-model",
 		"messages": []any{

@@ -75,7 +75,7 @@ func buildCacheKey(uid, conversation string) string {
 	}
 	sum := sha256.Sum256([]byte(uid + "|" + conversation))
 	convHex := hex.EncodeToString(sum[:16])
-	return "wb2a-" + uid8 + "-" + convHex
+	return "conv-" + uid8 + "-" + convHex
 }
 
 // strField 从 map 取 string 字段，非 string 或空串返回 ""。

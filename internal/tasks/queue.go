@@ -123,6 +123,7 @@ func (p *Service) StartGrowthQueue(concurrency int, growth bool) (started bool, 
 	var accts []queueAccount
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	firstQueuedScan := true
 	for _, st := range states {
 		if st.Disabled {
 			continue
@@ -134,6 +135,10 @@ func (p *Service) StartGrowthQueue(concurrency int, growth bool) (started bool, 
 		if a == nil {
 			continue
 		}
+		if !firstQueuedScan {
+			p.waitAccountStagger(nil)
+		}
+		firstQueuedScan = false
 		p.scanSlots <- struct{}{}
 		generation, admitted := p.beginScan(a.UID)
 		if !admitted {
@@ -257,7 +262,10 @@ func (p *Service) runQueueItems(accts []queueAccount, items []QueueItem, concurr
 
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
-	for _, one := range accts {
+	for idx, one := range accts {
+		if idx > 0 {
+			p.waitAccountStagger(nil)
+		}
 		sem <- struct{}{}
 		wg.Add(1)
 		go func(one queueAccount) {

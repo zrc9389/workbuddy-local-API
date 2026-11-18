@@ -365,6 +365,30 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	blockedEgress := make(map[string]bool)
+	var transportFailUIDs []string
+	transportFailSeen := make(map[string]bool)
+	recordTransportFail := func(uid string) {
+		if uid == "" || transportFailSeen[uid] {
+			return
+		}
+		transportFailSeen[uid] = true
+		transportFailUIDs = append(transportFailUIDs, uid)
+	}
+	flushTransportFailures := func(requestSucceeded bool) {
+		if len(transportFailUIDs) == 0 {
+			return
+		}
+		// 跨多号全部传输失败且本轮无一成功：视为网络/出口侧系统性抖动，避免全池连坐降权。
+		if !requestSucceeded && len(transportFailUIDs) >= 2 {
+			log.Printf("WARN: [server] systemic transport failures across %d accounts with 0 successes; skipping NoteFailures to prevent cascade pool degrade", len(transportFailUIDs))
+			transportFailUIDs = nil
+			return
+		}
+		for _, fuid := range transportFailUIDs {
+			h.cfg.Pool.NoteFailures(fuid)
+		}
+		transportFailUIDs = nil
+	}
 	markBlockedEgress := func(a *auth.Auth) {
 		if a == nil || h.cfg.Upstream == nil {
 			return
@@ -571,7 +595,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			recordAttempt(acct.UID, pool.TokenUsageDelta{}, 0, false, attemptStarted, 0)
 			st.status = http.StatusServiceUnavailable
 			lastErr = terr
-			h.cfg.Pool.NoteFailures(acct.UID)
+			recordTransportFail(acct.UID)
 			fail(acct.UID)
 			if !rotateBackoff(i, r.Context()) {
 				break // ctx 取消：终止轮转（传输层错误换号退避）
@@ -712,7 +736,11 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if peek.Stream {
 			// 流式首字节前有限重试：向客户端发送响应头前预检上游流；
 			// 若在首字节前发现空流或错误帧，且仍在有限重试窗口内，直接换号重试，不向客户端输出坏流。
-			precheckedRC, preErr := upstream.PrecheckStream(rc)
+			firstBytePing := h.cfg.SSEFirstBytePing
+			if firstBytePing == 0 {
+				firstBytePing = upstream.DefaultSSEFirstBytePing
+			}
+			precheckedRC, slowFirstByte, preErr := upstream.PrecheckStreamWithDeadline(rc, firstBytePing)
 			if preErr != nil {
 				_ = rc.Close()
 				recordAttempt(acct.UID, pool.TokenUsageDelta{}, 0, false, attemptStarted, 0)
@@ -743,9 +771,16 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 组装请求上下文做判定）。
 			// errFrame：上游 error 帧原文（观察者旁路采集），用于流尾的账号处置。
 			var errFrame string
+			streamOpts := []upstream.StreamOption{
+				upstream.WithErrorFrameObserver(func(payload string) { errFrame = payload }),
+				upstream.WithFirstBytePing(firstBytePing),
+			}
+			if slowFirstByte {
+				streamOpts = append(streamOpts, upstream.WithImmediateFirstPing())
+			}
 			sErr := upstream.StreamHint(w, stats, upstream.FrameHintFunc(func() upstream.HintContext {
 				return h.hintContext(bareModel, reqHasImage)
-			}), upstream.WithErrorFrameObserver(func(payload string) { errFrame = payload }))
+			}), streamOpts...)
 			switch {
 			case upstream.IsEmptyStreamError(sErr):
 				// 上游 200 但空流（0 有效帧）：StreamHint 已写 error 帧 + [DONE]
@@ -786,6 +821,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				}
 			default:
 				// 真成功：这一跳读完且上游没有报错，才记成功并让粘性跟上。
+				flushTransportFailures(true)
 				st.outcome = telemetry.OutcomeSuccess
 				h.cfg.Pool.NoteSuccess(acct.UID)
 				// 11102 负缓存清命：该账号该模型实测成功，立即解除避让（不必等 TTL 到期）。
@@ -895,6 +931,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		flushTransportFailures(true)
 		st.status = http.StatusOK
 		st.outcome = telemetry.OutcomeSuccess
 		st.toks = completionTokens(resp)
@@ -918,6 +955,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// （限流语义、客户端应等待重试），其余保持 503。本地调度类错误（无可用账号/
 	// 传输层抖动/非上游返回的 lastErr）→ 保留自有文案 no_healthy_account（本地错误
 	// 没有上游原文可透传，不编造）。
+	flushTransportFailures(false)
 	status := http.StatusServiceUnavailable
 	code := "no_healthy_account"
 	msg := "all accounts are temporarily unavailable, please retry later"

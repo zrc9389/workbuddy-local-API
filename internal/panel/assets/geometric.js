@@ -969,6 +969,7 @@ export function expiryTone(days) {
 
             startAmbientPadLoop() {
                 const playPadChord = () => {
+                    if (typeof document !== 'undefined' && document.hidden) return;
                     if (!this.isInitialized || (this.isCustomActive && this.defaultAmbientGain && this.defaultAmbientGain.gain.value <= 0.05)) return;
                     const now = this.ctx.currentTime;
                     const baseFreqs = [146.83, 220.00, 261.63, 329.63, 392.00];
@@ -997,7 +998,8 @@ export function expiryTone(days) {
                 };
 
                 playPadChord();
-                setInterval(playPadChord, 7200);
+                if (this._padInterval) clearInterval(this._padInterval);
+                this._padInterval = setInterval(playPadChord, 7200);
             }
 
             triggerTileNote(index = 0) {
@@ -1223,8 +1225,18 @@ export function expiryTone(days) {
             }
         }
 
+        let introGridPausedHidden = false;
+        let mainWorldPausedHidden = false;
+        let previewPausedHidden = false;
+        let soundWavePausedHidden = false;
+
         function renderIntroGrid(now) {
             if (!introActive) return;
+            if (typeof document !== 'undefined' && document.hidden) {
+                introGridPausedHidden = true;
+                return;
+            }
+            introGridPausedHidden = false;
             if (!introStartTime) introStartTime = now;
 
             const w = window.innerWidth;
@@ -4176,6 +4188,12 @@ export function expiryTone(days) {
                 cancelAnimationFrame(mainWorldRafId);
                 mainWorldRafId = null;
             }
+            if (typeof document !== 'undefined' && document.hidden) {
+                mainWorldPausedHidden = true;
+                lastMainWorldNow = 0;
+                return;
+            }
+            mainWorldPausedHidden = false;
             if (!mainSceneActive) {
                 mainWorldRafId = requestAnimationFrame(renderMainWorld);
                 return;
@@ -8941,6 +8959,11 @@ export function expiryTone(days) {
         };
 
         function renderProjectArtifactPreview(now) {
+            if (typeof document !== 'undefined' && document.hidden) {
+                previewPausedHidden = true;
+                return;
+            }
+            previewPausedHidden = false;
             if (pageTransition.state === 'IN_PAGE' || pageTransition.state === 'EXPANDING_TO_PAGE') {
                 const cw = PREVIEW_LOGICAL_SIZE;
                 const ch = PREVIEW_LOGICAL_SIZE;
@@ -11096,6 +11119,12 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
                 cancelAnimationFrame(soundWaveRafId);
                 soundWaveRafId = null;
             }
+            if (typeof document !== 'undefined' && document.hidden) {
+                soundWavePausedHidden = true;
+                waveLastTimestamp = 0;
+                return;
+            }
+            soundWavePausedHidden = false;
             const now = Number.isFinite(timestamp) ? timestamp : performance.now();
             if (!waveLastTimestamp) waveLastTimestamp = now;
             const dtMs = Math.min(48, Math.max(0, now - waveLastTimestamp));
@@ -11736,11 +11765,32 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             updatePkgChartHoverFromClientX(svgEl, e.clientX);
         }, { passive: true });
 
+        let lastChartInputTarget = null;
+        let lastChartInputClientX = NaN;
+        let lastChartInputMs = -Infinity;
+        let lastChartInputKind = '';
+
+        function dispatchChartHoverOnce(kind, target, clientX) {
+            const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            // 仅对同一物理触控成对触发的 touch*/pointer*（同目标、同坐标、80ms 内）去重
+            if (kind !== lastChartInputKind &&
+                target === lastChartInputTarget &&
+                Math.abs(clientX - lastChartInputClientX) < 1 &&
+                (nowMs - lastChartInputMs) < 80) {
+                return;
+            }
+            lastChartInputKind = kind;
+            lastChartInputTarget = target;
+            lastChartInputClientX = clientX;
+            lastChartInputMs = nowMs;
+            updateChartHoverFromClientX(target, clientX);
+        }
+
         ['touchstart', 'touchmove'].forEach((evtName) => {
             document.addEventListener(evtName, (e) => {
                 const touch = e.touches?.[0] || e.changedTouches?.[0];
                 if (!touch) return;
-                updateChartHoverFromClientX(e.target, touch.clientX);
+                dispatchChartHoverOnce('touch', e.target, touch.clientX);
             }, { passive: true });
         });
 
@@ -11748,7 +11798,7 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
             document.addEventListener(evtName, (e) => {
                 if (e.pointerType === 'mouse') return;
                 if (evtName === 'pointermove' && e.buttons === 0 && e.pointerType !== 'touch') return;
-                updateChartHoverFromClientX(e.target, e.clientX);
+                dispatchChartHoverOnce('pointer', e.target, e.clientX);
             }, { passive: true });
         });
 
@@ -11761,6 +11811,30 @@ a.length>D&&(D=a.length,p=0|1.25*D+7200,r=new Int8Array(p));a=u.lame_encode_buff
         }, { passive: true });
 
         window.addEventListener('resize', handleViewportScaleSync);
+        if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) return;
+                const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : (cb => setTimeout(cb, 16));
+                if (introGridPausedHidden && introActive) {
+                    introGridPausedHidden = false;
+                    raf(renderIntroGrid);
+                }
+                if (mainWorldPausedHidden) {
+                    mainWorldPausedHidden = false;
+                    lastMainWorldNow = 0;
+                    raf(renderMainWorld);
+                }
+                if (previewPausedHidden) {
+                    previewPausedHidden = false;
+                    raf(renderProjectArtifactPreview);
+                }
+                if (soundWavePausedHidden && waveCtx) {
+                    soundWavePausedHidden = false;
+                    waveLastTimestamp = 0;
+                    raf(animateSoundWaveIcon);
+                }
+            });
+        }
         window.visualViewport?.addEventListener('resize', handleViewportScaleSync);
 
         /* =========================================================================

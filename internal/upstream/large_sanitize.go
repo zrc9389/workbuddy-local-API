@@ -14,11 +14,17 @@ func rewriteLargePayload(src io.Reader, sanitize bool) (io.ReadCloser, int64, fu
 	if !sanitize {
 		return io.NopCloser(src), -1, func() {}, nil
 	}
-	patterns := make([][2][]byte, 0, len(sanitizeRewrites)+2)
+	patterns := make([][2][]byte, 0, len(sanitizeRewrites)+1)
+	seenPat := make(map[string]bool, len(sanitizeRewrites)+1)
 	for _, rw := range sanitizeRewrites {
-		patterns = append(patterns, [2][]byte{[]byte(rw[0]), []byte(rw[1])})
+		if !seenPat[rw[0]] {
+			seenPat[rw[0]] = true
+			patterns = append(patterns, [2][]byte{[]byte(rw[0]), []byte(rw[1])})
+		}
 	}
-	patterns = append(patterns, [2][]byte{[]byte("x-anthropic-billing-header"), []byte("x-anthropic-billing-hdr")}, [2][]byte{[]byte("11128"), []byte("11-128")})
+	if !seenPat["x-anthropic-billing-header"] {
+		patterns = append(patterns, [2][]byte{[]byte("x-anthropic-billing-header"), []byte("x-anthropic-billing-hdr")})
+	}
 	sort.Slice(patterns, func(i, j int) bool { return len(patterns[i][0]) > len(patterns[j][0]) })
 	maxPattern := 1
 	for _, p := range patterns {
@@ -36,6 +42,9 @@ func rewriteLargePayload(src io.Reader, sanitize bool) (io.ReadCloser, int64, fu
 	buf := make([]byte, 64<<10)
 	pending := make([]byte, 0, maxPattern-1)
 	var total int64
+	// 跟踪 JSON 字符串字面量状态：仅在字符串内部执行替换，严禁把 JSON 裸数字 11128 篡改成非法 JSON 11-128！
+	inString := false
+	escaped := false
 	write := func(in []byte) error {
 		n, e := f.Write(in)
 		total += int64(n)
@@ -47,23 +56,42 @@ func rewriteLargePayload(src io.Reader, sanitize bool) (io.ReadCloser, int64, fu
 		}
 		return nil
 	}
+	advanceJSONState := func(b byte) {
+		if inString {
+			if escaped {
+				escaped = false
+				return
+			}
+			if b == '\\' {
+				escaped = true
+			} else if b == '"' {
+				inString = false
+			}
+		} else if b == '"' {
+			inString = true
+		}
+	}
 	consume := func(final bool) error {
 		for len(pending) >= maxPattern || (final && len(pending) > 0) {
 			matched := false
-			for _, p := range patterns {
-				if len(p[0]) <= len(pending) && bytes.Equal(pending[:len(p[0])], p[0]) {
-					if err := write(p[1]); err != nil {
-						return err
+			if inString && !escaped {
+				for _, p := range patterns {
+					if len(p[0]) <= len(pending) && bytes.Equal(pending[:len(p[0])], p[0]) {
+						if err := write(p[1]); err != nil {
+							return err
+						}
+						pending = pending[len(p[0]):]
+						matched = true
+						break
 					}
-					pending = pending[len(p[0]):]
-					matched = true
-					break
 				}
 			}
 			if !matched {
+				b := pending[0]
 				if err := write(pending[:1]); err != nil {
 					return err
 				}
+				advanceJSONState(b)
 				pending = pending[1:]
 			}
 		}

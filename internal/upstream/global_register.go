@@ -26,8 +26,7 @@ import (
 )
 
 // globalWebUA 国际版 web 端 UA（注册完善页走 web 指纹，非桌面端 CLI 指纹）。
-const globalWebUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-	"(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+const globalWebUA = chromeAutoWebUA
 
 // GlobalCountry 可选注册地区（对应 get-country-code 的 list 元素）。
 type GlobalCountry struct {

@@ -40,15 +40,21 @@ func TestSixteenAccountsIncludeIsolatedAndManuallyDisabled(t *testing.T) {
 	p.SetManualDisabled("u14", true)
 	close(release)
 	st := waitFinished(t, s)
-	if calls["u07"] != 4 || calls["u14"] != 4 || calls["u15"] != 4 {
-		t.Fatalf("calls = %v", calls)
+	if calls["u07"] != 1 || calls["u14"] != 4 || calls["u15"] != 4 {
+		t.Fatalf("calls = %v (expected u07=1 skipped after token failure, u14=4, u15=4)", calls)
 	}
-	for _, step := range st.Steps {
-		if step.Total != 16 || len(step.Accounts) != 16 || step.Completed != 15 || step.Failed != 1 {
-			t.Fatalf("step = %+v", step)
+	for idx, step := range st.Steps {
+		wantFailed := 0
+		wantU07State := "skipped"
+		if idx == 0 {
+			wantFailed = 1
+			wantU07State = "failed"
 		}
-		if step.Accounts[7].State != "failed" || step.Accounts[14].State != "done" || step.Accounts[15].State != "done" {
-			t.Fatalf("results = %+v", step.Accounts)
+		if step.Total != 16 || len(step.Accounts) != 16 || step.Completed != 15 || step.Failed != wantFailed {
+			t.Fatalf("step[%d] = %+v", idx, step)
+		}
+		if step.Accounts[7].State != wantU07State || step.Accounts[14].State != "done" || step.Accounts[15].State != "done" {
+			t.Fatalf("step[%d] results = %+v", idx, step.Accounts)
 		}
 	}
 }

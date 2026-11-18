@@ -41,7 +41,8 @@ type Config struct {
 	// RedisMode 观测字段（"upstash" / "noop"），供 /status 透出。
 	RedisMode       string
 	SoftCooldown    time.Duration // 429/限流文案软冷却基数，默认 600s（连续触发指数退避，封顶 soft_rate_max）
-	RefreshSkew     time.Duration // token 提前刷新窗口，默认 10m
+	RefreshSkew      time.Duration // token 提前刷新窗口，默认 10m
+	SSEFirstBytePing time.Duration // SSE 首包等待保活心跳阈值（0=默认5s，<0禁用）
 	RestrictionHold time.Duration // 11140 风控连坐全池暂停时长（默认 30m；<0 关闭）
 
 	// Panel 管理面板 handler（可选；nil = 不挂载）。挂载在 /panel/ 前缀下，

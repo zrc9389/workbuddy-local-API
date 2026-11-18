@@ -44,8 +44,8 @@ func TestInjectPromptCacheKey_UsesConversationID(t *testing.T) {
 
 	out := InjectPromptCacheKey([]byte(in), uid, "")
 	got := extractCacheKey(t, out)
-	if !strings.HasPrefix(got, "wb2a-") {
-		t.Fatalf("expected wb2a- prefix, got=%q", got)
+	if !strings.HasPrefix(got, "conv-") || strings.Contains(got, "wb2a-") {
+		t.Fatalf("expected natural conv- prefix without wb2a-, got=%q", got)
 	}
 	if !strings.Contains(got, "user-abc") {
 		t.Fatalf("expected uid8 isolation prefix, got=%q", got)
@@ -89,8 +89,8 @@ func TestInjectPromptCacheKey_AccountIsolation(t *testing.T) {
 	if ka == kb {
 		t.Fatalf("cross-account key collision: both=%q", ka)
 	}
-	if !strings.HasPrefix(ka, "wb2a-") || !strings.HasPrefix(kb, "wb2a-") {
-		t.Fatalf("keys must carry wb2a- prefix: a=%q b=%q", ka, kb)
+	if !strings.HasPrefix(ka, "conv-") || !strings.HasPrefix(kb, "conv-") || strings.Contains(ka, "wb2a-") || strings.Contains(kb, "wb2a-") {
+		t.Fatalf("keys must carry natural conv- prefix without wb2a-: a=%q b=%q", ka, kb)
 	}
 }
 
@@ -101,8 +101,8 @@ func TestInjectPromptCacheKey_Format(t *testing.T) {
 	in := `{"model":"glm-5.2","messages":[]}`
 	out := InjectPromptCacheKey([]byte(in), uid, "conv-fmt")
 	got := extractCacheKey(t, out)
-	if !strings.HasPrefix(got, "wb2a-") {
-		t.Fatalf("expected wb2a- prefix, got=%q", got)
+	if !strings.HasPrefix(got, "conv-") || strings.Contains(got, "wb2a-") {
+		t.Fatalf("expected natural conv- prefix without wb2a-, got=%q", got)
 	}
 	if !strings.Contains(got, "12345678") {
 		t.Fatalf("expected uid8 (12345678) in key, got=%q", got)
@@ -120,8 +120,8 @@ func TestInjectPromptCacheKey_EmptyConversation(t *testing.T) {
 	if got == "" {
 		t.Fatalf("expected non-empty key when no conversation, got empty")
 	}
-	if !strings.HasPrefix(got, "wb2a-") {
-		t.Fatalf("expected wb2a- prefix, got=%q", got)
+	if !strings.HasPrefix(got, "conv-") || strings.Contains(got, "wb2a-") {
+		t.Fatalf("expected natural conv- prefix without wb2a-, got=%q", got)
 	}
 	if !strings.Contains(got, "user-abc") {
 		t.Fatalf("expected uid8 in key, got=%q", got)
