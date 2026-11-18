@@ -3,7 +3,7 @@
 from pathlib import Path
 import argparse,hashlib,io,json,struct,tarfile,time
 ROOT=Path(__file__).resolve().parent.parent
-p=argparse.ArgumentParser();p.add_argument('--arch',choices=['amd64','arm64'],required=True);p.add_argument('--version',default='3.0.1');p.add_argument('--output',type=Path);args=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--arch',choices=['amd64','arm64'],required=True);p.add_argument('--version',default='3.0.2');p.add_argument('--output',type=Path);args=p.parse_args()
 arch=args.arch;prefix=f'workbuddy-local-v{args.version}-linux-{arch}';target=args.output or ROOT/'release'/(prefix+'.tar.gz')
 if target.exists():raise SystemExit('Refusing overwrite: '+str(target))
 meta=json.loads((ROOT/'third_party/meta/manifest.json').read_text());record=meta['mihomo']['platforms']['linux-'+arch]

@@ -4995,7 +4995,7 @@ export function expiryTone(days) {
 
             overviewMode: (typeof localStorage !== 'undefined' && localStorage.getItem('wb_overview_mode')) || 'TRAFFIC', // 'TRAFFIC' | 'RESOURCE'
             uptimeSec: 412929,
-            coreVersion: '3.0.1',
+            coreVersion: '3.0.2',
             goroutines: 34,
             memMb: 48.2,
             cpuPct: 14.6,
@@ -5824,7 +5824,7 @@ export function expiryTone(days) {
             } else if (ch === 'sphere') {
                 const col2 = l2 ? (document.getElementById('kpi-col-2') || l2.parentElement) : null;
                 if (col2) col2.style.transform = 'translateX(-16px)';
-                l1.textContent = '核心版本'; v1.textContent = WBState.coreVersion || '3.0.1'; v1.className = "text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap";
+                l1.textContent = '核心版本'; v1.textContent = WBState.coreVersion || '3.0.2'; v1.className = "text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap";
                 l2.textContent = '网关端点'; v2.textContent = '127.0.0.1:7863'; v2.className = "text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap";
                 l3.textContent = 'FPS'; v3.textContent = '60'; v3.className = "text-[22px] font-['Space_Grotesk'] font-medium text-white tracking-tight leading-normal tabular-nums-left whitespace-nowrap";
                 return;
