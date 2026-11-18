@@ -54,8 +54,14 @@ var errUpstreamTimeout = errors.New("upstream timeout")
 // isUpstreamTimeout 判断这一跳的失败是否属于「上游超时 / 停滞」。超时不是账号的
 // 问题，换号注定白换（同一份请求撞同一个慢上游），必须止损：不轮转、不罚号。
 // 三态判定见传输层错误分支的注释。
+// isEgressBusyError 判断错误是否为本地跨号同出口并发门禁超时。
+// 这是出口拥塞而非账号故障，严禁累加 NoteFailures 或降权账号。
+func isEgressBusyError(err error) bool {
+	return errors.Is(err, upstream.ErrEgressGuardTimeout)
+}
+
 func isUpstreamTimeout(err error, clientGone bool) bool {
-	if err == nil {
+	if err == nil || isEgressBusyError(err) {
 		return false
 	}
 	var ne net.Error

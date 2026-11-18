@@ -21,6 +21,21 @@ func (a *Auth) ImportCredentialsAndSave(in *Auth, preserveProxy bool) error {
 	if preserveProxy {
 		in.ProxyURL = a.ProxyURL
 	}
+	if in.realm == "" && a.realm != "" {
+		in.realm = a.realm
+	}
+	if in.Domain == "" && a.Domain != "" {
+		in.Domain = a.Domain
+	}
+	if in.Nickname == "" && a.Nickname != "" {
+		in.Nickname = a.Nickname
+	}
+	if in.EnterpriseID == "" && a.EnterpriseID != "" {
+		in.EnterpriseID = a.EnterpriseID
+	}
+	if in.DeviceToken == "" && a.DeviceToken != "" {
+		in.DeviceToken = a.DeviceToken
+	}
 	if in.DeviceProfile == nil && a.DeviceProfile != nil {
 		cp := *a.DeviceProfile
 		in.DeviceProfile = &cp
@@ -31,4 +46,14 @@ func (a *Auth) ImportCredentialsAndSave(in *Auth, preserveProxy bool) error {
 	}
 	a.retired = true
 	return nil
+}
+
+// IsRetired 并发安全返回该 Auth 对象是否已被更新导入的替代对象退役。
+func (a *Auth) IsRetired() bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.retired
 }

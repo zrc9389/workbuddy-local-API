@@ -39,7 +39,7 @@ func (p *Service) Scan(ctx context.Context) (ScanResult, error) {
 				return
 			}
 			it := &items[i]
-			it.UID, it.Nickname = uid, a.Nickname
+			it.UID, it.Nickname = uid, a.NicknameValue()
 			// D4 门控：global 账号无 CN 成长任务体系，不发起任何上游调用。
 			if a.IsGlobal() {
 				return

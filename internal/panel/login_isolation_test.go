@@ -19,9 +19,9 @@ type loginTestTransport func(*http.Request) (*http.Response, error)
 func (f loginTestTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestLoginReplacesCredentialsPreservesProxy(t *testing.T) {
-	oldHTTP := loginHTTP
-	defer func() { loginHTTP = oldHTTP }()
-	loginHTTP = &http.Client{Transport: loginTestTransport(func(r *http.Request) (*http.Response, error) {
+	oldHTTP := getLoginHTTP()
+	defer func() { setLoginHTTP(oldHTTP) }()
+	setLoginHTTP(&http.Client{Transport: loginTestTransport(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Query().Get("state") != "state+test" {
 			t.Errorf("state query=%q", r.URL.RawQuery)
 		}
@@ -30,7 +30,7 @@ func TestLoginReplacesCredentialsPreservesProxy(t *testing.T) {
 			body = "{\"code\":0,\"data\":{\"uid\":\"u\",\"enterpriseId\":\"test\"}}"
 		}
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
-	})}
+	})})
 	fixtureHTTP := &http.Client{Transport: loginTestTransport(func(r *http.Request) (*http.Response, error) {
 		t.Error("unexpected upstream request")
 		return nil, io.EOF

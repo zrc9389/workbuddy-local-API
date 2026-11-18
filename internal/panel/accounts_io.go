@@ -206,24 +206,36 @@ func (p *Panel) AccountsImport(w http.ResponseWriter, r *http.Request) {
 		}
 		a := it.a
 		var unlock func()
-		if p.deletions != nil {
-			unlock = p.deletions.lockFor(a.UID)
-			if _, pending := p.deletions.journal.get(a.UID); pending {
+		if dc, err := p.ensureDeletionCoordinator(); err == nil && dc != nil {
+			unlock = dc.lockFor(a.UID)
+			if _, pending := dc.journal.get(a.UID); pending {
 				unlock()
 				failed = append(failed, a.UID)
 				continue
 			}
 		}
 		if existing := p.cfg.Pool.AuthByUID(a.UID); existing != nil {
-			// 修复同 UID 重新导入：将新凭据合入旧对象并持久化落盘，重新载入号池并复活
-			if a.RefreshTokenValue() != "" {
-				if err := existing.ImportCredentialsAndSave(a, true); err == nil {
-					p.cfg.Pool.Add(existing)
-					p.cfg.Pool.ReviveDisabled(a.UID)
+			// 修复同 UID 重新导入：只要新对象持有效凭证即持久化落盘并发布新对象 a，
+			// 避免将已 retired 的旧对象 existing 回填进号池导致后续 SaveAtomic 失败。
+			active := existing
+			if a.AccessTokenValue() != "" || a.RefreshTokenValue() != "" {
+				if err := existing.ImportCredentialsAndSave(a, true); err != nil {
+					if unlock != nil {
+						unlock()
+					}
+					failed = append(failed, a.UID)
+					continue
 				}
+				active = a
+				p.cfg.Pool.Add(a)
+				p.cfg.Pool.ReviveDisabled(a.UID)
+				if p.cfg.Upstream != nil {
+					p.cfg.Upstream.ForgetTransport(a.UID)
+				}
+				accountEgressService.Forget(existing)
 			}
 			if it.binding != nil && p.cfg.Meta != nil {
-				_ = p.cfg.Meta.RestoreAccountBinding(ctx, a.UID, it.binding.URL, it.binding.Node, existing.SetProxyAndSave)
+				_ = p.cfg.Meta.RestoreAccountBinding(ctx, a.UID, it.binding.URL, it.binding.Node, active.SetProxyAndSave)
 			}
 			if unlock != nil {
 				unlock()

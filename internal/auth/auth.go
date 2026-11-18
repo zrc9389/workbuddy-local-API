@@ -96,6 +96,16 @@ func (a *Auth) RefreshTokenValue() string {
 	return a.RefreshToken
 }
 
+// NicknameValue 并发安全读 Nickname（与 Pool.SetNickname 写路径共享 a.mu 锁）。
+func (a *Auth) NicknameValue() string {
+	if a == nil {
+		return ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.Nickname
+}
+
 // globalEnabled 全局开关：global realm 是否路由（D5 双保险）。
 // 默认开启（与 config global.enabled 缺省 true 一致）：Realm 正常按显式 realm/
 // domain 判定 global/cn。显式 SetGlobalEnabled(false)（config "enabled": false）关闭
@@ -400,7 +410,7 @@ func LoadDir(dir string) ([]*Auth, error) {
 		a.FilePath = f
 		if prev, ok := seenUID[a.UID]; ok {
 			log.Printf("WARN: uid %s duplicated across %s and %s — 后者覆盖（不同 realm 同名 UID？）",
-				logfmt.Label(a.UID, a.Nickname), prev, f)
+				logfmt.Label(a.UID, a.NicknameValue()), prev, f)
 		}
 		seenUID[a.UID] = f
 		needSave := false
@@ -418,9 +428,9 @@ func LoadDir(dir string) ([]*Auth, error) {
 		a.mu.Unlock()
 		if needSave {
 			if err := a.SaveAtomic(); err != nil {
-				log.Printf("WARN: auth %s backfill save: %v", logfmt.Label(a.UID, a.Nickname), err)
+				log.Printf("WARN: auth %s backfill save: %v", logfmt.Label(a.UID, a.NicknameValue()), err)
 			} else if backfilledRealm == "global" {
-				log.Printf("auth %s 存量迁移: 补 realm=global（domain=%s）", logfmt.Label(a.UID, a.Nickname), a.Domain)
+				log.Printf("auth %s 存量迁移: 补 realm=global（domain=%s）", logfmt.Label(a.UID, a.NicknameValue()), a.Domain)
 			}
 		}
 		out = append(out, a)

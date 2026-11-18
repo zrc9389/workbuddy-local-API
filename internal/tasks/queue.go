@@ -196,7 +196,7 @@ func (p *Service) StartGrowthQueue(concurrency int, growth bool) (started bool, 
 	var items []QueueItem
 	for _, one := range accts {
 		for _, t := range one.grow {
-			items = append(items, QueueItem{UID: one.a.UID, Nickname: one.a.Nickname, Kind: "growth", Code: t.TaskCode, Status: "pending"})
+			items = append(items, QueueItem{UID: one.a.UID, Nickname: one.a.NicknameValue(), Kind: "growth", Code: t.TaskCode, Status: "pending"})
 		}
 	}
 	if len(items) == 0 {

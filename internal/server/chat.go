@@ -364,18 +364,40 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	blockedEgress := make(map[string]bool)
+	markBlockedEgress := func(a *auth.Auth) {
+		if a == nil || h.cfg.Upstream == nil {
+			return
+		}
+		ek := h.cfg.Upstream.EgressKey(a)
+		if ek == "" {
+			return
+		}
+		blockedEgress[ek] = true
+		for _, s := range h.cfg.Pool.List() {
+			if cand := h.cfg.Pool.AuthByUID(s.UID); cand != nil && h.cfg.Upstream.EgressKey(cand) == ek {
+				tried[s.UID] = true
+			}
+		}
+	}
+
 	boundUID := stickyUID
 	isSpillover := false
 	for i := 0; i < h.cfg.MaxRotate; i++ {
 		// 选号：粘性号优先（PickByUIDForModel 已校验该模型可用性 + 在途未满），否则普通轮换。
 		var acct *auth.Auth
 		if stickyUID != "" {
+			stickyEgressBlocked := false
+			if len(blockedEgress) > 0 && h.cfg.Upstream != nil {
+				if sa := h.cfg.Pool.AuthByUID(stickyUID); sa != nil && blockedEgress[h.cfg.Upstream.EgressKey(sa)] {
+					stickyEgressBlocked = true
+				}
+			}
 			stickyInf, ok := h.cfg.Pool.InFlightOf(stickyUID)
 			minPoolInf := h.cfg.Pool.MinInFlightForRealm(realm, bareModel)
-			if ok && minPoolInf >= 0 && stickyInf > minPoolInf {
-				// 粘性并发溢出旁路（Sticky Busy Spillover）：
-				// 粘性号有在途并发且池中有更空闲的健康账号，本次并发请求旁路到更空闲账号，
-				// 不破坏原有 12h 粘性绑定。
+			if stickyEgressBlocked || (ok && minPoolInf >= 0 && stickyInf > minPoolInf) {
+				// 粘性并发溢出旁路（Sticky Busy Spillover）或同出口阻塞旁路：
+				// 本次请求旁路到其他健康/不同出口账号，不破坏原有 12h 粘性绑定。
 				isSpillover = true
 			} else {
 				acct = h.cfg.Pool.PickByUIDForModel(stickyUID, bareModel)
@@ -408,7 +430,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		st.uid = acct.UID
 		// 同步昵称：请求流水行只写 uid8 时无法直观看是哪一号，昵称随本次选号带入日志行。
-		st.nick = acct.Nickname
+		st.nick = acct.NicknameValue()
 		tried[acct.UID] = true
 
 		// 占用在途名额：Pick 已跳过满额账号，此处 CAS 兜底并发抢名额的竞态。
@@ -430,6 +452,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		if acct.NeedsRefresh(h.cfg.RefreshSkew) {
 			if err := h.cfg.Upstream.RefreshTokenContext(r.Context(), acct); err != nil {
 				lastErr = err
+				if isEgressBusyError(err) {
+					releaseHeld()
+					markBlockedEgress(acct)
+					if r.Context().Err() != nil {
+						break
+					}
+					continue
+				}
 				var ue *upstream.Error
 				if errors.As(err, &ue) && ue.Kind == upstream.ErrSessionDead {
 					h.cfg.Pool.Disable(acct.UID, "refresh session dead")
@@ -444,7 +474,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := acct.SaveAtomic(); err != nil {
 				// 刷新成功但落盘失败：下次启动会用旧 token，必须暴露
-				log.Printf("ERR: [server] chat refresh acct=%s: save auth failed: %v", logfmt.Label(acct.UID, acct.Nickname), err)
+				log.Printf("ERR: [server] chat refresh acct=%s: save auth failed: %v", logfmt.Label(acct.UID, acct.NicknameValue()), err)
 			}
 		}
 
@@ -513,12 +543,25 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			// 显式 deadline（DeadlineExceeded / os.ErrDeadlineExceeded）、以及
 			// **客户端仍在但 ctx 被取消**——那只能是我们自己的空闲看门狗掐的流，
 			// 也就是上游停滞。客户端主动断连时 r.Context() 已取消，走下面的抖动分支。
+			if isEgressBusyError(terr) {
+				recordAttempt(acct.UID, pool.TokenUsageDelta{}, 0, false, attemptStarted, 0)
+				st.status = http.StatusServiceUnavailable
+				lastErr = terr
+				releaseHeld()
+				markBlockedEgress(acct)
+				log.Printf("WARN: [server] egress busy acct=%s: %v (account not penalized, skipping shared egress)",
+					logfmt.Label(acct.UID, acct.NicknameValue()), terr)
+				if r.Context().Err() != nil {
+					break
+				}
+				continue
+			}
 			if isUpstreamTimeout(terr, r.Context().Err() != nil) {
 				recordAttempt(acct.UID, pool.TokenUsageDelta{}, 0, false, attemptStarted, 0)
 				st.status = http.StatusServiceUnavailable
 				lastErr = fmt.Errorf("%w: %v", errUpstreamTimeout, terr)
 				log.Printf("WARN: [server] upstream timeout acct=%s: %v (rotation stopped, account not penalized)",
-					logfmt.Label(acct.UID, acct.Nickname), terr)
+					logfmt.Label(acct.UID, acct.NicknameValue()), terr)
 				break
 			}
 			// 网络层抖动：只换号，不喂熔断计数（传输层错误对连续失败连坐熔断过于严苛）。
@@ -674,7 +717,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				_ = rc.Close()
 				recordAttempt(acct.UID, pool.TokenUsageDelta{}, 0, false, attemptStarted, 0)
 				if i < h.cfg.MaxRotate-1 && r.Context().Err() == nil {
-					log.Printf("WARN: [server] stream precheck failed acct=%s: %v, retrying on next account", logfmt.Label(acct.UID, acct.Nickname), preErr)
+					log.Printf("WARN: [server] stream precheck failed acct=%s: %v, retrying on next account", logfmt.Label(acct.UID, acct.NicknameValue()), preErr)
 					h.cfg.Pool.NoteFailures(acct.UID)
 					fail(acct.UID)
 					if !rotateBackoff(i, r.Context()) {
@@ -684,7 +727,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				}
 				st.status = http.StatusBadGateway
 				st.outcome = telemetry.OutcomeStreamError
-				log.Printf("WARN: [server] stream acct=%s model=%s: precheck failed exhausted: %v", logfmt.Label(acct.UID, acct.Nickname), bareModel, preErr)
+				log.Printf("WARN: [server] stream acct=%s model=%s: precheck failed exhausted: %v", logfmt.Label(acct.UID, acct.NicknameValue()), bareModel, preErr)
 				h.cfg.Pool.NoteFailures(acct.UID)
 				fail(acct.UID)
 				writeOpenAIError(w, http.StatusBadGateway, "upstream_stream_error", preErr.Error())
@@ -713,7 +756,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				// 502 观测没有意义）。
 				st.status = http.StatusBadGateway
 				st.outcome = telemetry.OutcomeStreamError
-				log.Printf("WARN: [server] stream acct=%s model=%s: empty upstream stream (200+0 frames)", logfmt.Label(acct.UID, acct.Nickname), bareModel)
+				log.Printf("WARN: [server] stream acct=%s model=%s: empty upstream stream (200+0 frames)", logfmt.Label(acct.UID, acct.NicknameValue()), bareModel)
 				h.cfg.Pool.NoteFailures(acct.UID)
 				if stickyUID != "" && acct.UID == stickyUID {
 					unbindSticky()
@@ -731,7 +774,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 				st.status = http.StatusServiceUnavailable
 				st.outcome = telemetry.OutcomeStreamError
 				log.Printf("WARN: [server] stream acct=%s model=%s: upstream error frame kind=%s payload=%s",
-					logfmt.Label(acct.UID, acct.Nickname), bareModel, kind, logfmt.Truncate(errFrame, 200))
+					logfmt.Label(acct.UID, acct.NicknameValue()), bareModel, kind, logfmt.Truncate(errFrame, 200))
 			case sErr != nil:
 				// 客户端写失败（断连）：上游帧无恙，账号健康——账号侧照常记成功
 				// （与 default 同语义），请求日志归为 Interrupted（人已走，未完成）。
@@ -880,10 +923,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	msg := "all accounts are temporarily unavailable, please retry later"
 	// 上游超时：轮转已在传输层分支止损（见 isUpstreamTimeout），这里给一条**能区分**
 	// 的文案，别混进"没有可用账号"——两者的排查方向完全不同。
-	if errors.Is(lastErr, errUpstreamTimeout) {
-		code = "upstream_timeout"
-		msg = "upstream timed out: rotation stopped (another account would hit the same slow upstream), please retry later"
-	}
 	// gateway_hint（末端透传）：上游错误按 Kind + 原文 + 请求形态判定；本地调度类
 	// 错误（无上游原文）固定 no_healthy_account hint。
 	hint := upstream.NoHealthyAccountHint()
@@ -891,6 +930,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 据此决定要不要覆盖 msg（上游原文优先，含 requestId）。
 	upstreamMsgPassed := false
 	retryAfterSec := 0
+	if isEgressBusyError(lastErr) {
+		code = "egress_busy"
+		msg = "shared egress is temporarily busy with another account; please retry shortly"
+		retryAfterSec = 2
+	} else if errors.Is(lastErr, errUpstreamTimeout) {
+		code = "upstream_timeout"
+		msg = "upstream timed out: rotation stopped (another account would hit the same slow upstream), please retry later"
+	}
 	var ue *upstream.Error
 	if errors.As(lastErr, &ue) {
 		hint = h.hintOf(ue.Kind, ue.Msg, bareModel, reqHasImage, ue)

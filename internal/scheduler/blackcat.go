@@ -59,7 +59,7 @@ func (s *Scheduler) runBlackcat(ctx context.Context, auto bool) {
 		first = false
 		need, err := s.cfg.Upstream.BlackcatNeed(a)
 		if err != nil {
-			log.Printf("blackcat %s: %v", logfmt.Label(a.UID, a.Nickname), err)
+			log.Printf("blackcat %s: %v", logfmt.Label(a.UID, a.NicknameValue()), err)
 			continue
 		}
 		if need <= 0 {
@@ -67,10 +67,10 @@ func (s *Scheduler) runBlackcat(ctx context.Context, auto bool) {
 		}
 		ok, err := s.cfg.Upstream.RunNightChats(a, int(need))
 		if err != nil {
-			log.Printf("blackcat %s: %d/%d 完成，中断: %v", logfmt.Label(a.UID, a.Nickname), ok, need, err)
+			log.Printf("blackcat %s: %d/%d 完成，中断: %v", logfmt.Label(a.UID, a.NicknameValue()), ok, need, err)
 			continue
 		}
-		log.Printf("blackcat %s: 完成 %d 次夜间对话", logfmt.Label(a.UID, a.Nickname), ok)
+		log.Printf("blackcat %s: 完成 %d 次夜间对话", logfmt.Label(a.UID, a.NicknameValue()), ok)
 		if !auto && !s.sleep(ctx, activityAccountDelay) {
 			return
 		}

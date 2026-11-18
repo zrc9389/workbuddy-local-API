@@ -63,8 +63,9 @@ type Config struct {
 	// ConfigPath config.json 路径与加载器（配置页读写用）。
 	// LoadConfig 返回解析后的配置对象（前端展示/校验用，具体类型由 main 注入的闭包决定）；
 	// nil 时配置页返回 501。
-	ConfigPath string
-	LoadConfig func() (any, error)
+	ConfigPath   string
+	ConfigSaveMu *sync.Mutex
+	LoadConfig   func() (any, error)
 	// SaveConfig 校验并落盘配置，返回需要重启才能生效的字段列表；随后由 main 注入的
 	// ApplyConfig 闭包完成热生效（池参数/排程/密钥/脱敏）。error 时配置不写盘。
 	SaveConfig func(raw []byte) (restartRequired []string, err error)
@@ -1371,15 +1372,14 @@ func (p *Panel) ensureDeletionCoordinator() (*deletionCoordinator, error) {
 
 func (p *Panel) accountRemove(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
-	if p.deletions == nil {
-		if _, err := p.ensureDeletionCoordinator(); err != nil {
-			writeErr(w, http.StatusServiceUnavailable, "account deletion journal unavailable")
-			return
-		}
+	dc, err := p.ensureDeletionCoordinator()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "account deletion journal unavailable")
+		return
 	}
-	unlock := p.deletions.lockFor(uid)
+	unlock := dc.lockFor(uid)
 	defer unlock()
-	pending, hasPending := p.deletions.journal.get(uid)
+	pending, hasPending := dc.journal.get(uid)
 	_, exists := p.cfg.Pool.Status(uid)
 	if !exists && !hasPending {
 		writeErr(w, 404, "account not found")
@@ -1397,7 +1397,7 @@ func (p *Panel) accountRemove(w http.ResponseWriter, r *http.Request) {
 		credential = pending.Credential
 	}
 	stages := p.accountDeletionStages(uid, credential, r.Context())
-	record, err := p.deletions.executeLocked(uid, credential, stages)
+	record, err := dc.executeLocked(uid, credential, stages)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "stage": record.Phase, "error": "account deletion stage failed", "recoverable": true, "attempts": record.Attempts})
 		return
@@ -1535,21 +1535,14 @@ func (p *Panel) accountDeletionStages(uid, credential string, parent context.Con
 
 func (p *Panel) accountDeletionRetry(w http.ResponseWriter, r *http.Request) {
 	uid := r.PathValue("uid")
-	if p.deletions == nil {
-		if _, err := p.ensureDeletionCoordinator(); err != nil {
-			writeErr(w, http.StatusServiceUnavailable, "account deletion journal unavailable")
-			return
-		}
+	dc, err := p.ensureDeletionCoordinator()
+	if err != nil {
+		writeErr(w, http.StatusServiceUnavailable, "account deletion journal unavailable")
+		return
 	}
-	if p.deletions == nil {
-		if _, err := p.ensureDeletionCoordinator(); err != nil {
-			writeErr(w, http.StatusServiceUnavailable, "account deletion journal unavailable")
-			return
-		}
-	}
-	unlock := p.deletions.lockFor(uid)
+	unlock := dc.lockFor(uid)
 	defer unlock()
-	record, ok := p.deletions.journal.get(uid)
+	record, ok := dc.journal.get(uid)
 	if !ok {
 		writeErr(w, http.StatusNotFound, "pending deletion not found")
 		return
@@ -1569,7 +1562,7 @@ func (p *Panel) accountDeletionRetry(w http.ResponseWriter, r *http.Request) {
 	if a := p.cfg.Pool.AuthByUID(uid); a != nil && credential == "" {
 		credential = a.FilePath
 	}
-	updated, err := p.deletions.executeLocked(uid, credential, p.accountDeletionStages(uid, credential, r.Context()))
+	updated, err := dc.executeLocked(uid, credential, p.accountDeletionStages(uid, credential, r.Context()))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "stage": updated.Phase, "error": "account deletion stage failed", "recoverable": true})
 		return
@@ -1582,14 +1575,18 @@ func (p *Panel) accountDeletionRetry(w http.ResponseWriter, r *http.Request) {
 
 // ResumePendingDeletions continues journal entries after all stores are loaded.
 func (p *Panel) ResumePendingDeletions() {
-	if p == nil || p.deletions == nil {
+	if p == nil {
 		return
 	}
-	for _, pending := range p.deletions.pending() {
+	dc, err := p.ensureDeletionCoordinator()
+	if err != nil || dc == nil {
+		return
+	}
+	for _, pending := range dc.pending() {
 		func() {
-			unlock := p.deletions.lockFor(pending.UID)
+			unlock := dc.lockFor(pending.UID)
 			defer unlock()
-			record, ok := p.deletions.journal.get(pending.UID)
+			record, ok := dc.journal.get(pending.UID)
 			if !ok {
 				return
 			}
@@ -1604,7 +1601,7 @@ func (p *Panel) ResumePendingDeletions() {
 			if a := p.cfg.Pool.AuthByUID(record.UID); a != nil && credential == "" {
 				credential = a.FilePath
 			}
-			if _, err := p.deletions.executeLocked(record.UID, credential, p.accountDeletionStages(record.UID, credential, context.Background())); err != nil {
+			if _, err := dc.executeLocked(record.UID, credential, p.accountDeletionStages(record.UID, credential, context.Background())); err != nil {
 				log.Printf("panel: account deletion recovery stage failed")
 			} else if p.cfg.Tasks != nil {
 				p.cfg.Tasks.EndAccountDeletion(record.UID)

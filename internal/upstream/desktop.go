@@ -56,7 +56,7 @@ func desktopFingerprint(a *auth.Auth) map[string]any {
 	uid, nick := "", ""
 	if a != nil {
 		uid = a.UID
-		nick = a.Nickname
+		nick = a.NicknameValue()
 	}
 	return map[string]any{
 		"timezone":     "Asia/Shanghai",
@@ -270,7 +270,7 @@ func (c *Client) ReportWebEvent(a *auth.Auth, eventCode, pageURL, elementID, ele
 		"pageURL": pageURL, "elementId": elementID, "elementName": elementName,
 		"os": "Win32", "arch": "", "osVersion": "10.0", "userAgent": ua,
 		"machineId": dp.WebMachineID, "userId": a.UID,
-		"userNickname": a.Nickname, "enterpriseId": a.EnterpriseID,
+		"userNickname": a.NicknameValue(), "enterpriseId": a.EnterpriseID,
 	}
 	raw, err := json.Marshal([]map[string]any{ev})
 	if err != nil {

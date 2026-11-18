@@ -3,6 +3,7 @@ package panel
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"sync"
@@ -12,8 +13,19 @@ import (
 )
 
 var defaultEgressMu sync.RWMutex
+var defaultEgressFallbackSaveMu sync.Mutex
 var currentDefaultNodeID string
 var currentDefaultProxyURL string
+
+// restoreDefaultEgressBackoffs 控制启动恢复默认出口的有界退避重试节奏（测试可覆写缩短）。
+var restoreDefaultEgressBackoffs = []time.Duration{
+	500 * time.Millisecond,
+	1 * time.Second,
+	2 * time.Second,
+	4 * time.Second,
+	8 * time.Second,
+	15 * time.Second,
+}
 
 // DefaultEgressInfo 状态载荷
 type DefaultEgressInfo struct {
@@ -125,8 +137,15 @@ func (p *Panel) SetDefaultEgress(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// persistDefaultEgress 将选定的默认出口持久化写回 /etc/workbuddy-local/config.json
+// persistDefaultEgress 将选定的默认出口持久化写回 config.json，与 cmd/server/main.go 共享 ConfigSaveMu 互斥锁。
 func (p *Panel) persistDefaultEgress(nodeID string) {
+	mu := p.cfg.ConfigSaveMu
+	if mu == nil {
+		mu = &defaultEgressFallbackSaveMu
+	}
+	mu.Lock()
+	defer mu.Unlock()
+
 	cfgPath := p.cfg.ConfigPath
 	if cfgPath == "" {
 		cfgPath = "/etc/workbuddy-local/config.json"
@@ -153,13 +172,22 @@ func (p *Panel) persistDefaultEgress(nodeID string) {
 	}
 }
 
-// RestoreDefaultEgress 在服务启动且 Meta 就绪后自动恢复持久化的默认出口
+// RestoreDefaultEgress 在服务启动且 Meta 就绪后以有界退避重试自动恢复持久化的默认出口。
 func (p *Panel) RestoreDefaultEgress(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	cfgPath := p.cfg.ConfigPath
 	if cfgPath == "" {
 		cfgPath = "/etc/workbuddy-local/config.json"
 	}
+	mu := p.cfg.ConfigSaveMu
+	if mu == nil {
+		mu = &defaultEgressFallbackSaveMu
+	}
+	mu.Lock()
 	raw, err := os.ReadFile(cfgPath)
+	mu.Unlock()
 	if err != nil {
 		return
 	}
@@ -172,27 +200,55 @@ func (p *Panel) RestoreDefaultEgress(ctx context.Context) {
 	if p.cfg.Meta == nil {
 		return
 	}
-	// 在后台异步尝试恢复绑定
+	// 在后台异步以有界退避重试恢复绑定，等待 Meta 节点列表就绪且不覆盖人工新配置。
 	go func() {
-		time.Sleep(1 * time.Second)
 		m := p.cfg.Meta
-		nodes := m.Nodes().Nodes
-		for _, n := range nodes {
-			if n.ID == cfg.LoginDefaultNode && n.Status != "timeout" && n.Status != "error" {
-				c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				_, _ = m.Bind(c, "system_default_egress", n.ID, func(proxy string) error {
-					defaultEgressMu.Lock()
-					currentDefaultNodeID = n.ID
-					currentDefaultProxyURL = proxy
-					defaultEgressMu.Unlock()
-					if p.cfg.Upstream != nil {
-						p.cfg.Upstream.SetDefaultProxy(proxy)
-					}
-					_ = setLoginProxy(proxy)
-					return nil
-				})
-				cancel()
-				break
+		for attempt, wait := range restoreDefaultEgressBackoffs {
+			if wait > 0 {
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+			}
+			// 若期间用户已手动指定默认出口，则停止自动恢复，避免覆盖人工选择。
+			defaultEgressMu.RLock()
+			alreadySet := currentDefaultNodeID != ""
+			defaultEgressMu.RUnlock()
+			if alreadySet {
+				return
+			}
+			nodes := m.Nodes().Nodes
+			var matched *metacore.Node
+			for i := range nodes {
+				if nodes[i].ID == cfg.LoginDefaultNode {
+					matched = &nodes[i]
+					break
+				}
+			}
+			if matched == nil || matched.Status == "timeout" || matched.Status == "error" {
+				continue
+			}
+			c, cancel := context.WithTimeout(ctx, 30*time.Second)
+			_, bindErr := m.Bind(c, "system_default_egress", matched.ID, func(proxy string) error {
+				defaultEgressMu.Lock()
+				currentDefaultNodeID = matched.ID
+				currentDefaultProxyURL = proxy
+				defaultEgressMu.Unlock()
+				if p.cfg.Upstream != nil {
+					p.cfg.Upstream.SetDefaultProxy(proxy)
+				}
+				_ = setLoginProxy(proxy)
+				return nil
+			})
+			cancel()
+			if bindErr == nil {
+				return
+			}
+			if attempt == len(restoreDefaultEgressBackoffs)-1 {
+				log.Printf("WARN: [panel] restore default egress node=%s exhausted retries: %v", cfg.LoginDefaultNode, bindErr)
 			}
 		}
 	}()

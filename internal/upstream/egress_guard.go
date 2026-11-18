@@ -377,3 +377,8 @@ func (c *Client) egressKeyFor(a *auth.Auth) string {
 	}
 	return normalizeProxyKey(raw)
 }
+
+// EgressKey 返回账号的出口并发门禁归一化键（供上层调度在共享出口繁忙时跳过同出口账号）。
+func (c *Client) EgressKey(a *auth.Auth) string {
+	return c.egressKeyFor(a)
+}

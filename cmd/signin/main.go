@@ -56,7 +56,7 @@ func main() {
 			continue
 		}
 		a.FilePath = f
-		r.uid, r.nick = a.UID, a.Nickname
+		r.uid, r.nick = a.UID, a.NicknameValue()
 
 		// refresh 过期 token
 		if a.NeedsRefresh(2 * 3600) {

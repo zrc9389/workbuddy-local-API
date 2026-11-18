@@ -288,19 +288,19 @@ func (p *Service) taskByCodeMP(a *auth.Auth, code string) (*upstream.Task, error
 func (p *Service) acceptWithVerifyMP(a *auth.Auth, code string) bool {
 	for attempt := 1; attempt <= 2; attempt++ {
 		if err := p.cfg.Upstream.AcceptTasksMP(a, []string{code}); err != nil {
-			log.Printf("autotask %s %s: accept 尝试%d: %v", logfmt.Label(a.UID, a.Nickname), code, attempt, err)
+			log.Printf("autotask %s %s: accept 尝试%d: %v", logfmt.Label(a.UID, a.NicknameValue()), code, attempt, err)
 			return false
 		}
 		time.Sleep(mpActionGap)
 		t, err := p.taskByCodeMP(a, code)
 		if err != nil {
-			log.Printf("autotask %s %s: accept 回读失败: %v", logfmt.Label(a.UID, a.Nickname), code, err)
+			log.Printf("autotask %s %s: accept 回读失败: %v", logfmt.Label(a.UID, a.NicknameValue()), code, err)
 			return false
 		}
 		if t != nil && t.AcceptStatus != "not_accepted" && t.AcceptStatus != "" {
 			return true
 		}
-		log.Printf("autotask %s %s: accept 尝试%d 未登记生效（回读=%q）", logfmt.Label(a.UID, a.Nickname), code, attempt, acceptStatusOr(t))
+		log.Printf("autotask %s %s: accept 尝试%d 未登记生效（回读=%q）", logfmt.Label(a.UID, a.NicknameValue()), code, attempt, acceptStatusOr(t))
 	}
 	return false
 }

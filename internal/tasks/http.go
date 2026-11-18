@@ -216,7 +216,7 @@ func (p *Service) SchoolVouchers(w http.ResponseWriter, r *http.Request) {
 			defer wg.Done()
 			defer p.releaseScan()
 			defer func() { <-sem }()
-			it := row{UID: a.UID, Nickname: a.Nickname}
+			it := row{UID: a.UID, Nickname: a.NicknameValue()}
 			switch {
 			case a.IsGlobal():
 				it.Err = "global realm（无开学季活动）"

@@ -91,7 +91,7 @@ func main() {
 			continue
 		}
 		a.FilePath = f
-		r.uid, r.nick = a.UID, a.Nickname
+		r.uid, r.nick = a.UID, a.NicknameValue()
 
 		// 仅 global 账号适用：CN 明确提示不适用，不发任何请求。
 		if !a.IsGlobal() {

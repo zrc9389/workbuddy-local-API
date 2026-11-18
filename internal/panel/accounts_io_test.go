@@ -35,12 +35,18 @@ func TestAccountsImportExportAndStatePreservation(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 	a = p.cfg.Pool.AuthByUID(a.UID)
-	if a.AccessTokenValue() != "fake-access" || a.ProxyURLValue() == "" {
-		t.Fatal("duplicate import changed account/proxy")
+	if a.AccessTokenValue() != "new-fake" || a.ProxyURLValue() == "" {
+		t.Fatal("duplicate import did not update credential or lost proxy")
+	}
+	if a.IsRetired() {
+		t.Fatal("pool returned retired auth object after reimport")
+	}
+	if err := a.SaveAtomic(); err != nil {
+		t.Fatalf("SaveAtomic on reimported account failed: %v", err)
 	}
 	st, _ := p.cfg.Pool.Status(a.UID)
-	if !st.Disabled {
-		t.Fatal("import revived disabled account")
+	if st.Disabled {
+		t.Fatal("import did not revive disabled account")
 	}
 	w = httptest.NewRecorder()
 	p.AccountsExport(w, httptest.NewRequest("GET", "/", nil))
@@ -52,7 +58,7 @@ func TestAccountsImportExportAndStatePreservation(t *testing.T) {
 		t.Fatal(w.Body.String())
 	}
 	b, err := auth.Parse(docs[0])
-	if err != nil || b.AccessTokenValue() != "fake-access" || b.ProxyURLValue() != a.ProxyURLValue() {
+	if err != nil || b.AccessTokenValue() != "new-fake" || b.ProxyURLValue() != a.ProxyURLValue() {
 		t.Fatal("bad export", err)
 	}
 }
@@ -71,8 +77,8 @@ func TestImportMergeKeepsExistingAndFirstDuplicate(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), `"imported":1`) || !strings.Contains(w.Body.String(), `"retained":["old"]`) {
 		t.Fatal(w.Body.String())
 	}
-	if p.cfg.Pool.AuthByUID("old").AccessTokenValue() != "old-token" || p.cfg.Pool.AuthByUID("new").AccessTokenValue() != "first" {
-		t.Fatal("duplicate replaced data")
+	if p.cfg.Pool.AuthByUID("old").AccessTokenValue() != "replacement" || p.cfg.Pool.AuthByUID("new").AccessTokenValue() != "first" {
+		t.Fatal("reimport merge or in-batch dedup mismatch")
 	}
 	w = httptest.NewRecorder()
 	p.AccountsExport(w, httptest.NewRequest("GET", "/", nil))

@@ -94,6 +94,56 @@ func (e *alpnSwitchError) Error() string {
 	return "alpn negotiated protocol switched to " + e.proto
 }
 
+// shieldedReqBody 在首次 RoundTrip 可能触发 alpnSwitchError 重试期间暂缓关闭底层 req.Body，
+// 防止 http.Transport / http2.Transport 在拨号返回 alpnSwitchError 后的错误清理路径提前 Close()
+// 无 GetBody 的流式请求体；确认无需 ALPN 切换后立即解除屏蔽并忠实转发 Close()。
+type shieldedReqBody struct {
+	mu             sync.Mutex
+	rc             io.ReadCloser
+	shielded       bool
+	closeRequested bool
+	closed         bool
+}
+
+func newShieldedReqBody(rc io.ReadCloser) *shieldedReqBody {
+	return &shieldedReqBody{rc: rc, shielded: true}
+}
+
+func (b *shieldedReqBody) Read(p []byte) (int, error) {
+	return b.rc.Read(p)
+}
+
+func (b *shieldedReqBody) Close() error {
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return nil
+	}
+	if b.shielded {
+		b.closeRequested = true
+		b.mu.Unlock()
+		return nil
+	}
+	b.closed = true
+	rc := b.rc
+	b.mu.Unlock()
+	return rc.Close()
+}
+
+func (b *shieldedReqBody) unshield(forceClose bool) {
+	b.mu.Lock()
+	b.shielded = false
+	shouldClose := !b.closed && (b.closeRequested || forceClose)
+	if shouldClose {
+		b.closed = true
+	}
+	rc := b.rc
+	b.mu.Unlock()
+	if shouldClose {
+		_ = rc.Close()
+	}
+}
+
 // utlsProxyTransport 为单个账号独占的 uTLS + HTTP/2 拟态代理传输层：
 //   - 明文 http:// 请求走每账号独立克隆的 h1PlainTr（经代理，保持兼容）；
 //   - 加密 https:// 请求严格先穿透账号代理隧道（HTTP/HTTPS CONNECT 或 SOCKS5 远端解析），
@@ -224,6 +274,9 @@ func (u *utlsProxyTransport) RoundTrip(req *http.Request) (*http.Response, error
 	if !known {
 		conn, alpn, err := u.dialUTLS(req.Context(), authority)
 		if err != nil {
+			if req.Body != nil {
+				_ = req.Body.Close()
+			}
 			return nil, err
 		}
 		if alpn == "h2" {
@@ -236,21 +289,36 @@ func (u *utlsProxyTransport) RoundTrip(req *http.Request) (*http.Response, error
 		defer u.releaseUnusedHandoff(authority, entry)
 	}
 
+	firstReq := req
+	var bodyShield *shieldedReqBody
+	if req.Body != nil && req.Body != http.NoBody {
+		reqCopy := *req
+		bodyShield = newShieldedReqBody(req.Body)
+		reqCopy.Body = bodyShield
+		firstReq = &reqCopy
+	}
+
 	if proto == "h2" {
-		resp, err := u.roundTripH2(req)
+		resp, err := u.roundTripH2(firstReq)
 		var sw *alpnSwitchError
 		if errors.As(err, &sw) && sw.proto == "http/1.1" {
 			defer u.releaseUnusedHandoff(authority, sw.entry)
 			return u.h1TLSTr.RoundTrip(req)
 		}
+		if bodyShield != nil {
+			bodyShield.unshield(err != nil)
+		}
 		return resp, err
 	}
 
-	resp, err := u.h1TLSTr.RoundTrip(req)
+	resp, err := u.h1TLSTr.RoundTrip(firstReq)
 	var sw *alpnSwitchError
 	if errors.As(err, &sw) && sw.proto == "h2" {
 		defer u.releaseUnusedHandoff(authority, sw.entry)
 		return u.roundTripH2(req)
+	}
+	if bodyShield != nil {
+		bodyShield.unshield(err != nil)
 	}
 	return resp, err
 }

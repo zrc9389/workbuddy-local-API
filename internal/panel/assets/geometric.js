@@ -6495,19 +6495,19 @@ export function expiryTone(days) {
                     // 账号名采用 font-mono 与 108px 充足宽度，完全容纳 11 位数字账号，绝不触发边缘渐隐
                     return `
                         <div class="editorial-row py-2.5 flex items-center text-xs text-left w-full"
-                             data-hover-vertex="${vIdx}" data-hover-label="ACC // ${acc.name.toUpperCase()}"
+                             data-hover-vertex="${vIdx}" data-hover-label="ACC // ${escapeDisplayText(String(acc.name || '').toUpperCase())}"
                              >
                             <div class="grid items-center text-left cursor-pointer shrink-0"
                                  style="grid-template-columns: 108px 46px 74px 62px; column-gap: 10px;"
-                                 data-action="select-account-egress" data-uid="${escapeDisplayText(acc.uid)}" data-name="${acc.name}">
-                                <span class="text-white font-mono text-[11.5px] tracking-tight text-left truncate" title="${acc.name}">${acc.name}</span>
-                                <span class="${regionCls} text-[10.5px] font-['Space_Grotesk'] text-left tracking-wider" title="地区状态">${acc.region}</span>
+                                 data-action="select-account-egress" data-uid="${escapeDisplayText(acc.uid)}" data-name="${escapeDisplayText(acc.name)}">
+                                <span class="text-white font-mono text-[11.5px] tracking-tight text-left truncate" title="${escapeDisplayText(acc.name)}">${escapeDisplayText(acc.name)}</span>
+                                <span class="${regionCls} text-[10.5px] font-['Space_Grotesk'] text-left tracking-wider" title="地区状态">${escapeDisplayText(acc.region)}</span>
                                 <span class="text-white/90 font-['Space_Grotesk'] tabular-nums text-left">${quotaStr}</span>
                                 <span class="text-[11px] ${statusCls} text-left tracking-tight">${statusText}</span>
                             </div>
                             <div class="flex items-center shrink-0 ml-8">
                                 <button class="editorial-text-btn w-[86px] max-w-[86px] text-left truncate ${egressCls}" title="点击更换绑定出口"
-                                        data-action="select-account-egress" data-uid="${escapeDisplayText(acc.uid)}" data-name="${acc.name}">${acc.egress}</button>
+                                        data-action="select-account-egress" data-uid="${escapeDisplayText(acc.uid)}" data-name="${escapeDisplayText(acc.name)}">${escapeDisplayText(acc.egress)}</button>
                                 <button class="editorial-text-btn w-[30px] text-left shrink-0 ml-3.5" data-action="toggle-account-manual" data-uid="${escapeDisplayText(acc.uid)}">${actionLabel}</button>
                                 <button class="editorial-text-btn w-[30px] text-left shrink-0 ml-2.5 text-white/35 hover:text-red-400 transition-colors" title="永久删除该账号" data-action="delete-account" data-uid="${escapeDisplayText(acc.uid)}">删除</button>
                             </div>
@@ -6940,8 +6940,8 @@ export function expiryTone(days) {
                             return `
                                 <div class="editorial-row py-2.5 grid items-center gap-x-4 text-xs text-left"
                                      style="grid-template-columns: minmax(180px, 1fr) 140px 88px;"
-                                     data-hover-vertex="${idx * 5 + 1}" data-hover-label='${p.id} // ${p.days}D LEFT'>
-                                    <span class="text-white font-medium max-w-[210px] fade-truncate text-left pr-2" title="${escapeDisplayText(p.name)}">${p.name}</span>
+                                     data-hover-vertex="${idx * 5 + 1}" data-hover-label="${escapeDisplayText(p.id)} // ${escapeDisplayText(p.days)}D LEFT">
+                                    <span class="text-white font-medium max-w-[210px] fade-truncate text-left pr-2" title="${escapeDisplayText(p.name)}">${escapeDisplayText(p.name)}</span>
                                     <div class="text-left font-['Space_Grotesk'] tabular-nums-left">
                                         <span class="text-white/90">${p.remain.toLocaleString()}</span> <span class="text-white/40">/</span> <span class="text-white/60">${p.total.toLocaleString()}</span>
                                     </div>
@@ -6954,7 +6954,7 @@ export function expiryTone(days) {
                             <div>
                                 <div class="flex justify-between items-center border-b border-white/10 pb-2 mb-1">
                                     <div class="flex items-center space-x-2.5 text-left">
-                                        <span class="text-white text-xs font-medium">${acc.name}</span>
+                                        <span class="text-white text-xs font-medium">${escapeDisplayText(acc.name)}</span>
                                         <span class="text-white/38 text-[10.5px]">&bull; ${activePacks.length} 个独立生效包</span>
                                     </div>
                                     <!-- Comment 9: 去除右上角上一号下一号返回按钮 -->
@@ -6996,9 +6996,9 @@ export function expiryTone(days) {
                             <div class="editorial-row py-2.5 grid items-center text-xs text-left cursor-pointer"
                                  style="grid-template-columns: 140px 68px 96px 110px 50px; column-gap: 20px;"
                                  data-action="select-package-uid" data-uid="${escapeDisplayText(acc.uid)}"
-                                 data-hover-vertex="${vIdx}" data-hover-label="ACC // ${acc.name.toUpperCase()}"
+                                 data-hover-vertex="${vIdx}" data-hover-label="ACC // ${escapeDisplayText(String(acc.name || '').toUpperCase())}"
                                  >
-                                <span class="text-white font-medium font-mono text-[11.5px] truncate text-left w-[140px] shrink-0" title="${acc.name}">${acc.name}</span>
+                                <span class="text-white font-medium font-mono text-[11.5px] truncate text-left w-[140px] shrink-0" title="${escapeDisplayText(acc.name)}">${escapeDisplayText(acc.name)}</span>
                                 <span class="text-white/52 text-[11px] tabular-nums-left">${activePacks.length} 个包</span>
                                 <span class="text-white/90 font-['Space_Grotesk'] tabular-nums-left shrink-0">${balNum.toLocaleString()}</span>
                                 <span class="text-[11px] ${tone} tabular-nums-left whitespace-nowrap">${minDays === null ? (acc.packagesError ? '获取失败' : activePacks.length ? '到期时间未知' : '无生效包') : minDays + ' 天到期'}</span>
@@ -7072,7 +7072,7 @@ export function expiryTone(days) {
                             <div id="packages-chart-stage" class="flex flex-col justify-start space-y-4 pt-1">
                                 <div>
                                     <div class="flex justify-between items-center text-[10px] tracking-[0.15em] text-white/42 mb-3">
-                                        <span id="pkg-model-readout">账号 ${initP.acc.name} — 积分 ${initP.bal.toLocaleString()} / 额度 ${initP.quota.toLocaleString()} / 独立包 ${initPacks.length}</span>
+                                        <span id="pkg-model-readout">账号 ${escapeDisplayText(initP.acc.name)} — 积分 ${initP.bal.toLocaleString()} / 额度 ${initP.quota.toLocaleString()} / 独立包 ${initPacks.length}</span>
                                         <span class="text-white/60 font-mono">BALANCE / QUOTA // 账号额度统计</span>
                                     </div>
                                     <svg data-pkg-chart="account" viewBox="0 0 520 70" class="w-full h-[70px] overflow-visible cursor-crosshair">
@@ -7088,8 +7088,8 @@ export function expiryTone(days) {
                                     <div class="relative w-full h-5 mt-1.5 font-mono">
                                         ${points.map(p => `
                                             <span class="absolute top-0 text-[9px] tracking-[0.08em] text-white/40 whitespace-nowrap truncate max-w-[76px] text-center"
-                                                  style="left: ${((p.x / 520) * 100).toFixed(2)}%; transform: translateX(-50%);" title="${p.acc.name}">
-                                                ${p.acc.name}
+                                                  style="left: ${((p.x / 520) * 100).toFixed(2)}%; transform: translateX(-50%);" title="${escapeDisplayText(p.acc.name)}">
+                                                ${escapeDisplayText(p.acc.name)}
                                             </span>
                                         `).join('')}
                                     </div>
@@ -7099,7 +7099,7 @@ export function expiryTone(days) {
                                         <div class="py-1 px-1.5 border border-white/10 hover:border-white/40 cursor-pointer transition-colors text-left"
                                              data-hover-model="AccountModel" data-hover-idx="${idx}"
                                              >
-                                            <div class="text-[9px] text-white/40 mb-0.5 truncate">${p.acc.name}</div>
+                                            <div class="text-[9px] text-white/40 mb-0.5 truncate">${escapeDisplayText(p.acc.name)}</div>
                                             <div class="text-white font-medium">${p.bal.toLocaleString()}</div>
                                         </div>
                                     `).join('')}
@@ -7226,9 +7226,9 @@ export function expiryTone(days) {
                         <div class="editorial-row py-2.5 grid items-center gap-x-3 text-xs text-left cursor-pointer"
                              style="grid-template-columns: minmax(0, 1.4fr) 68px 136px 86px 46px;"
                              data-action="select-package-uid" data-uid="${escapeDisplayText(acc.uid)}"
-                             data-hover-vertex="${idx * 5 + 2}" data-hover-label="${acc.name.toUpperCase()} // ${activePacks.length} PACKS"
+                             data-hover-vertex="${idx * 5 + 2}" data-hover-label="${escapeDisplayText(String(acc.name || '').toUpperCase())} // ${activePacks.length} PACKS"
                              >
-                            <span class="text-white font-medium max-w-[130px] fade-truncate text-left">${acc.name}</span>
+                            <span class="text-white font-medium max-w-[130px] fade-truncate text-left">${escapeDisplayText(acc.name)}</span>
                             <span class="text-white/52 text-[11px] tabular-nums-left">${activePacks.length} 个包</span>
                             <div class="flex items-center space-x-2.5">
                                 <span class="text-white/90 font-['Space_Grotesk'] tabular-nums-left w-[76px] shrink-0">${balStr}</span>
@@ -7338,12 +7338,12 @@ export function expiryTone(days) {
                         commitStageMarkup(container, `
                             <div class="space-y-3.5 text-left">
                                 <div class="flex justify-between items-center border-b border-white/10 pb-2.5">
-                                    <span class="text-xs text-white font-medium tabular-nums-left">${item.time} &bull; HTTP ${item.code} &bull; ${item.model || '—'} &bull; ${accName} &rarr; ${item.egress}</span>
+                                    <span class="text-xs text-white font-medium tabular-nums-left">${escapeDisplayText(item.time)} &bull; HTTP ${escapeDisplayText(item.code)} &bull; ${escapeDisplayText(item.model || '—')} &bull; ${escapeDisplayText(accName)} &rarr; ${escapeDisplayText(item.egress)}</span>
                                 </div>
-                                <div class="text-xs text-white/70 text-left">${item.summary}</div>
+                                <div class="text-xs text-white/70 text-left">${escapeDisplayText(item.summary)}</div>
                                 <div class="pt-0.5 text-left">
                                     <div class="text-[9.5px] tracking-[0.14em] text-white/38 mb-1.5">上游原始响应快照</div>
-                                    <div class="text-[11px] font-mono text-white/85 border-l border-white/25 pl-3 py-1 selectable-text break-all text-left">${item.raw}</div>
+                                    <div class="text-[11px] font-mono text-white/85 border-l border-white/25 pl-3 py-1 selectable-text break-all text-left">${escapeDisplayText(item.raw)}</div>
                                 </div>
                             </div>
                         `, animate);
@@ -7371,13 +7371,13 @@ export function expiryTone(days) {
                     return `
                         <div class="editorial-row py-2.5 grid items-center gap-x-3 text-xs cursor-pointer text-left"
                              style="grid-template-columns: 68px 42px minmax(0, 1fr) 104px;"
-                             data-action="select-log" data-id="${item.id}"
-                             data-hover-vertex="${idx * 3 + 2}" data-hover-label="${item.code} // ${accName.toUpperCase()}"
+                             data-action="select-log" data-id="${escapeDisplayText(item.id)}"
+                             data-hover-vertex="${idx * 3 + 2}" data-hover-label="${escapeDisplayText(item.code)} // ${escapeDisplayText(String(accName || '').toUpperCase())}"
                              >
-                            <span class="text-white/42 font-mono text-[11px] tabular-nums-left">${item.time}</span>
-                            <span class="${item.code === 401 ? 'tone-fault' : 'tone-guard'} font-medium font-['Space_Grotesk'] tabular-nums-left">${item.code}</span>
-                            <span class="text-white/78 max-w-[270px] fade-truncate text-left">${item.summary}</span>
-                            <span class="text-white/40 text-[11px] font-mono max-w-[104px] fade-truncate text-left">${accName}</span>
+                            <span class="text-white/42 font-mono text-[11px] tabular-nums-left">${escapeDisplayText(item.time)}</span>
+                            <span class="${item.code === 401 ? 'tone-fault' : 'tone-guard'} font-medium font-['Space_Grotesk'] tabular-nums-left">${escapeDisplayText(item.code)}</span>
+                            <span class="text-white/78 max-w-[270px] fade-truncate text-left">${escapeDisplayText(item.summary)}</span>
+                            <span class="text-white/40 text-[11px] font-mono max-w-[104px] fade-truncate text-left">${escapeDisplayText(accName)}</span>
                         </div>
                     `;
                 }).join('');

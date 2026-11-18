@@ -1299,7 +1299,7 @@ func (c *Client) ChatStreamReaderContext(ctx context.Context, a *auth.Auth, body
 	}
 	acctLabel := "-"
 	if a != nil {
-		acctLabel = logfmt.Label(a.UID, a.Nickname)
+		acctLabel = logfmt.Label(a.UID, a.NicknameValue())
 	}
 	if size > LargePayloadThreshold && !unmodified && c.SanitizeFingerprints.Load() {
 		var cleanup func()

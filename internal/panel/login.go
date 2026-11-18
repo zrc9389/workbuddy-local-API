@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
@@ -60,8 +61,28 @@ func (loginProxyFailure) RoundTrip(r *http.Request) (*http.Response, error) {
 	return nil, errors.New("login proxy not configured: direct VPS connection to upstream is strictly prohibited")
 }
 
-// loginHTTP 设备授权专用 client：严禁无代理保底直连，默认挂载 loginProxyFailure 熔断
-var loginHTTP = &http.Client{Timeout: 30 * time.Second, Transport: loginProxyFailure{}}
+// loginHTTP 设备授权专用 client：严禁无代理保底直连，默认挂载 loginProxyFailure 熔断；
+// 读写一律经 loginHTTPMu 保护，消除后台恢复/面板切换与登录请求间的数据竞争。
+var (
+	loginHTTPMu sync.RWMutex
+	loginHTTP   = &http.Client{Timeout: 30 * time.Second, Transport: loginProxyFailure{}}
+)
+
+func getLoginHTTP() *http.Client {
+	loginHTTPMu.RLock()
+	c := loginHTTP
+	loginHTTPMu.RUnlock()
+	if c == nil {
+		return &http.Client{Timeout: 30 * time.Second, Transport: loginProxyFailure{}}
+	}
+	return c
+}
+
+func setLoginHTTP(c *http.Client) {
+	loginHTTPMu.Lock()
+	loginHTTP = c
+	loginHTTPMu.Unlock()
+}
 
 func commonHeaders(req *http.Request, origin string) {
 	req.Header.Set("Content-Type", "application/json")
@@ -106,7 +127,7 @@ func doJSON(method, fullURL, bearer string, body io.Reader, origin string) (json
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
-	resp, err := loginHTTP.Do(req)
+	resp, err := getLoginHTTP().Do(req)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -132,7 +153,8 @@ func (p *Panel) loginStart(w http.ResponseWriter, r *http.Request) {
 	defProxy := currentDefaultProxyURL
 	defaultEgressMu.RUnlock()
 	if defProxy == "" {
-		if _, ok := loginHTTP.Transport.(loginProxyFailure); ok || loginHTTP.Transport == nil {
+		c := getLoginHTTP()
+		if _, ok := c.Transport.(loginProxyFailure); ok || c.Transport == nil {
 			writeErr(w, http.StatusBadRequest, "未配置默认代理出口，严禁直连上游发起登录。请先在授权栏指定默认出口节点")
 			return
 		}
@@ -181,7 +203,8 @@ func (p *Panel) loginPoll(w http.ResponseWriter, r *http.Request) {
 	defProxy := currentDefaultProxyURL
 	defaultEgressMu.RUnlock()
 	if defProxy == "" {
-		if _, ok := loginHTTP.Transport.(loginProxyFailure); ok || loginHTTP.Transport == nil {
+		c := getLoginHTTP()
+		if _, ok := c.Transport.(loginProxyFailure); ok || c.Transport == nil {
 			writeErr(w, http.StatusBadRequest, "未配置默认代理出口，严禁直连上游轮询")
 			return
 		}
@@ -253,10 +276,10 @@ func (p *Panel) loginPoll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "another account mutation is running")
 		return
 	}
-	if p.deletions != nil {
-		unlock := p.deletions.lockFor(acct.UID)
+	if dc, err := p.ensureDeletionCoordinator(); err == nil && dc != nil {
+		unlock := dc.lockFor(acct.UID)
 		defer unlock()
-		if _, pending := p.deletions.journal.get(acct.UID); pending {
+		if _, pending := dc.journal.get(acct.UID); pending {
 			writeErr(w, http.StatusConflict, "account deletion is pending")
 			return
 		}
@@ -409,21 +432,21 @@ func (p *Panel) loginRegions(w http.ResponseWriter, r *http.Request) {
 func setLoginProxy(proxyURL string) error {
 	raw := strings.TrimSpace(proxyURL)
 	if raw == "" {
-		loginHTTP = &http.Client{Timeout: 30 * time.Second, Transport: loginProxyFailure{}}
+		setLoginHTTP(&http.Client{Timeout: 30 * time.Second, Transport: loginProxyFailure{}})
 		return nil
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		loginHTTP = &http.Client{Timeout: 30 * time.Second, Transport: loginProxyFailure{}}
+		setLoginHTTP(&http.Client{Timeout: 30 * time.Second, Transport: loginProxyFailure{}})
 		return err
 	}
-	loginHTTP = &http.Client{
+	setLoginHTTP(&http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			Proxy:           http.ProxyURL(u),
 			MaxIdleConns:    4,
 			IdleConnTimeout: 30 * time.Second,
 		},
-	}
+	})
 	return nil
 }
