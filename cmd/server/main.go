@@ -534,9 +534,9 @@ func run() error {
 	// 后台维护任务由 scheduler 统一按配置时点执行；余额刷新独立按分钟间隔运行。
 	// 两个循环都绑定服务 ctx，收到 SIGTERM 时会及时退出。
 	go sch.Run(ctx)
-	if cfg.BalanceRefreshInterval > 0 {
-		sch.StartBalanceRefresh(ctx, cfg.BalanceRefreshInterval)
-	}
+	// 无条件启动余额刷新协程：初始间隔 <= 0 时内部会安全阻塞等待 rearmBalance，
+	// 解决开机关闭、运行期热开启 balance_refresh_enabled 后无法激活的冷启动死锁。
+	sch.StartBalanceRefresh(ctx, cfg.BalanceRefreshInterval)
 
 	// 绑定开机真预加载：当用户访问首页加载动画（69%~100%）时，
 	// 后台并发刷新所有可用账号的最新余额并落盘，用优雅的动画掩盖上游网络耗时

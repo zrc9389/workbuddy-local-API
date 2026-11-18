@@ -129,6 +129,9 @@ func New(cfg Config) *Scheduler {
 	if len(cfg.BlackcatHours) == 0 {
 		cfg.BlackcatHours = []int{23}
 	}
+	if len(cfg.GrowthHours) == 0 {
+		cfg.GrowthHours = []int{1}
+	}
 
 	return &Scheduler{
 		cfg:           cfg,
@@ -139,11 +142,38 @@ func New(cfg Config) *Scheduler {
 	}
 }
 
-// FourTasksEnabled reports the four account maintenance schedules together.
+// FourTasksEnabled reports the four core daily account maintenance schedules together
+// (checkin / travel / activity / keepalive). For the complete 6-schedule + balance_refresh
+// snapshot, use ScheduleStatus / AllTasksEnabled.
 func (s *Scheduler) FourTasksEnabled() bool {
 	s.schedMu.Lock()
 	defer s.schedMu.Unlock()
 	return !s.cfg.CheckinDisabled && !s.cfg.TravelDisabled && !s.cfg.ActivityDisabled && !s.cfg.KeepaliveDisabled
+}
+
+// ScheduleStatus returns the current enabled flags for all 6 scheduled task families plus balance_refresh.
+func (s *Scheduler) ScheduleStatus() map[string]bool {
+	s.schedMu.Lock()
+	defer s.schedMu.Unlock()
+	return map[string]bool{
+		"checkin_enabled":         !s.cfg.CheckinDisabled,
+		"travel_enabled":          !s.cfg.TravelDisabled,
+		"activity_enabled":        !s.cfg.ActivityDisabled,
+		"keepalive_enabled":       !s.cfg.KeepaliveDisabled,
+		"blackcat_enabled":        !s.cfg.BlackcatDisabled,
+		"growth_enabled":          !s.cfg.GrowthDisabled,
+		"balance_refresh_enabled": s.balanceInterval.Load() > 0,
+	}
+}
+
+// AllTasksEnabled reports whether all 6 scheduled tasks and balance refresh are enabled.
+func (s *Scheduler) AllTasksEnabled() bool {
+	for _, on := range s.ScheduleStatus() {
+		if !on {
+			return false
+		}
+	}
+	return true
 }
 
 // ExpiringSoonWindow 返回当前快过期路由窗口（读取时与热配置写在 schedMu 下同步）。
@@ -596,6 +626,9 @@ func (s *Scheduler) runCheckin(ctx context.Context, auto bool) {
 	expiringSoon := s.ExpiringSoonWindow()
 	first := true
 	for _, st := range s.cfg.Pool.List() {
+		if st.Blocked {
+			continue
+		}
 		a := s.cfg.Pool.AuthByUID(st.UID)
 		if a == nil {
 			continue
@@ -668,6 +701,9 @@ func (s *Scheduler) RunActivityNow() {
 func (s *Scheduler) runActivity(ctx context.Context, auto bool) {
 	first := true
 	for _, st := range s.cfg.Pool.List() {
+		if st.Blocked {
+			continue
+		}
 		a := s.cfg.Pool.AuthByUID(st.UID)
 		if a == nil {
 			continue
@@ -857,7 +893,7 @@ waitDone:
 }
 
 // StartBalanceRefresh 后台周期性余额刷新（独立 ticker goroutine，ctx 取消即停）。
-// interval<=0 不启动（schedule.balance_refresh_enabled=false 时 main 不调用即可）。
+// interval<=0 时同样启动协程并在 rearmBalance 上静默待命，运行期通过 SetBalanceInterval 热激活无需重启。
 // 独立于 Run 的小时制排程：余额是分钟级观测量，不值得为它扩展 nextFire 的粒度。
 // 运行期可用 SetBalanceInterval 热改间隔（下一轮生效）。
 func (s *Scheduler) StartBalanceRefresh(ctx context.Context, interval time.Duration) {

@@ -125,7 +125,7 @@ func (p *Service) StartGrowthQueue(concurrency int, growth bool) (started bool, 
 	var mu sync.Mutex
 	firstQueuedScan := true
 	for _, st := range states {
-		if st.Disabled {
+		if st.Blocked || st.Disabled {
 			continue
 		}
 		if p.AccountDeletionStarted(st.UID) {

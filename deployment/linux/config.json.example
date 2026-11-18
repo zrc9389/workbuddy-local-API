@@ -8,12 +8,13 @@
   "memory": { "persistent": true, "max_entries": 128, "max_mb": 32, "ttl_hours": 24 },
   "resources": { "max_concurrent": 2, "max_body_mb": 16, "max_heap_mb": 384 },
   "schedule": {
-    "checkin_enabled": false,
-    "growth_enabled": false,
-    "travel_enabled": false,
-    "activity_enabled": false,
-    "keepalive_enabled": false,
-    "blackcat_enabled": false,
-    "balance_refresh_enabled": false
+    "checkin_enabled": true,
+    "growth_enabled": true,
+    "travel_enabled": true,
+    "activity_enabled": true,
+    "keepalive_enabled": true,
+    "blackcat_enabled": true,
+    "balance_refresh_enabled": true,
+    "balance_refresh_minutes": 5
   }
 }

@@ -52,6 +52,9 @@ func (s *Scheduler) RunTravelNow() {
 func (s *Scheduler) runTravel(ctx context.Context, auto bool) {
 	first := true
 	for _, st := range s.cfg.Pool.List() {
+		if st.Blocked {
+			continue
+		}
 		a := s.cfg.Pool.AuthByUID(st.UID)
 		if a == nil {
 			continue

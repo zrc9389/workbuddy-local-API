@@ -198,11 +198,14 @@ func (p *Panel) tasksToggle(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// tasksSchedule controls the daily scheduler gate used by the account-task
+// tasksSchedule controls the background scheduler gates used by the account-task
 // page. It is distinct from /tasks/toggle, which remains the legacy
 // growth-queue gate, and from /maintenance/pause, which pauses only an
 // already-running four-step maintenance batch.
-// GET returns the current state; POST accepts {`enabled`:true|false}.
+// GET returns the current state (including per-task schedules);
+// POST accepts {`enabled`:true|false} (toggles all 6 scheduled tasks + balance_refresh)
+// and/or optional granular keys (`checkin_enabled`, `travel_enabled`, `activity_enabled`,
+// `keepalive_enabled`, `blackcat_enabled`, `growth_enabled`, `balance_refresh_enabled`).
 func (p *Panel) tasksSchedule(w http.ResponseWriter, r *http.Request) {
 	if p.cfg.Scheduler == nil {
 		writeErr(w, http.StatusServiceUnavailable, "scheduler unavailable")
@@ -210,36 +213,75 @@ func (p *Panel) tasksSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost {
 		var req struct {
-			Enabled *bool `json:"enabled"`
+			Enabled               *bool `json:"enabled"`
+			CheckinEnabled        *bool `json:"checkin_enabled"`
+			TravelEnabled         *bool `json:"travel_enabled"`
+			ActivityEnabled       *bool `json:"activity_enabled"`
+			KeepaliveEnabled      *bool `json:"keepalive_enabled"`
+			BlackcatEnabled       *bool `json:"blackcat_enabled"`
+			GrowthEnabled         *bool `json:"growth_enabled"`
+			BalanceRefreshEnabled *bool `json:"balance_refresh_enabled"`
 		}
-		if err := decodeJSONBodyStrict(w, r, 1024, &req, false); err != nil || req.Enabled == nil {
-			if err == nil {
-				err = errors.New("enabled boolean required")
-			}
+		if err := decodeJSONBodyStrict(w, r, 2048, &req, false); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		schedPatch := map[string]bool{}
+		if req.Enabled != nil {
+			v := *req.Enabled
+			schedPatch["checkin_enabled"] = v
+			schedPatch["travel_enabled"] = v
+			schedPatch["activity_enabled"] = v
+			schedPatch["keepalive_enabled"] = v
+			schedPatch["blackcat_enabled"] = v
+			schedPatch["growth_enabled"] = v
+			schedPatch["balance_refresh_enabled"] = v
+		}
+		if req.CheckinEnabled != nil {
+			schedPatch["checkin_enabled"] = *req.CheckinEnabled
+		}
+		if req.TravelEnabled != nil {
+			schedPatch["travel_enabled"] = *req.TravelEnabled
+		}
+		if req.ActivityEnabled != nil {
+			schedPatch["activity_enabled"] = *req.ActivityEnabled
+		}
+		if req.KeepaliveEnabled != nil {
+			schedPatch["keepalive_enabled"] = *req.KeepaliveEnabled
+		}
+		if req.BlackcatEnabled != nil {
+			schedPatch["blackcat_enabled"] = *req.BlackcatEnabled
+		}
+		if req.GrowthEnabled != nil {
+			schedPatch["growth_enabled"] = *req.GrowthEnabled
+		}
+		if req.BalanceRefreshEnabled != nil {
+			schedPatch["balance_refresh_enabled"] = *req.BalanceRefreshEnabled
+		}
+		if len(schedPatch) == 0 {
+			writeErr(w, http.StatusBadRequest, "enabled boolean required")
 			return
 		}
 		if p.cfg.SaveConfig == nil {
 			writeErr(w, http.StatusServiceUnavailable, "schedule configuration unavailable")
 			return
 		}
-		patch, _ := json.Marshal(map[string]any{"schedule": map[string]any{
-			"checkin_enabled": *req.Enabled, "travel_enabled": *req.Enabled,
-			"activity_enabled": *req.Enabled, "keepalive_enabled": *req.Enabled,
-		}})
+		patch, _ := json.Marshal(map[string]any{"schedule": schedPatch})
 		if _, err := p.cfg.SaveConfig(patch); err != nil {
 			writeErr(w, http.StatusInternalServerError, "could not save task schedule")
 			return
 		}
 	}
+	schedules := p.cfg.Scheduler.ScheduleStatus()
 	enabled := p.cfg.Scheduler.FourTasksEnabled()
+	allEnabled := p.cfg.Scheduler.AllTasksEnabled()
 	status := "enabled"
 	if !enabled {
 		status = "disabled"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true, "enabled": enabled, "status": status,
-		"data": map[string]any{"enabled": enabled, "status": status},
+		"ok": true, "enabled": enabled, "all_enabled": allEnabled, "status": status, "schedules": schedules,
+		"data": map[string]any{"enabled": enabled, "all_enabled": allEnabled, "status": status, "schedules": schedules},
 	})
 }
 

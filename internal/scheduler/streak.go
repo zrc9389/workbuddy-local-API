@@ -25,7 +25,7 @@ func (s *Scheduler) RunStreakBonusNow() {
 func (s *Scheduler) runStreakBonus(ctx context.Context, auto bool) {
 	first := true
 	for _, st := range s.cfg.Pool.List() {
-		if st.Disabled {
+		if st.Blocked || st.Disabled {
 			continue
 		}
 		a := s.cfg.Pool.AuthByUID(st.UID)

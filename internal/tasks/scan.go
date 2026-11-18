@@ -18,7 +18,7 @@ func (p *Service) Scan(ctx context.Context) (ScanResult, error) {
 	var wg sync.WaitGroup
 	firstScanned := true
 	for i, st := range states {
-		if st.Disabled {
+		if st.Blocked || st.Disabled {
 			continue
 		}
 		if !firstScanned {
